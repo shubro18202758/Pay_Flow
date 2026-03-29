@@ -1,0 +1,143 @@
+[project]
+name = "payflow"
+version = "0.1.0"
+description = "Next-Generation Financial Fraud Analyzer Intelligence Model — Fund Flow Tracking for Union Bank of India IDEA 2.0"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    # ─────────────────────────────────────────────────────────────────────
+    # CORE DATAFRAME ENGINE — Polars
+    # ─────────────────────────────────────────────────────────────────────
+    # Rationale: Rust-native columnar engine with lazy evaluation and
+    # streaming (out-of-core) execution. Processes datasets larger than
+    # RAM by spilling to disk via `scan_csv(...).collect(streaming=True)`.
+    # Zero-copy Arrow IPC interop eliminates serialization overhead.
+    # Benchmarks show 10–50× throughput over pandas on identical hardware
+    # while consuming ~4× less peak RSS. Critical for a laptop build.
+    "polars[all]>=1.20",
+
+    # ─────────────────────────────────────────────────────────────────────
+    # GPU-ACCELERATED GRADIENT BOOSTING — XGBoost (CUDA)
+    # ─────────────────────────────────────────────────────────────────────
+    # Rationale: `device=cuda` hist-method gradient boosting allocates
+    # GPU memory proportional to histogram bins, NOT dataset rows.
+    # A 10M-row fraud dataset trains within ~400–600 MB VRAM using
+    # `max_bin=128` + `subsample=0.8`. This is 3–5× more VRAM-efficient
+    # than RAPIDS cuML forest methods which materialize full data on GPU.
+    # Windows CUDA 12.x wheels are first-class; LightGBM GPU on Windows
+    # still requires manual compilation against Boost+OpenCL in 2026.
+    "xgboost>=2.1",
+
+    # ─────────────────────────────────────────────────────────────────────
+    # GRAPH NEURAL NETWORK — PyTorch Geometric (PyG)
+    # ─────────────────────────────────────────────────────────────────────
+    # Rationale: PyG's `NeighborLoader` performs localized k-hop
+    # neighborhood sampling, converting million-node graphs into GPU-
+    # friendly mini-batches of ~512–2048 target nodes. Each mini-batch
+    # consumes only ~200–800 MB VRAM regardless of full graph size.
+    # Heterogeneous graph support (`HeteroData`) maps directly to our
+    # multi-entity schema (Account, Branch, Customer, Channel nodes with
+    # typed Transaction edges). DGL was considered but PyG's compile-mode
+    # (`torch.compile`) integration yields 20–40% inference speedup on
+    # Ampere/Ada GPUs, and its `MessagePassing` API allows custom fraud-
+    # aware aggregation functions.
+    "torch-geometric>=2.6",
+
+    # ─────────────────────────────────────────────────────────────────────
+    # EMBEDDED BLOCKCHAIN / TAMPER-EVIDENT LEDGER — PyNaCl + pymerkle
+    # ─────────────────────────────────────────────────────────────────────
+    # Rationale: No external nodes, no network, no JVM. pymerkle provides
+    # RFC-6962-compliant Merkle Tree append-only proofs for audit trails.
+    # PyNaCl (libsodium FFI) supplies Ed25519 signatures for evidence
+    # package non-repudiation. Together they form an embedded hash-chain
+    # ledger backed by SQLite (stdlib) — total memory footprint < 20 MB.
+    # Hyperledger/Tendermint were rejected: they require dedicated daemon
+    # processes, JVM, or Go runtimes, burning 500MB+ RAM at idle.
+    "pymerkle>=6.0",
+    "pynacl>=1.5",
+
+    # ─────────────────────────────────────────────────────────────────────
+    # LLM ORCHESTRATION — Ollama SDK + LangGraph
+    # ─────────────────────────────────────────────────────────────────────
+    # Rationale: `ollama` Python SDK is a thin zero-dependency client to
+    # the local Ollama daemon running Qwen-3.5-9B (Q4_K_M quantized,
+    # ~5.5 GB VRAM). LangGraph provides stateful multi-step agent graphs
+    # with checkpointing — needed for investigator query chains that span
+    # retrieval → graph traversal → evidence synthesis. Lighter than
+    # full LangChain; pulls only the orchestration primitives.
+    "ollama>=0.4",
+    "langgraph>=0.2",
+
+    # ─────────────────────────────────────────────────────────────────────
+    # API + VISUALIZATION BACKEND
+    # ─────────────────────────────────────────────────────────────────────
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.10",
+
+    # ─────────────────────────────────────────────────────────────────────
+    # HIGH-PERFORMANCE SERIALIZATION — msgspec
+    # ─────────────────────────────────────────────────────────────────────
+    # Rationale: C-accelerated Struct types with __slots__ layout.
+    # ~10× less RAM per instance than Pydantic BaseModel (~120 bytes vs
+    # ~1,200 bytes). Native msgpack encode/decode at ~75× Pydantic
+    # throughput. At 1M buffered events: 114 MB (msgspec) vs 1.14 GB
+    # (Pydantic). This 1 GB delta stays available for GPU workloads.
+    # Also supports zero-copy buffer protocol for Arrow interop.
+    "msgspec>=0.19",
+
+    # ─────────────────────────────────────────────────────────────────────
+    # SUPPORTING LIBRARIES
+    # ─────────────────────────────────────────────────────────────────────
+    "networkx>=3.4",           # CPU graph algorithms (cycle detection, centrality)
+    "scikit-learn>=1.6",       # preprocessing, metrics, isolation forest baseline
+    "numpy>=2.1",
+    "pyarrow>=18.0",           # Arrow IPC bridge for Polars <-> PyG interop
+    "aiosqlite>=0.20",         # async SQLite for blockchain ledger backend
+    "python-multipart>=0.0.9", # FastAPI file upload support
+    "jinja2>=3.1",             # evidence report templating
+    "weasyprint>=62",          # PDF generation for FIU evidence packages
+    "fpdf2>=2.8",              # Lightweight PDF generation for STR/FMR/CTR reports
+    "httpx>=0.28",             # async HTTP client for Ollama
+
+    # ─────────────────────────────────────────────────────────────────────
+    # QLoRA FINE-TUNING PIPELINE — transformers + PEFT + TRL + bitsandbytes
+    # ─────────────────────────────────────────────────────────────────────
+    # Rationale: 4-bit NF4 quantization via bitsandbytes reduces model
+    # footprint from ~18 GB (fp16) to ~2.2 GB, fitting QLoRA training
+    # within the 8 GB RTX 4070 budget. PEFT provides parameter-efficient
+    # LoRA adapter injection; TRL supplies GRPOTrainer for reward-based
+    # policy optimization. Accelerate handles gradient accumulation and
+    # mixed-precision dispatch without manual half-precision plumbing.
+    "transformers>=4.46",       # model hub, AutoModelForCausalLM, BitsAndBytesConfig
+    "peft>=0.13",               # LoRA adapters, prepare_model_for_kbit_training
+    "trl>=0.12",                # GRPOTrainer for RLHF / GRPO alignment
+    "bitsandbytes>=0.44",       # 4-bit NF4 CUDA quantization kernels
+    "datasets>=3.0",            # HuggingFace Dataset for training data ingest
+    "accelerate>=1.0",          # gradient accumulation, mixed precision dispatch
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "pre-commit>=4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.backends"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B"]
+ignore = ["S101"]  # allow assert in tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

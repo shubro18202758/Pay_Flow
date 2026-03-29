@@ -1,0 +1,1592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PayFlow Intelligence Center</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg:        #080c14;
+    --bg2:       #0d1420;
+    --bg3:       #111827;
+    --border:    rgba(255,255,255,0.07);
+    --border2:   rgba(255,255,255,0.12);
+    --text:      #c8d4e8;
+    --text2:     #6b7fa3;
+    --text3:     #3d4f6b;
+    --mono:      'JetBrains Mono', monospace;
+    --sans:      'Space Grotesk', sans-serif;
+
+    --frozen:    #ff3b3b;
+    --suspicious:#ffb800;
+    --paused:    #ff7a00;
+    --mule:      #9b59b6;
+    --hub:       #ff6b9d;
+    --cfr:       #ff2222;
+    --normal:    #4a9eca;
+    --safe:      #27ae60;
+
+    --edge-high: rgba(255,59,59,0.85);
+    --edge-circ: rgba(255,122,0,1);
+    --edge-pass: rgba(255,184,0,0.8);
+    --edge-inv:  rgba(255,255,255,0.6);
+    --edge-norm: rgba(74,158,202,0.12);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── TOP BAR ── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    height: 48px;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 20px;
+    border-right: 1px solid var(--border);
+    height: 100%;
+  }
+
+  .brand-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--safe);
+    box-shadow: 0 0 6px var(--safe);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+  .brand-name {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    color: #e2eaf8;
+    text-transform: uppercase;
+  }
+
+  .brand-sub {
+    font-size: 10px;
+    color: var(--text2);
+    font-family: var(--mono);
+    letter-spacing: 0.05em;
+  }
+
+  .topbar-stats {
+    display: flex;
+    gap: 0;
+    flex: 1;
+    height: 100%;
+  }
+
+  .tstat {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 20px;
+    border-right: 1px solid var(--border);
+    gap: 2px;
+    cursor: default;
+  }
+
+  .tstat-val {
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--mono);
+    color: #e2eaf8;
+  }
+
+  .tstat-val.warn  { color: var(--suspicious); }
+  .tstat-val.danger{ color: var(--frozen); }
+  .tstat-val.info  { color: var(--normal); }
+  .tstat-val.muted { color: var(--text2); }
+
+  .tstat-label {
+    font-size: 9px;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    margin-left: auto;
+  }
+
+  .live-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--safe);
+    letter-spacing: 0.08em;
+  }
+
+  .live-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--safe);
+    animation: pulse 1.2s infinite;
+  }
+
+  .time-display {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text2);
+  }
+
+  /* ── MAIN LAYOUT ── */
+  .main {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* ── FILTER SIDEBAR ── */
+  .sidebar {
+    width: 200px;
+    border-right: 1px solid var(--border);
+    background: var(--bg2);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow-y: auto;
+  }
+
+  .sidebar-section {
+    padding: 14px 14px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar-title {
+    font-size: 9px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--text3);
+    margin-bottom: 10px;
+  }
+
+  .filter-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.15s;
+    padding-left: 4px;
+  }
+
+  .filter-item:hover { background: rgba(255,255,255,0.04); }
+
+  .filter-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .filter-label {
+    font-size: 11px;
+    color: var(--text);
+    flex: 1;
+  }
+
+  .filter-count {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text2);
+  }
+
+  .filter-check {
+    width: 14px; height: 14px;
+    border: 1px solid var(--border2);
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    flex-shrink: 0;
+    transition: all 0.15s;
+  }
+
+  .filter-check.active {
+    background: rgba(74,158,202,0.2);
+    border-color: var(--normal);
+    color: var(--normal);
+  }
+
+  .range-wrap {
+    margin-top: 8px;
+  }
+
+  .range-wrap label {
+    font-size: 10px;
+    color: var(--text2);
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+
+  input[type=range] {
+    width: 100%;
+    height: 3px;
+    -webkit-appearance: none;
+    background: var(--border2);
+    border-radius: 2px;
+    outline: none;
+  }
+
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--normal);
+    cursor: pointer;
+  }
+
+  .btn-reset {
+    width: 100%;
+    padding: 6px;
+    background: transparent;
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    color: var(--text2);
+    font-size: 10px;
+    font-family: var(--mono);
+    cursor: pointer;
+    margin-top: 8px;
+    letter-spacing: 0.06em;
+    transition: all 0.15s;
+  }
+
+  .btn-reset:hover {
+    border-color: var(--normal);
+    color: var(--normal);
+  }
+
+  /* ── GRAPH AREA ── */
+  .graph-wrap {
+    flex: 1;
+    position: relative;
+    background: var(--bg);
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  #graph-svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .graph-hint {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text3);
+    pointer-events: none;
+    letter-spacing: 0.06em;
+  }
+
+  /* node tooltip */
+  .node-tip {
+    position: absolute;
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 11px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+    z-index: 100;
+    min-width: 180px;
+    max-width: 240px;
+  }
+
+  .node-tip.show { opacity: 1; }
+
+  .tip-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+
+  .tip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  .tip-id {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .tip-status {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-left: auto;
+  }
+
+  .tip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 4px;
+  }
+
+  .tip-key { color: var(--text2); font-size: 10px; }
+  .tip-val { font-family: var(--mono); font-size: 10px; color: var(--text); }
+
+  .tip-patterns {
+    margin-top: 8px;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+  }
+
+  .tip-pattern {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    display: inline-block;
+    margin: 2px 2px 0 0;
+    font-family: var(--mono);
+    letter-spacing: 0.04em;
+  }
+
+  /* ── RIGHT PANEL ── */
+  .right-panel {
+    width: 280px;
+    border-left: 1px solid var(--border);
+    background: var(--bg2);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+
+  .panel-tab-bar {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .panel-tab {
+    flex: 1;
+    padding: 10px 0;
+    font-size: 10px;
+    font-family: var(--mono);
+    text-align: center;
+    cursor: pointer;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    transition: all 0.15s;
+    border-bottom: 2px solid transparent;
+  }
+
+  .panel-tab.active {
+    color: var(--normal);
+    border-bottom-color: var(--normal);
+  }
+
+  .panel-content {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+  }
+
+  /* ALERT FEED */
+  .alert-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+
+  .alert-item:hover { background: rgba(255,255,255,0.03); }
+
+  .alert-item.selected { background: rgba(74,158,202,0.07); }
+
+  .alert-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+
+  .alert-verdict {
+    font-size: 9px;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+  }
+
+  .v-block     { background: rgba(255,59,59,0.15);  color: var(--frozen); }
+  .v-invest    { background: rgba(255,184,0,0.15);  color: var(--suspicious); }
+  .v-monitor   { background: rgba(255,122,0,0.12);  color: var(--paused); }
+  .v-legit     { background: rgba(39,174,96,0.12);  color: var(--safe); }
+
+  .alert-txnid {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text2);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .alert-score {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .alert-desc {
+    font-size: 10px;
+    color: var(--text2);
+    line-height: 1.5;
+    margin-bottom: 4px;
+  }
+
+  .alert-meta {
+    display: flex;
+    gap: 10px;
+  }
+
+  .alert-amount {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text);
+  }
+
+  .alert-time {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text3);
+    margin-left: auto;
+  }
+
+  /* INVESTIGATION PANEL */
+  .inv-panel {
+    padding: 14px;
+  }
+
+  .inv-header {
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 12px;
+  }
+
+  .inv-score-wrap {
+    margin-bottom: 14px;
+  }
+
+  .inv-score-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text2);
+    margin-bottom: 6px;
+  }
+
+  .inv-score-bar {
+    height: 4px;
+    background: var(--border2);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+
+  .inv-score-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s;
+  }
+
+  .breakdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
+  }
+
+  .bd-label { font-size: 10px; color: var(--text2); flex: 1; }
+  .bd-bar {
+    height: 3px;
+    border-radius: 2px;
+    flex: 2;
+    background: var(--border2);
+    overflow: hidden;
+  }
+  .bd-fill { height: 100%; background: var(--suspicious); border-radius: 2px; }
+  .bd-val  { font-family: var(--mono); font-size: 10px; color: var(--text); min-width: 24px; text-align: right; }
+
+  .inv-narrative {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 10px;
+    font-size: 10px;
+    line-height: 1.65;
+    color: var(--text2);
+    margin-top: 12px;
+    margin-bottom: 12px;
+  }
+
+  .inv-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .inv-btn {
+    padding: 7px 10px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-family: var(--mono);
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    border: 1px solid;
+    background: transparent;
+    transition: all 0.15s;
+    text-align: left;
+  }
+
+  .inv-btn.danger {
+    border-color: rgba(255,59,59,0.4);
+    color: var(--frozen);
+  }
+  .inv-btn.danger:hover { background: rgba(255,59,59,0.1); }
+
+  .inv-btn.warn {
+    border-color: rgba(255,184,0,0.4);
+    color: var(--suspicious);
+  }
+  .inv-btn.warn:hover { background: rgba(255,184,0,0.1); }
+
+  .inv-btn.info {
+    border-color: rgba(74,158,202,0.4);
+    color: var(--normal);
+  }
+  .inv-btn.info:hover { background: rgba(74,158,202,0.1); }
+
+  /* ── BOTTOM BAR ── */
+  .bottombar {
+    height: 32px;
+    border-top: 1px solid var(--border);
+    background: var(--bg2);
+    display: flex;
+    align-items: center;
+    gap: 0;
+    flex-shrink: 0;
+  }
+
+  .bstat {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 16px;
+    border-right: 1px solid var(--border);
+    height: 100%;
+    cursor: default;
+  }
+
+  .bstat-icon {
+    font-size: 10px;
+    color: var(--text3);
+  }
+
+  .bstat-label { font-size: 10px; color: var(--text2); }
+  .bstat-val   { font-family: var(--mono); font-size: 10px; color: var(--text); }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    margin-left: auto;
+  }
+
+  .leg-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 9px;
+    color: var(--text3);
+    cursor: default;
+  }
+
+  .leg-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+  /* D3 graph styles */
+  .node-circle {
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+
+  .node-circle:hover { opacity: 0.85; }
+
+  .node-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    fill: rgba(200,212,232,0.5);
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .edge {
+    pointer-events: none;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .fade-hint {
+    display: inline-block;
+    animation: fadein 1.5s ease-out forwards;
+    opacity: 0;
+  }
+
+  @keyframes fadein { to { opacity: 1; } }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="brand">
+    <div class="brand-dot"></div>
+    <div>
+      <div class="brand-name">PayFlow</div>
+      <div class="brand-sub">INTELLIGENCE CENTER</div>
+    </div>
+  </div>
+
+  <div class="topbar-stats">
+    <div class="tstat">
+      <div class="tstat-val info" id="stat-txn">11,897</div>
+      <div class="tstat-label">Transactions</div>
+    </div>
+    <div class="tstat">
+      <div class="tstat-val muted" id="stat-nodes">—</div>
+      <div class="tstat-label">Graph Nodes</div>
+    </div>
+    <div class="tstat">
+      <div class="tstat-val muted" id="stat-edges">—</div>
+      <div class="tstat-label">Graph Edges</div>
+    </div>
+    <div class="tstat">
+      <div class="tstat-val warn" id="stat-alerts">2</div>
+      <div class="tstat-label">Pending Alerts</div>
+    </div>
+    <div class="tstat">
+      <div class="tstat-val danger" id="stat-frozen">0</div>
+      <div class="tstat-label">Frozen Nodes</div>
+    </div>
+    <div class="tstat">
+      <div class="tstat-val muted" id="stat-infer">8,897</div>
+      <div class="tstat-label">ML Inferences</div>
+    </div>
+    <div class="tstat">
+      <div class="tstat-val info" id="stat-eps">3.5</div>
+      <div class="tstat-label">Events/sec</div>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="live-badge">
+      <div class="live-dot"></div>
+      LIVE STREAM
+    </div>
+    <div class="time-display" id="clock">--:--:--</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-title">Node Status</div>
+      <div class="filter-item" onclick="toggleFilter('frozen')" id="f-frozen">
+        <div class="filter-dot" style="background:var(--frozen)"></div>
+        <div class="filter-label">Frozen</div>
+        <div class="filter-count" id="c-frozen">0</div>
+        <div class="filter-check active" id="ck-frozen">✓</div>
+      </div>
+      <div class="filter-item" onclick="toggleFilter('suspicious')" id="f-suspicious">
+        <div class="filter-dot" style="background:var(--suspicious)"></div>
+        <div class="filter-label">Suspicious</div>
+        <div class="filter-count" id="c-suspicious">0</div>
+        <div class="filter-check active" id="ck-suspicious">✓</div>
+      </div>
+      <div class="filter-item" onclick="toggleFilter('mule')" id="f-mule">
+        <div class="filter-dot" style="background:var(--mule)"></div>
+        <div class="filter-label">Mule Hub</div>
+        <div class="filter-count" id="c-mule">0</div>
+        <div class="filter-check active" id="ck-mule">✓</div>
+      </div>
+      <div class="filter-item" onclick="toggleFilter('paused')" id="f-paused">
+        <div class="filter-dot" style="background:var(--paused)"></div>
+        <div class="filter-label">Paused</div>
+        <div class="filter-count" id="c-paused">0</div>
+        <div class="filter-check active" id="ck-paused">✓</div>
+      </div>
+      <div class="filter-item" onclick="toggleFilter('normal')" id="f-normal">
+        <div class="filter-dot" style="background:var(--normal)"></div>
+        <div class="filter-label">Normal</div>
+        <div class="filter-count" id="c-normal">0</div>
+        <div class="filter-check active" id="ck-normal">✓</div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">Risk Threshold</div>
+      <div class="range-wrap">
+        <label>
+          <span>Min Risk Score</span>
+          <span id="risk-val">0</span>
+        </label>
+        <input type="range" min="0" max="100" value="0" id="risk-filter"
+          oninput="document.getElementById('risk-val').textContent=this.value; applyFilters()">
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">View Mode</div>
+      <div class="filter-item" onclick="setView('all')" id="vm-all" style="cursor:pointer">
+        <div class="filter-label">All nodes</div>
+        <div class="filter-check active" id="ck-vm-all">●</div>
+      </div>
+      <div class="filter-item" onclick="setView('flagged')" id="vm-flagged" style="cursor:pointer">
+        <div class="filter-label">Flagged + 1-hop</div>
+        <div class="filter-check" id="ck-vm-flagged"></div>
+      </div>
+      <div class="filter-item" onclick="setView('focus')" id="vm-focus" style="cursor:pointer">
+        <div class="filter-label">Selected cluster</div>
+        <div class="filter-check" id="ck-vm-focus"></div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <button class="btn-reset" onclick="resetView()">↺ Reset View</button>
+    </div>
+  </div>
+
+  <!-- GRAPH -->
+  <div class="graph-wrap">
+    <div class="graph-hint fade-hint">Click node to inspect · Scroll to zoom · Drag to pan</div>
+    <svg id="graph-svg"></svg>
+    <div class="node-tip" id="node-tip">
+      <div class="tip-header">
+        <div class="tip-dot" id="tip-dot"></div>
+        <div class="tip-id" id="tip-id">ACC-XXXX</div>
+        <div class="tip-status" id="tip-status">NORMAL</div>
+      </div>
+      <div class="tip-row"><span class="tip-key">Risk Score</span><span class="tip-val" id="tip-risk">—</span></div>
+      <div class="tip-row"><span class="tip-key">Account Age</span><span class="tip-val" id="tip-age">—</span></div>
+      <div class="tip-row"><span class="tip-key">Degree</span><span class="tip-val" id="tip-deg">—</span></div>
+      <div class="tip-row"><span class="tip-key">Betweenness</span><span class="tip-val" id="tip-bet">—</span></div>
+      <div class="tip-row"><span class="tip-key">Amount (24h)</span><span class="tip-val" id="tip-amt">—</span></div>
+      <div class="tip-patterns" id="tip-patterns"></div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+    <div class="panel-tab-bar">
+      <div class="panel-tab active" id="tab-alerts" onclick="switchTab('alerts')">Alerts</div>
+      <div class="panel-tab" id="tab-invest" onclick="switchTab('invest')">Investigate</div>
+    </div>
+
+    <div class="panel-content" id="panel-alerts">
+      <!-- alerts injected here -->
+    </div>
+
+    <div class="panel-content" id="panel-invest" style="display:none">
+      <div class="inv-panel" id="inv-empty">
+        <div style="text-align:center;padding:40px 20px">
+          <div style="font-size:24px;margin-bottom:12px;opacity:0.3">⊙</div>
+          <div style="font-size:11px;color:var(--text3);line-height:1.6">
+            Select an alert or click a flagged node to begin investigation
+          </div>
+        </div>
+      </div>
+      <div class="inv-panel" id="inv-detail" style="display:none">
+        <div class="inv-header" id="inv-case-id">CASE — —</div>
+
+        <div class="inv-score-wrap">
+          <div class="inv-score-label">
+            <span>Composite Risk Score</span>
+            <span id="inv-score-num" style="font-family:var(--mono);font-weight:600">—</span>
+          </div>
+          <div class="inv-score-bar">
+            <div class="inv-score-fill" id="inv-score-fill" style="width:0%"></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <div class="sidebar-title" style="margin-bottom:8px">Risk Breakdown</div>
+          <div id="inv-breakdown"></div>
+        </div>
+
+        <div class="sidebar-title" style="margin-bottom:6px">Patterns Detected</div>
+        <div id="inv-pattern-tags" style="margin-bottom:12px"></div>
+
+        <div class="sidebar-title" style="margin-bottom:6px">AI Investigation</div>
+        <div class="inv-narrative" id="inv-narrative"></div>
+
+        <div class="sidebar-title" style="margin-bottom:8px">Recommended Actions</div>
+        <div class="inv-actions" id="inv-actions"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- BOTTOM BAR -->
+<div class="bottombar">
+  <div class="bstat">
+    <span class="bstat-label">Agent</span>
+    <span class="bstat-val" style="color:var(--safe)">●</span>
+    <span class="bstat-val">Qwen 3 Active</span>
+  </div>
+  <div class="bstat">
+    <span class="bstat-label">Circuit Breaker</span>
+    <span class="bstat-val" style="color:var(--safe)" id="cb-status">CLOSED</span>
+  </div>
+  <div class="bstat">
+    <span class="bstat-label">GPU</span>
+    <span class="bstat-val">65%  ·  59°C</span>
+  </div>
+  <div class="bstat">
+    <span class="bstat-label">FIU Reporting</span>
+    <span class="bstat-val">0 STR pending</span>
+  </div>
+
+  <div class="legend">
+    <div class="leg-item"><div class="leg-dot" style="background:var(--frozen)"></div> Frozen</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--suspicious)"></div> Suspicious</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--mule)"></div> Mule Hub</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--paused)"></div> Paused</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--normal)"></div> Normal</div>
+    <div class="leg-item" style="margin-left:8px;border-left:1px solid var(--border);padding-left:12px">
+      <div style="width:20px;height:2px;background:var(--edge-high);margin-right:5px;border-radius:1px"></div> High risk
+    </div>
+    <div class="leg-item">
+      <div style="width:20px;height:2px;background:var(--edge-circ);margin-right:5px;border-radius:1px"></div> Circular
+    </div>
+    <div class="leg-item">
+      <div style="width:20px;height:2px;background:var(--edge-norm);margin-right:5px;border-radius:1px;opacity:0.5"></div> Normal
+    </div>
+  </div>
+</div>
+
+<script>
+// ──────────────────────────────────────────────
+//  DATA GENERATION
+// ──────────────────────────────────────────────
+const STATUS_COLORS = {
+  frozen:     '#ff3b3b',
+  suspicious: '#ffb800',
+  mule:       '#9b59b6',
+  paused:     '#ff7a00',
+  cfr:        '#ff2222',
+  normal:     '#4a9eca'
+};
+
+const STATUS_WEIGHTS = [
+  ['frozen', 2], ['suspicious', 5], ['mule', 4], ['paused', 4], ['normal', 85]
+];
+
+function weightedRandom(weights) {
+  const total = weights.reduce((a, [, w]) => a + w, 0);
+  let r = Math.random() * total;
+  for (const [v, w] of weights) { r -= w; if (r <= 0) return v; }
+  return weights[0][0];
+}
+
+const rnd = (a, b) => Math.random() * (b - a) + a;
+const rndInt = (a, b) => Math.floor(rnd(a, b));
+const pick = arr => arr[rndInt(0, arr.length)];
+
+const PATTERNS = ['MULE_NETWORK','CIRCULAR_FLOW','HIGH_VELOCITY','RAPID_PASS_THROUGH',
+  'DORMANT_ACTIVATION','CFR_MATCH','NIGHT_TRANSACTION','NEW_ACCOUNT','HIGH_CENTRALITY'];
+
+function generateData(N_NODES, N_EXTRA_EDGES) {
+  const nodes = Array.from({length: N_NODES}, (_, i) => {
+    const status = weightedRandom(STATUS_WEIGHTS);
+    const isFlagged = status !== 'normal';
+    const risk = isFlagged
+      ? (status === 'frozen' ? rndInt(75,100) : status === 'suspicious' ? rndInt(50,80) : rndInt(35,70))
+      : rndInt(0, 30);
+    const patterns = isFlagged
+      ? Array.from({length: rndInt(1,3)}, () => pick(PATTERNS))
+      : [];
+    return {
+      id: `ACC-${String(1000+i).padStart(4,'0')}`,
+      status,
+      risk,
+      age: rndInt(1, 730),
+      degree: 0,
+      betweenness: parseFloat(rnd(0,0.15).toFixed(4)),
+      amount24h: rndInt(10000, 15000000),
+      patterns: [...new Set(patterns)]
+    };
+  });
+
+  // Ensure some fraud clusters
+  const fraudIds = nodes.filter(n => n.status !== 'normal').map(n => n.id);
+  const normalIds = nodes.filter(n => n.status === 'normal').map(n => n.id);
+
+  const edges = [];
+  const edgeSet = new Set();
+
+  function addEdge(s, t, type) {
+    const key = `${s}|${t}`;
+    if (s === t || edgeSet.has(key)) return;
+    edgeSet.add(key);
+    const src = nodes.find(n => n.id === s);
+    const tgt = nodes.find(n => n.id === t);
+    const avgRisk = ((src?.risk || 0) + (tgt?.risk || 0)) / 2;
+    edges.push({
+      source: s, target: t, type: type || (avgRisk > 60 ? 'high' : avgRisk > 35 ? 'medium' : 'normal'),
+      risk: avgRisk
+    });
+  }
+
+  // Fraud cluster: chain through mule/suspicious nodes
+  for (let i = 0; i < fraudIds.length - 1; i++) {
+    addEdge(fraudIds[i], fraudIds[i+1], 'high');
+  }
+
+  // Circular flow: connect last fraud back to first
+  if (fraudIds.length >= 3) {
+    addEdge(fraudIds[fraudIds.length-1], fraudIds[0], 'circular');
+    addEdge(fraudIds[0], fraudIds[2], 'circular');
+  }
+
+  // Fraud → normal (pass-through to mules)
+  for (const fid of fraudIds.slice(0,6)) {
+    for (let k = 0; k < rndInt(1,4); k++) {
+      addEdge(fid, pick(normalIds), 'pass');
+    }
+  }
+
+  // Sparse normal-normal connections
+  for (let k = 0; k < N_EXTRA_EDGES; k++) {
+    addEdge(pick(normalIds), pick(normalIds), 'normal');
+  }
+
+  // Count degree
+  nodes.forEach(n => n.degree = 0);
+  edges.forEach(e => {
+    const s = nodes.find(n => n.id === (typeof e.source === 'object' ? e.source.id : e.source));
+    const t = nodes.find(n => n.id === (typeof e.target === 'object' ? e.target.id : e.target));
+    if (s) s.degree++;
+    if (t) t.degree++;
+  });
+
+  return { nodes, edges };
+}
+
+// ──────────────────────────────────────────────
+//  GRAPH
+// ──────────────────────────────────────────────
+let data = generateData(80, 60);
+let activeFilters = {frozen:true,suspicious:true,mule:true,paused:true,normal:true};
+let viewMode = 'all';
+let selectedNode = null;
+let minRisk = 0;
+
+let simulation, svg, g, linkSel, nodeSel, labelSel;
+
+function edgeColor(e) {
+  if (e.type === 'circular') return '#ff7a00';
+  if (e.type === 'high')     return '#ff3b3b';
+  if (e.type === 'pass')     return '#ffb800';
+  return '#4a9eca';
+}
+
+function edgeOpacity(e) {
+  if (e.type === 'circular') return 0.9;
+  if (e.type === 'high')     return 0.75;
+  if (e.type === 'pass')     return 0.55;
+  return 0.1;
+}
+
+function edgeWidth(e) {
+  if (e.type === 'circular') return 1.5;
+  if (e.type === 'high')     return 1.2;
+  if (e.type === 'pass')     return 0.9;
+  return 0.5;
+}
+
+function nodeRadius(d) {
+  if (d.status === 'frozen')     return 10;
+  if (d.status === 'mule')       return 9;
+  if (d.status === 'suspicious') return 8;
+  if (d.status === 'paused')     return 7;
+  return Math.max(4, Math.min(7, 4 + d.degree * 0.4));
+}
+
+function initGraph() {
+  const svgEl = document.getElementById('graph-svg');
+  const W = svgEl.clientWidth || 800;
+  const H = svgEl.clientHeight || 500;
+
+  svg = d3.select('#graph-svg');
+  svg.selectAll('*').remove();
+
+  const zoom = d3.zoom()
+    .scaleExtent([0.15, 4])
+    .on('zoom', e => g.attr('transform', e.transform));
+
+  svg.call(zoom);
+
+  // Subtle grid background
+  const defs = svg.append('defs');
+  const pattern = defs.append('pattern')
+    .attr('id','grid').attr('width',40).attr('height',40)
+    .attr('patternUnits','userSpaceOnUse');
+  pattern.append('path')
+    .attr('d','M 40 0 L 0 0 0 40')
+    .attr('fill','none')
+    .attr('stroke','rgba(255,255,255,0.025)')
+    .attr('stroke-width','0.5');
+  svg.append('rect').attr('width','100%').attr('height','100%')
+    .attr('fill','url(#grid)');
+
+  g = svg.append('g');
+
+  // Arrow marker
+  defs.append('marker')
+    .attr('id','arrowhead').attr('viewBox','0 -3 6 6')
+    .attr('refX',6).attr('refY',0)
+    .attr('markerWidth',4).attr('markerHeight',4)
+    .attr('orient','auto')
+    .append('path')
+    .attr('d','M0,-3L6,0L0,3')
+    .attr('fill','rgba(255,255,255,0.25)');
+
+  linkSel = g.append('g').attr('class','links').selectAll('line');
+  nodeSel = g.append('g').attr('class','nodes').selectAll('circle');
+  labelSel = g.append('g').attr('class','labels').selectAll('text');
+
+  simulation = d3.forceSimulation()
+    .force('link', d3.forceLink().id(d => d.id).distance(d => {
+      if (d.type === 'normal') return 80;
+      if (d.type === 'circular') return 50;
+      return 60;
+    }).strength(0.4))
+    .force('charge', d3.forceManyBody().strength(d =>
+      d.status === 'normal' ? -60 : -120
+    ))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .force('collision', d3.forceCollide().radius(d => nodeRadius(d) + 6))
+    .force('x', d3.forceX(W/2).strength(0.04))
+    .force('y', d3.forceY(H/2).strength(0.04))
+    .on('tick', ticked);
+
+  renderGraph();
+  updateCounts();
+}
+
+function getVisibleNodes() {
+  if (viewMode === 'all') {
+    return data.nodes.filter(n =>
+      activeFilters[n.status] && n.risk >= minRisk
+    );
+  }
+  if (viewMode === 'flagged') {
+    const flagged = new Set(data.nodes.filter(n => n.status !== 'normal').map(n => n.id));
+    const oneHop = new Set();
+    data.edges.forEach(e => {
+      const sid = typeof e.source === 'object' ? e.source.id : e.source;
+      const tid = typeof e.target === 'object' ? e.target.id : e.target;
+      if (flagged.has(sid)) oneHop.add(tid);
+      if (flagged.has(tid)) oneHop.add(sid);
+    });
+    return data.nodes.filter(n => flagged.has(n.id) || oneHop.has(n.id));
+  }
+  if (viewMode === 'focus' && selectedNode) {
+    const center = selectedNode.id;
+    const neighbors = new Set([center]);
+    data.edges.forEach(e => {
+      const sid = typeof e.source === 'object' ? e.source.id : e.source;
+      const tid = typeof e.target === 'object' ? e.target.id : e.target;
+      if (sid === center) neighbors.add(tid);
+      if (tid === center) neighbors.add(sid);
+    });
+    return data.nodes.filter(n => neighbors.has(n.id));
+  }
+  return data.nodes;
+}
+
+function renderGraph() {
+  const visibleNodes = getVisibleNodes();
+  const visibleIds = new Set(visibleNodes.map(n => n.id));
+
+  const visibleEdges = data.edges.filter(e => {
+    const sid = typeof e.source === 'object' ? e.source.id : e.source;
+    const tid = typeof e.target === 'object' ? e.target.id : e.target;
+    return visibleIds.has(sid) && visibleIds.has(tid);
+  });
+
+  // Links
+  linkSel = g.select('.links').selectAll('line')
+    .data(visibleEdges, d => `${typeof d.source === 'object' ? d.source.id : d.source}|${typeof d.target === 'object' ? d.target.id : d.target}`);
+
+  linkSel.exit().remove();
+
+  const linkEnter = linkSel.enter().append('line')
+    .attr('class','edge')
+    .attr('stroke', d => edgeColor(d))
+    .attr('stroke-opacity', d => edgeOpacity(d))
+    .attr('stroke-width', d => edgeWidth(d))
+    .attr('marker-end', 'url(#arrowhead)');
+
+  linkSel = linkEnter.merge(linkSel);
+
+  // Nodes
+  nodeSel = g.select('.nodes').selectAll('circle')
+    .data(visibleNodes, d => d.id);
+
+  nodeSel.exit().remove();
+
+  const nodeEnter = nodeSel.enter().append('circle')
+    .attr('class', 'node-circle')
+    .attr('r', d => nodeRadius(d))
+    .attr('fill', d => STATUS_COLORS[d.status])
+    .attr('stroke', d => d.status === 'normal' ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.25)')
+    .attr('stroke-width', d => d.status === 'normal' ? 0.5 : 1.2)
+    .attr('fill-opacity', d => {
+      if (d.status === 'frozen') return 1;
+      if (d.status === 'suspicious') return 0.9;
+      if (d.status === 'mule') return 0.85;
+      return 0.7;
+    })
+    .on('mousemove', (event, d) => showTip(event, d))
+    .on('mouseleave', hideTip)
+    .on('click', (event, d) => { event.stopPropagation(); selectNode(d); })
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+      .on('drag', (e, d) => { d.fx=e.x; d.fy=e.y; })
+      .on('end', (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx=null; d.fy=null; })
+    );
+
+  nodeSel = nodeEnter.merge(nodeSel);
+
+  // Labels (only for flagged nodes)
+  labelSel = g.select('.labels').selectAll('text')
+    .data(visibleNodes.filter(n => n.status !== 'normal'), d => d.id);
+
+  labelSel.exit().remove();
+
+  const labelEnter = labelSel.enter().append('text')
+    .attr('class', 'node-label')
+    .attr('text-anchor', 'middle')
+    .attr('dy', d => -nodeRadius(d) - 3)
+    .text(d => d.id.split('-')[1]);
+
+  labelSel = labelEnter.merge(labelSel);
+
+  simulation.nodes(visibleNodes);
+  simulation.force('link').links(visibleEdges);
+  simulation.alpha(0.8).restart();
+
+  document.getElementById('stat-nodes').textContent = visibleNodes.length;
+  document.getElementById('stat-edges').textContent = visibleEdges.length;
+}
+
+function ticked() {
+  linkSel
+    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+  nodeSel.attr('cx', d => d.x).attr('cy', d => d.y);
+  labelSel.attr('x', d => d.x).attr('y', d => d.y);
+}
+
+// ──────────────────────────────────────────────
+//  TOOLTIP
+// ──────────────────────────────────────────────
+const tip = document.getElementById('node-tip');
+
+function showTip(event, d) {
+  const rect = document.getElementById('graph-svg').getBoundingClientRect();
+  const x = event.clientX - rect.left + 14;
+  const y = event.clientY - rect.top - 10;
+
+  document.getElementById('tip-dot').style.background = STATUS_COLORS[d.status];
+  document.getElementById('tip-id').textContent = d.id;
+
+  const statusEl = document.getElementById('tip-status');
+  statusEl.textContent = d.status.toUpperCase();
+  const colors = {frozen:'#ff3b3b',suspicious:'#ffb800',mule:'#9b59b6',paused:'#ff7a00',normal:'#4a9eca'};
+  statusEl.style.background = colors[d.status] + '22';
+  statusEl.style.color = colors[d.status];
+
+  document.getElementById('tip-risk').textContent = d.risk + '/100';
+  document.getElementById('tip-risk').style.color = d.risk > 70 ? '#ff3b3b' : d.risk > 40 ? '#ffb800' : '#4a9eca';
+  document.getElementById('tip-age').textContent = d.age + ' days';
+  document.getElementById('tip-deg').textContent = d.degree;
+  document.getElementById('tip-bet').textContent = d.betweenness.toFixed(4);
+  document.getElementById('tip-amt').textContent = '₹' + (d.amount24h/100000).toFixed(1) + 'L';
+
+  const pEl = document.getElementById('tip-patterns');
+  if (d.patterns.length) {
+    const bgMap = {
+      MULE_NETWORK:'#9b59b622',CIRCULAR_FLOW:'#ff7a0022',HIGH_VELOCITY:'#ffb80022',
+      CFR_MATCH:'#ff3b3b33',default:'rgba(255,255,255,0.07)'
+    };
+    const cMap = {
+      MULE_NETWORK:'#9b59b6',CIRCULAR_FLOW:'#ff7a00',HIGH_VELOCITY:'#ffb800',
+      CFR_MATCH:'#ff3b3b',default:'#6b7fa3'
+    };
+    pEl.innerHTML = d.patterns.map(p =>
+      `<span class="tip-pattern" style="background:${bgMap[p]||bgMap.default};color:${cMap[p]||cMap.default}">${p}</span>`
+    ).join('');
+    pEl.style.display = 'block';
+  } else {
+    pEl.style.display = 'none';
+  }
+
+  tip.style.left = Math.min(x, rect.width - 260) + 'px';
+  tip.style.top = Math.min(y, rect.height - 200) + 'px';
+  tip.classList.add('show');
+}
+
+function hideTip() { tip.classList.remove('show'); }
+
+// ──────────────────────────────────────────────
+//  NODE SELECTION
+// ──────────────────────────────────────────────
+function selectNode(d) {
+  selectedNode = d;
+  if (d.status !== 'normal') {
+    openInvestigation(d);
+    switchTab('invest');
+  }
+  if (viewMode === 'focus') renderGraph();
+
+  // Dim/highlight
+  nodeSel.attr('fill-opacity', n =>
+    n.id === d.id ? 1 : 0.25
+  ).attr('r', n =>
+    n.id === d.id ? nodeRadius(n) * 1.4 : nodeRadius(n)
+  );
+
+  setTimeout(() => {
+    nodeSel.attr('fill-opacity', n =>
+      n.status === 'normal' ? 0.7 :
+      n.status === 'suspicious' ? 0.9 : 1
+    ).attr('r', n => nodeRadius(n));
+  }, 1200);
+}
+
+// ──────────────────────────────────────────────
+//  INVESTIGATION PANEL
+// ──────────────────────────────────────────────
+const INV_NARRATIVES = {
+  frozen: n => `Account ${n.id} has been circuit-breaker triggered. Rapid pass-through of ₹${(n.amount24h/100000).toFixed(1)}L detected within a 24-hour window. Betweenness centrality of ${n.betweenness.toFixed(3)} indicates this account is acting as a primary routing node in a suspected Carbanak-style mule chain. Immediate freeze enacted. STR auto-queued for FIU-IND submission.`,
+  suspicious: n => `Account ${n.id} (${n.age}-day-old account) shows high-velocity transaction patterns. ₹${(n.amount24h/100000).toFixed(1)}L transferred in 24 hours — ${(n.amount24h/50000).toFixed(0)}x above behavioral baseline. Detected in graph cluster with ${n.degree} connected accounts. Matches layering stage pattern from AML framework.`,
+  mule: n => `Account ${n.id} flagged as suspected mule hub. Betweenness centrality ${n.betweenness.toFixed(3)} significantly exceeds threshold (0.05). Degree ${n.degree} indicates routing hub behavior. Funds pass through this account to ${Math.min(n.degree,5)} downstream accounts within 30-minute windows — consistent with Carbanak mule network relay pattern.`,
+  paused: n => `Account ${n.id} placed under limited operation pending investigation. Unusual transaction timing and geographic deviation detected. Account age ${n.age} days with disproportionate volume of ₹${(n.amount24h/100000).toFixed(1)}L. Risk score ${n.risk}/100 — awaiting manual investigator review before resuming.`,
+};
+
+const INV_BREAKDOWNS = {
+  frozen:     {large_transaction:30, high_velocity:30, circular_flow:20, high_centrality:15, new_account:5},
+  suspicious: {high_velocity:30, large_transaction:25, night_transaction:10, unusual_location:10, new_account:10},
+  mule:       {high_centrality:30, pass_through:25, high_velocity:20, new_account:15, unusual_location:10},
+  paused:     {large_transaction:20, high_velocity:20, night_transaction:15, unusual_location:10, new_account:10},
+};
+
+const INV_ACTIONS = {
+  frozen:     [
+    {label:'◉ Account already frozen — maintain', cls:'danger'},
+    {label:'⚑ File STR to FIU-IND', cls:'danger'},
+    {label:'⊕ Trace full 3-hop chain', cls:'warn'},
+    {label:'≡ Export evidence package', cls:'info'}
+  ],
+  suspicious: [
+    {label:'◌ Freeze account', cls:'danger'},
+    {label:'⚑ Queue STR for FIU-IND', cls:'warn'},
+    {label:'⊕ Verify customer KYC', cls:'warn'},
+    {label:'≡ Flag connected accounts', cls:'info'}
+  ],
+  mule: [
+    {label:'◌ Freeze account + 1-hop network', cls:'danger'},
+    {label:'⚑ File STR (mule network)', cls:'danger'},
+    {label:'⊕ Analyse betweenness cluster', cls:'warn'},
+    {label:'≡ Report to ED / CBI', cls:'info'}
+  ],
+  paused: [
+    {label:'⊕ Request in-branch KYC', cls:'warn'},
+    {label:'◎ Monitor 72hr transaction pattern', cls:'info'},
+    {label:'≡ Compare against CFR database', cls:'info'}
+  ]
+};
+
+function openInvestigation(d) {
+  document.getElementById('inv-empty').style.display = 'none';
+  document.getElementById('inv-detail').style.display = 'block';
+
+  document.getElementById('inv-case-id').textContent =
+    `CASE-2026-${String(Math.floor(Math.random()*90000)+10000)}`;
+
+  const scoreEl = document.getElementById('inv-score-num');
+  const fillEl = document.getElementById('inv-score-fill');
+  scoreEl.textContent = d.risk + ' / 100';
+  scoreEl.style.color = d.risk > 70 ? '#ff3b3b' : d.risk > 40 ? '#ffb800' : '#4a9eca';
+  fillEl.style.width = d.risk + '%';
+  fillEl.style.background = d.risk > 70 ? '#ff3b3b' : d.risk > 40 ? '#ffb800' : '#4a9eca';
+
+  // Breakdown bars
+  const breakdown = INV_BREAKDOWNS[d.status] || {};
+  const bdEl = document.getElementById('inv-breakdown');
+  bdEl.innerHTML = Object.entries(breakdown).map(([k, v]) => `
+    <div class="breakdown-item">
+      <span class="bd-label">${k.replace(/_/g,' ')}</span>
+      <div class="bd-bar"><div class="bd-fill" style="width:${(v/30)*100}%;background:${v>25?'#ff3b3b':v>15?'#ffb800':'#4a9eca'}"></div></div>
+      <span class="bd-val">+${v}</span>
+    </div>
+  `).join('');
+
+  // Pattern tags
+  const tagEl = document.getElementById('inv-pattern-tags');
+  const tagColors = {
+    MULE_NETWORK:'#9b59b6', CIRCULAR_FLOW:'#ff7a00', HIGH_VELOCITY:'#ffb800',
+    CFR_MATCH:'#ff3b3b', RAPID_PASS_THROUGH:'#ff9933', DORMANT_ACTIVATION:'#e74c3c',
+    NIGHT_TRANSACTION:'#3498db', HIGH_CENTRALITY:'#9b59b6', NEW_ACCOUNT:'#e67e22'
+  };
+  tagEl.innerHTML = d.patterns.map(p =>
+    `<span class="tip-pattern" style="background:${tagColors[p]||'#333'}22;color:${tagColors[p]||'#aaa'};margin:2px 2px 0 0;display:inline-block">${p}</span>`
+  ).join('') || '<span style="font-size:10px;color:var(--text3)">No patterns detected</span>';
+
+  document.getElementById('inv-narrative').textContent =
+    (INV_NARRATIVES[d.status] || (() => `Account ${d.id} — risk score ${d.risk}/100. No major patterns detected.`))(d);
+
+  const actEl = document.getElementById('inv-actions');
+  const actions = INV_ACTIONS[d.status] || [{label:'≡ Monitor account', cls:'info'}];
+  actEl.innerHTML = actions.map(a =>
+    `<button class="inv-btn ${a.cls}" onclick="this.style.opacity='0.5';this.textContent='Done ✓'">${a.label}</button>`
+  ).join('');
+}
+
+// ──────────────────────────────────────────────
+//  ALERT FEED
+// ──────────────────────────────────────────────
+const ALERT_VERDICTS = {
+  frozen: {cls:'v-block', label:'BLOCK'},
+  suspicious: {cls:'v-invest', label:'INVESTIGATE'},
+  mule: {cls:'v-block', label:'BLOCK'},
+  paused: {cls:'v-monitor', label:'MONITOR'},
+  normal: {cls:'v-legit', label:'LEGITIMATE'}
+};
+
+const ALERT_DESCS = {
+  frozen: 'Circular flow + rapid pass-through detected. Circuit breaker open.',
+  suspicious: 'High velocity + new account. Behavioral deviation from baseline.',
+  mule: 'High betweenness centrality. Suspected mule intermediary node.',
+  paused: 'Night transaction + unknown device. Awaiting verification.',
+  normal: 'No suspicious patterns detected across 42 checked features.',
+};
+
+function buildAlertFeed() {
+  const flagged = data.nodes.filter(n => n.status !== 'normal')
+    .sort((a,b) => b.risk - a.risk);
+  const normal = data.nodes.filter(n => n.status === 'normal').slice(0,3);
+  const items = [...flagged, ...normal];
+
+  const container = document.getElementById('panel-alerts');
+  container.innerHTML = items.map((d, i) => {
+    const v = ALERT_VERDICTS[d.status];
+    const t = new Date(Date.now() - i * 47000);
+    const timeStr = t.getHours().toString().padStart(2,'0') + ':' +
+                    t.getMinutes().toString().padStart(2,'0') + ':' +
+                    t.getSeconds().toString().padStart(2,'0');
+    return `
+      <div class="alert-item" onclick="handleAlertClick('${d.id}')" id="al-${d.id}">
+        <div class="alert-top">
+          <div class="alert-verdict ${v.cls}">${v.label}</div>
+          <div class="alert-txnid">${d.id}</div>
+          <div class="alert-score" style="color:${d.risk>70?'#ff3b3b':d.risk>40?'#ffb800':'#4a9eca'}">${d.risk}</div>
+        </div>
+        <div class="alert-desc">${ALERT_DESCS[d.status]}</div>
+        <div class="alert-meta">
+          <span class="alert-amount">₹${(d.amount24h/100000).toFixed(1)}L</span>
+          <span class="alert-time">${timeStr}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  document.getElementById('stat-alerts').textContent =
+    flagged.filter(n => n.status === 'frozen' || n.status === 'suspicious').length;
+  document.getElementById('stat-frozen').textContent =
+    data.nodes.filter(n => n.status === 'frozen').length;
+}
+
+function handleAlertClick(id) {
+  document.querySelectorAll('.alert-item').forEach(el => el.classList.remove('selected'));
+  const el = document.getElementById('al-' + id);
+  if (el) el.classList.add('selected');
+  const d = data.nodes.find(n => n.id === id);
+  if (d) {
+    selectedNode = d;
+    openInvestigation(d);
+    switchTab('invest');
+  }
+}
+
+// ──────────────────────────────────────────────
+//  FILTERS & CONTROLS
+// ──────────────────────────────────────────────
+function toggleFilter(status) {
+  activeFilters[status] = !activeFilters[status];
+  const ck = document.getElementById('ck-' + status);
+  if (activeFilters[status]) { ck.classList.add('active'); ck.textContent = '✓'; }
+  else { ck.classList.remove('active'); ck.textContent = ''; }
+  applyFilters();
+}
+
+function applyFilters() {
+  minRisk = parseInt(document.getElementById('risk-filter').value, 10);
+  renderGraph();
+}
+
+function setView(mode) {
+  viewMode = mode;
+  ['all','flagged','focus'].forEach(m => {
+    const ck = document.getElementById('ck-vm-' + m);
+    ck.classList.toggle('active', m === mode);
+    ck.textContent = m === mode ? '●' : '';
+  });
+  renderGraph();
+}
+
+function resetView() {
+  activeFilters = {frozen:true,suspicious:true,mule:true,paused:true,normal:true};
+  ['frozen','suspicious','mule','paused','normal'].forEach(s => {
+    document.getElementById('ck-' + s).classList.add('active');
+    document.getElementById('ck-' + s).textContent = '✓';
+  });
+  document.getElementById('risk-filter').value = 0;
+  document.getElementById('risk-val').textContent = '0';
+  minRisk = 0;
+  setView('all');
+}
+
+function updateCounts() {
+  const counts = {frozen:0,suspicious:0,mule:0,paused:0,normal:0};
+  data.nodes.forEach(n => counts[n.status]++);
+  Object.entries(counts).forEach(([s, c]) => {
+    document.getElementById('c-' + s).textContent = c;
+  });
+}
+
+// ──────────────────────────────────────────────
+//  TABS
+// ──────────────────────────────────────────────
+function switchTab(tab) {
+  document.getElementById('panel-alerts').style.display = tab === 'alerts' ? 'block' : 'none';
+  document.getElementById('panel-invest').style.display = tab === 'invest' ? 'block' : 'none';
+  document.getElementById('tab-alerts').classList.toggle('active', tab === 'alerts');
+  document.getElementById('tab-invest').classList.toggle('active', tab === 'invest');
+}
+
+// ──────────────────────────────────────────────
+//  CLOCK & LIVE SIMULATION
+// ──────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toTimeString().slice(0,8);
+}
+
+let txnCount = 11897;
+let infer = 8897;
+setInterval(() => {
+  const inc = Math.floor(Math.random() * 4);
+  txnCount += inc;
+  infer += inc;
+  document.getElementById('stat-txn').textContent = txnCount.toLocaleString();
+  document.getElementById('stat-infer').textContent = infer.toLocaleString();
+  document.getElementById('stat-eps').textContent = (2.8 + Math.random()*1.5).toFixed(1);
+}, 2000);
+
+setInterval(updateClock, 1000);
+updateClock();
+
+// Click background to deselect
+document.getElementById('graph-svg').addEventListener('click', () => {
+  selectedNode = null;
+  nodeSel?.attr('fill-opacity', n =>
+    n.status === 'normal' ? 0.7 : n.status === 'suspicious' ? 0.9 : 1
+  ).attr('r', n => nodeRadius(n));
+});
+
+// ──────────────────────────────────────────────
+//  INIT
+// ──────────────────────────────────────────────
+window.addEventListener('load', () => {
+  initGraph();
+  buildAlertFeed();
+});
+
+window.addEventListener('resize', () => {
+  const svgEl = document.getElementById('graph-svg');
+  if (simulation) {
+    simulation
+      .force('center', d3.forceCenter(svgEl.clientWidth/2, svgEl.clientHeight/2))
+      .alpha(0.3).restart();
+  }
+});
+</script>
+</body>
+</html>

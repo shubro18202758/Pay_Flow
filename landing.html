@@ -1,0 +1,1627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PayFlow Intelligence Center — AI-Powered Fraud Detection</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        /* ═══════════════════════════════════════════════════════════════
+           DESIGN TOKENS
+           ═══════════════════════════════════════════════════════════════ */
+        :root {
+            --bg-deep: #05080f;
+            --bg-primary: #080d19;
+            --bg-surface: #0c1222;
+            --bg-card: #111827;
+            --bg-card-hover: #172038;
+            --bg-glass: rgba(12, 18, 34, 0.65);
+            --border: rgba(56, 78, 134, 0.22);
+            --border-glow: rgba(59, 130, 246, 0.25);
+
+            --text-primary: #f0f4fc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --text-dim: #475569;
+
+            --accent-blue: #3b82f6;
+            --accent-cyan: #06b6d4;
+            --accent-indigo: #6366f1;
+            --accent-violet: #8b5cf6;
+            --accent-emerald: #10b981;
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+            --accent-sky: #0ea5e9;
+
+            --gradient-hero: linear-gradient(135deg, #3b82f6 0%, #06b6d4 50%, #8b5cf6 100%);
+            --gradient-glow: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(6, 182, 212, 0.08) 50%, rgba(139, 92, 246, 0.12) 100%);
+            --gradient-card: linear-gradient(135deg, rgba(17, 24, 39, 0.8) 0%, rgba(12, 18, 34, 0.9) 100%);
+
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+            --radius-xl: 24px;
+
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+            --shadow-md: 0 4px 20px rgba(0,0,0,0.4);
+            --shadow-lg: 0 8px 40px rgba(0,0,0,0.5);
+            --shadow-glow: 0 0 60px rgba(59, 130, 246, 0.08);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           RESET & BASE
+           ═══════════════════════════════════════════════════════════════ */
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+        body {
+            background: var(--bg-deep);
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            font-size: 16px;
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+
+        a { color: var(--accent-blue); text-decoration: none; transition: color 0.2s; }
+        a:hover { color: var(--accent-cyan); }
+
+        ::selection { background: rgba(59, 130, 246, 0.3); color: #fff; }
+
+        /* ═══════════════════════════════════════════════════════════════
+           SCROLLBAR
+           ═══════════════════════════════════════════════════════════════ */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-deep); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--accent-blue); }
+
+        /* ═══════════════════════════════════════════════════════════════
+           UTILITY CLASSES
+           ═══════════════════════════════════════════════════════════════ */
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+        .container-lg { max-width: 1400px; margin: 0 auto; padding: 0 24px; }
+
+        .gradient-text {
+            background: var(--gradient-hero);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .mono { font-family: var(--font-mono); }
+
+        /* ═══════════════════════════════════════════════════════════════
+           ANIMATED BACKGROUND — NETWORK MESH
+           ═══════════════════════════════════════════════════════════════ */
+        #network-canvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 0;
+            pointer-events: none;
+            opacity: 0.4;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           NAVIGATION
+           ═══════════════════════════════════════════════════════════════ */
+        .nav {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 100;
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            background: rgba(5, 8, 15, 0.75);
+            border-bottom: 1px solid var(--border);
+            transition: all 0.3s ease;
+        }
+
+        .nav.scrolled {
+            background: rgba(5, 8, 15, 0.92);
+            box-shadow: 0 4px 30px rgba(0,0,0,0.3);
+        }
+
+        .nav-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 64px;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 700;
+            font-size: 1.15rem;
+            letter-spacing: -0.02em;
+            color: var(--text-primary);
+        }
+
+        .nav-brand svg { flex-shrink: 0; }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            padding: 6px 14px;
+            border-radius: var(--radius-sm);
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+            letter-spacing: -0.01em;
+        }
+
+        .nav-links a:hover { color: var(--text-primary); background: rgba(59, 130, 246, 0.08); }
+
+        .nav-cta {
+            padding: 8px 20px !important;
+            background: var(--accent-blue) !important;
+            color: #fff !important;
+            border-radius: var(--radius-sm) !important;
+            font-weight: 600 !important;
+            font-size: 0.85rem !important;
+            transition: all 0.2s !important;
+        }
+
+        .nav-cta:hover { background: #2563eb !important; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(59, 130, 246, 0.3) !important; }
+
+        /* ═══════════════════════════════════════════════════════════════
+           HERO SECTION
+           ═══════════════════════════════════════════════════════════════ */
+        .hero {
+            position: relative;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 120px 24px 80px;
+            z-index: 1;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 50%;
+            transform: translateX(-50%);
+            width: 900px;
+            height: 900px;
+            background: radial-gradient(ellipse at center, rgba(59, 130, 246, 0.06) 0%, rgba(6, 182, 212, 0.03) 40%, transparent 70%);
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 16px;
+            background: rgba(59, 130, 246, 0.08);
+            border: 1px solid rgba(59, 130, 246, 0.18);
+            border-radius: 100px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--accent-blue);
+            letter-spacing: 0.03em;
+            margin-bottom: 32px;
+            animation: fadeInUp 0.6s ease forwards;
+            opacity: 0;
+        }
+
+        .hero-badge .pulse-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--accent-emerald);
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        .hero h1 {
+            font-size: clamp(2.8rem, 6vw, 4.8rem);
+            font-weight: 800;
+            line-height: 1.08;
+            letter-spacing: -0.035em;
+            max-width: 900px;
+            margin: 0 auto 24px;
+            animation: fadeInUp 0.6s ease 0.1s forwards;
+            opacity: 0;
+        }
+
+        .hero p {
+            font-size: clamp(1.05rem, 1.8vw, 1.25rem);
+            color: var(--text-secondary);
+            max-width: 640px;
+            margin: 0 auto 48px;
+            line-height: 1.75;
+            letter-spacing: -0.01em;
+            animation: fadeInUp 0.6s ease 0.2s forwards;
+            opacity: 0;
+        }
+
+        .hero-actions {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            animation: fadeInUp 0.6s ease 0.3s forwards;
+            opacity: 0;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            border-radius: var(--radius-sm);
+            font-size: 0.95rem;
+            font-weight: 600;
+            font-family: var(--font-sans);
+            cursor: pointer;
+            border: none;
+            transition: all 0.25s ease;
+            letter-spacing: -0.01em;
+        }
+
+        .btn-primary {
+            background: var(--accent-blue);
+            color: #fff;
+            box-shadow: 0 0 30px rgba(59, 130, 246, 0.2);
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 40px rgba(59, 130, 246, 0.35);
+            color: #fff;
+        }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-ghost:hover {
+            color: var(--text-primary);
+            border-color: var(--text-muted);
+            background: rgba(255,255,255,0.03);
+            transform: translateY(-2px);
+        }
+
+        /* Animated stats row under hero */
+        .hero-stats {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 48px;
+            margin-top: 72px;
+            animation: fadeInUp 0.6s ease 0.45s forwards;
+            opacity: 0;
+        }
+
+        .hero-stat {
+            text-align: center;
+        }
+
+        .hero-stat-value {
+            font-size: 2.2rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .hero-stat-label {
+            margin-top: 6px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .hero-stat-divider {
+            width: 1px;
+            height: 40px;
+            background: var(--border);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           SECTION COMMON
+           ═══════════════════════════════════════════════════════════════ */
+        section {
+            position: relative;
+            z-index: 1;
+            padding: 100px 0;
+        }
+
+        .section-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--accent-blue);
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            margin-bottom: 16px;
+        }
+
+        .section-label::before {
+            content: '';
+            width: 20px; height: 1.5px;
+            background: var(--accent-blue);
+        }
+
+        .section-title {
+            font-size: clamp(2rem, 3.5vw, 3rem);
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1.15;
+            margin-bottom: 16px;
+        }
+
+        .section-subtitle {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            max-width: 600px;
+            line-height: 1.7;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           PROBLEM / WHY SECTION
+           ═══════════════════════════════════════════════════════════════ */
+        .why-section {
+            background: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-primary) 100%);
+        }
+
+        .why-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-top: 56px;
+        }
+
+        .why-card {
+            position: relative;
+            padding: 36px 28px;
+            background: var(--gradient-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            transition: all 0.35s ease;
+            overflow: hidden;
+        }
+
+        .why-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 2px;
+            background: var(--gradient-hero);
+            opacity: 0;
+            transition: opacity 0.35s ease;
+        }
+
+        .why-card:hover {
+            border-color: var(--border-glow);
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .why-card:hover::before { opacity: 1; }
+
+        .why-card-icon {
+            width: 44px; height: 44px;
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+            font-size: 1.3rem;
+        }
+
+        .why-card h3 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            letter-spacing: -0.02em;
+        }
+
+        .why-card p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.65;
+        }
+
+        .why-card .stat {
+            display: inline-block;
+            margin-top: 16px;
+            padding: 4px 12px;
+            background: rgba(244, 63, 94, 0.08);
+            border: 1px solid rgba(244, 63, 94, 0.18);
+            border-radius: 100px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--accent-rose);
+            font-family: var(--font-mono);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           ARCHITECTURE SECTION
+           ═══════════════════════════════════════════════════════════════ */
+        .arch-section {
+            background: var(--bg-primary);
+        }
+
+        .arch-pipeline {
+            margin-top: 56px;
+            position: relative;
+        }
+
+        .arch-layers {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+
+        .arch-layer {
+            display: flex;
+            align-items: stretch;
+            gap: 0;
+            position: relative;
+        }
+
+        .arch-layer-number {
+            flex-shrink: 0;
+            width: 56px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 28px;
+        }
+
+        .arch-dot {
+            width: 12px; height: 12px;
+            border-radius: 50%;
+            border: 2px solid var(--accent-blue);
+            background: var(--bg-deep);
+            z-index: 2;
+        }
+
+        .arch-line {
+            flex: 1;
+            width: 2px;
+            background: linear-gradient(180deg, var(--accent-blue) 0%, rgba(59, 130, 246, 0.15) 100%);
+            margin-top: 4px;
+        }
+
+        .arch-layer:last-child .arch-line { display: none; }
+
+        .arch-layer-content {
+            flex: 1;
+            padding: 16px 0 32px 24px;
+        }
+
+        .arch-layer-tag {
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 6px;
+            font-family: var(--font-mono);
+        }
+
+        .arch-layer-title {
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            margin-bottom: 6px;
+        }
+
+        .arch-layer-desc {
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+            max-width: 700px;
+            line-height: 1.65;
+        }
+
+        .arch-layer-tech {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .tech-pill {
+            padding: 3px 10px;
+            background: rgba(99, 102, 241, 0.08);
+            border: 1px solid rgba(99, 102, 241, 0.18);
+            border-radius: 100px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--accent-indigo);
+            font-family: var(--font-mono);
+            letter-spacing: 0.02em;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           FEATURES SECTION
+           ═══════════════════════════════════════════════════════════════ */
+        .features-section {
+            background: linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-deep) 100%);
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-top: 56px;
+        }
+
+        .feature-card {
+            position: relative;
+            padding: 32px 26px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            transition: all 0.35s ease;
+            overflow: hidden;
+        }
+
+        .feature-card:hover {
+            border-color: var(--border-glow);
+            transform: translateY(-3px);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 20px;
+            display: block;
+        }
+
+        .feature-card h3 {
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            letter-spacing: -0.02em;
+        }
+
+        .feature-card p {
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+            line-height: 1.65;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           CASE STUDIES SECTION
+           ═══════════════════════════════════════════════════════════════ */
+        .cases-section {
+            background: var(--bg-deep);
+        }
+
+        .cases-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-top: 56px;
+        }
+
+        .case-card {
+            padding: 32px 28px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            transition: all 0.35s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .case-card:hover {
+            border-color: var(--border-glow);
+            transform: translateY(-3px);
+        }
+
+        .case-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 14px;
+        }
+
+        .case-card h3 {
+            font-size: 1.05rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .case-loss {
+            padding: 3px 10px;
+            background: rgba(244, 63, 94, 0.08);
+            border: 1px solid rgba(244, 63, 94, 0.18);
+            border-radius: 100px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--accent-rose);
+            font-family: var(--font-mono);
+            white-space: nowrap;
+        }
+
+        .case-card p {
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+            line-height: 1.65;
+            margin-bottom: 14px;
+        }
+
+        .case-lesson {
+            padding: 12px 16px;
+            background: rgba(59, 130, 246, 0.05);
+            border-left: 2px solid var(--accent-blue);
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+            font-size: 0.82rem;
+            color: var(--accent-blue);
+            font-weight: 500;
+            line-height: 1.6;
+        }
+
+        .case-lesson strong {
+            color: var(--accent-cyan);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           TECH STACK SECTION
+           ═══════════════════════════════════════════════════════════════ */
+        .tech-section {
+            background: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-primary) 100%);
+        }
+
+        .tech-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-top: 56px;
+        }
+
+        .tech-item {
+            text-align: center;
+            padding: 28px 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            transition: all 0.3s ease;
+        }
+
+        .tech-item:hover {
+            border-color: var(--border-glow);
+            transform: translateY(-2px);
+        }
+
+        .tech-item-icon {
+            font-size: 2rem;
+            margin-bottom: 12px;
+            display: block;
+        }
+
+        .tech-item-name {
+            font-size: 0.9rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            margin-bottom: 4px;
+        }
+
+        .tech-item-role {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           LIVE DEMO BANNER
+           ═══════════════════════════════════════════════════════════════ */
+        .demo-banner {
+            position: relative;
+            overflow: hidden;
+            padding: 80px 0;
+            text-align: center;
+            background: var(--bg-primary);
+        }
+
+        .demo-banner::before {
+            content: '';
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 700px;
+            height: 700px;
+            background: radial-gradient(ellipse at center, rgba(99, 102, 241, 0.08) 0%, transparent 60%);
+            pointer-events: none;
+        }
+
+        .demo-banner h2 {
+            font-size: clamp(1.8rem, 3vw, 2.4rem);
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin-bottom: 16px;
+        }
+
+        .demo-banner p {
+            color: var(--text-secondary);
+            max-width: 500px;
+            margin: 0 auto 36px;
+            font-size: 1.05rem;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           FOOTER
+           ═══════════════════════════════════════════════════════════════ */
+        .footer {
+            padding: 40px 0;
+            border-top: 1px solid var(--border);
+            background: var(--bg-deep);
+            z-index: 1;
+            position: relative;
+        }
+
+        .footer-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .footer-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 24px;
+            list-style: none;
+        }
+
+        .footer-links a {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .footer-links a:hover { color: var(--text-primary); }
+
+        .footer-copy {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           ANIMATIONS
+           ═══════════════════════════════════════════════════════════════ */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(24px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.8); }
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+
+        @keyframes typing {
+            from { width: 0; }
+            to { width: 100%; }
+        }
+
+        /* Scroll reveal */
+        .reveal {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.7s ease, transform 0.7s ease;
+        }
+
+        .reveal.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .reveal-delay-1 { transition-delay: 0.1s; }
+        .reveal-delay-2 { transition-delay: 0.2s; }
+        .reveal-delay-3 { transition-delay: 0.3s; }
+        .reveal-delay-4 { transition-delay: 0.4s; }
+
+        /* ═══════════════════════════════════════════════════════════════
+           CODE WINDOW
+           ═══════════════════════════════════════════════════════════════ */
+        .code-window {
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            margin-top: 48px;
+            box-shadow: var(--shadow-lg);
+            animation: fadeInUp 0.6s ease 0.5s forwards;
+            opacity: 0;
+        }
+
+        .code-titlebar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            background: rgba(17, 24, 39, 0.7);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .code-dot { width: 10px; height: 10px; border-radius: 50%; }
+        .code-dot-red { background: #ff5f57; }
+        .code-dot-yellow { background: #ffbd2e; }
+        .code-dot-green { background: #28c840; }
+
+        .code-titlebar span {
+            margin-left: 8px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+        }
+
+        .code-body {
+            padding: 20px 24px;
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+            line-height: 1.85;
+            color: var(--text-secondary);
+            overflow-x: auto;
+        }
+
+        .code-body .keyword { color: var(--accent-violet); }
+        .code-body .func { color: var(--accent-blue); }
+        .code-body .string { color: var(--accent-emerald); }
+        .code-body .comment { color: var(--text-dim); font-style: italic; }
+        .code-body .number { color: var(--accent-amber); }
+        .code-body .type { color: var(--accent-cyan); }
+        .code-body .operator { color: var(--accent-rose); }
+
+        .typing-cursor {
+            display: inline-block;
+            width: 2px;
+            height: 1em;
+            background: var(--accent-blue);
+            animation: blink 1s step-end infinite;
+            vertical-align: text-bottom;
+            margin-left: 2px;
+        }
+
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+
+        /* ═══════════════════════════════════════════════════════════════
+           RESPONSIVE
+           ═══════════════════════════════════════════════════════════════ */
+        @media (max-width: 1024px) {
+            .features-grid, .why-grid { grid-template-columns: repeat(2, 1fr); }
+            .tech-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.2rem; }
+            .hero-stats { flex-direction: column; gap: 24px; }
+            .hero-stat-divider { width: 40px; height: 1px; }
+            .features-grid, .why-grid, .cases-grid { grid-template-columns: 1fr; }
+            .tech-grid { grid-template-columns: repeat(2, 1fr); }
+            .nav-links { display: none; }
+            .footer-inner { flex-direction: column; gap: 16px; text-align: center; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ═══ NETWORK MESH BACKGROUND CANVAS ═══ -->
+<canvas id="network-canvas"></canvas>
+
+<!-- ═══ NAVIGATION ═══ -->
+<nav class="nav" id="nav">
+    <div class="nav-inner">
+        <div class="nav-brand">
+            <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+                <rect width="32" height="32" rx="8" fill="url(#brandGrad)"/>
+                <path d="M8 12h6v2H10v2h4v2H10v4H8V12zm9 0h4a3 3 0 010 6h-2v4h-2V12zm2 4h2a1 1 0 100-2h-2v2z" fill="#fff"/>
+                <defs><linearGradient id="brandGrad" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#3b82f6"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs>
+            </svg>
+            PayFlow
+        </div>
+        <ul class="nav-links">
+            <li><a href="#problem">Problem</a></li>
+            <li><a href="#architecture">Architecture</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#cases">Case Studies</a></li>
+            <li><a href="#tech">Tech Stack</a></li>
+            <li><a href="/dashboard" class="nav-cta">Open Dashboard →</a></li>
+        </ul>
+    </div>
+</nav>
+
+<!-- ═══ HERO ═══ -->
+<section class="hero" id="hero">
+    <div class="container">
+        <div class="hero-badge">
+            <span class="pulse-dot"></span>
+            iDEA 2.0 Hackathon — Union Bank of India · PS-3
+        </div>
+        <h1>
+            Track Every Rupee.<br>
+            <span class="gradient-text">Catch Every Fraud.</span>
+        </h1>
+        <p>
+            PayFlow Intelligence Center maps real-time fund flows across accounts,
+            branches, and channels — using graph AI, ensemble ML, and an autonomous
+            LLM investigator to surface suspicious patterns before funds disappear.
+        </p>
+        <div class="hero-actions">
+            <a href="/dashboard" class="btn btn-primary">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                Launch Command Center
+            </a>
+            <a href="#architecture" class="btn btn-ghost">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                View Architecture
+            </a>
+        </div>
+        <div class="hero-stats">
+            <div class="hero-stat">
+                <div class="hero-stat-value gradient-text" data-count="42" data-suffix="+">0</div>
+                <div class="hero-stat-label">Features Extracted</div>
+            </div>
+            <div class="hero-stat-divider"></div>
+            <div class="hero-stat">
+                <div class="hero-stat-value gradient-text" data-count="7" data-suffix="">0</div>
+                <div class="hero-stat-label">Intelligence Layers</div>
+            </div>
+            <div class="hero-stat-divider"></div>
+            <div class="hero-stat">
+                <div class="hero-stat-value gradient-text" data-count="3" data-suffix="">0</div>
+                <div class="hero-stat-label">ML Ensemble Models</div>
+            </div>
+            <div class="hero-stat-divider"></div>
+            <div class="hero-stat">
+                <div class="hero-stat-value" style="color: var(--accent-emerald);">&lt;100<span style="font-size: 1rem; font-weight: 600;">ms</span></div>
+                <div class="hero-stat-label">Decision Latency</div>
+            </div>
+        </div>
+
+        <!-- CODE WINDOW -->
+        <div class="code-window">
+            <div class="code-titlebar">
+                <div class="code-dot code-dot-red"></div>
+                <div class="code-dot code-dot-yellow"></div>
+                <div class="code-dot code-dot-green"></div>
+                <span>payflow_pipeline.py</span>
+            </div>
+            <div class="code-body" id="codeBody">
+                <!-- Filled by JS typing animation -->
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ PROBLEM SECTION ═══ -->
+<section class="why-section" id="problem">
+    <div class="container">
+        <div class="reveal">
+            <div class="section-label">The Problem</div>
+            <h2 class="section-title">₹2,000 Cr+ laundered through mule networks<br>in a single Indian cybercrime ring.</h2>
+            <p class="section-subtitle">
+                Traditional rule-based AML systems evaluate transactions in isolation — blind to the
+                multi-hop topology of modern money laundering.
+            </p>
+        </div>
+
+        <div class="why-grid">
+            <div class="why-card reveal reveal-delay-1">
+                <div class="why-card-icon" style="background: rgba(244, 63, 94, 0.1); color: var(--accent-rose);">⚡</div>
+                <h3>Rapid Layering</h3>
+                <p>Funds cascading through A→B→C→D in seconds. Each hop looks normal individually — the pattern is invisible without graph analysis.</p>
+                <span class="stat">Danske Bank: €200B laundered</span>
+            </div>
+            <div class="why-card reveal reveal-delay-2">
+                <div class="why-card-icon" style="background: rgba(245, 158, 11, 0.1); color: var(--accent-amber);">🔄</div>
+                <h3>Circular Round-Tripping</h3>
+                <p>A→B→C→A patterns create fictitious business justification. Existing systems with static thresholds cannot detect closed cycles.</p>
+                <span class="stat">Shell companies in 23% cases</span>
+            </div>
+            <div class="why-card reveal reveal-delay-3">
+                <div class="why-card-icon" style="background: rgba(139, 92, 246, 0.1); color: var(--accent-violet);">📊</div>
+                <h3>Structuring Below Thresholds</h3>
+                <p>Splitting ₹10L into 50 transfers of ₹20K each. Individually legal, collectively criminal — invisible to threshold-based rules.</p>
+                <span class="stat">180 mule accounts in one MP case</span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ ARCHITECTURE SECTION ═══ -->
+<section class="arch-section" id="architecture">
+    <div class="container">
+        <div class="reveal">
+            <div class="section-label">Architecture</div>
+            <h2 class="section-title">Seven-Layer Intelligence Pipeline</h2>
+            <p class="section-subtitle">
+                Every transaction passes through all seven layers in under 100ms — from interception to verdict.
+            </p>
+        </div>
+
+        <div class="arch-pipeline reveal">
+            <div class="arch-layers">
+                <!-- Layer 1 -->
+                <div class="arch-layer">
+                    <div class="arch-layer-number"><div class="arch-dot"></div><div class="arch-line"></div></div>
+                    <div class="arch-layer-content">
+                        <div class="arch-layer-tag">Layer 1</div>
+                        <div class="arch-layer-title">Real-Time Transaction Interception</div>
+                        <div class="arch-layer-desc">WebSocket gateway intercepts every UPI/NEFT/RTGS/IMPS transaction before approval. Zero-latency streaming ingestion with CRC32 checksums and structural validation.</div>
+                        <div class="arch-layer-tech">
+                            <span class="tech-pill">FastAPI</span>
+                            <span class="tech-pill">WebSocket</span>
+                            <span class="tech-pill">msgspec</span>
+                            <span class="tech-pill">AsyncIO</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Layer 2 -->
+                <div class="arch-layer">
+                    <div class="arch-layer-number"><div class="arch-dot"></div><div class="arch-line"></div></div>
+                    <div class="arch-layer-content">
+                        <div class="arch-layer-tag">Layer 2</div>
+                        <div class="arch-layer-title">42-Dimensional Feature Engineering</div>
+                        <div class="arch-layer-desc">Velocity tracking (5-min / 1-hr / 24-hr windows), behavioral Z-score deviation, text anomaly detection with homoglyph and entropy analysis. Produces (N, 30) vectorized float32 arrays.</div>
+                        <div class="arch-layer-tech">
+                            <span class="tech-pill">VelocityTracker</span>
+                            <span class="tech-pill">BehavioralAnalyzer</span>
+                            <span class="tech-pill">TextAnomalyAnalyzer</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Layer 3 -->
+                <div class="arch-layer">
+                    <div class="arch-layer-number"><div class="arch-dot"></div><div class="arch-line"></div></div>
+                    <div class="arch-layer-content">
+                        <div class="arch-layer-tag">Layer 3</div>
+                        <div class="arch-layer-title">ML Fraud Detection Ensemble</div>
+                        <div class="arch-layer-desc">XGBoost (known patterns, AUC > 0.95) + Isolation Forest (novel anomalies) + PyTorch Autoencoder (latent reconstruction error). GPU-accelerated with automatic CPU fallback. SMOTE-balanced training.</div>
+                        <div class="arch-layer-tech">
+                            <span class="tech-pill">XGBoost</span>
+                            <span class="tech-pill">IsolationForest</span>
+                            <span class="tech-pill">Autoencoder</span>
+                            <span class="tech-pill">SMOTE</span>
+                            <span class="tech-pill">CUDA</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Layer 4 -->
+                <div class="arch-layer">
+                    <div class="arch-layer-number"><div class="arch-dot"></div><div class="arch-line"></div></div>
+                    <div class="arch-layer-content">
+                        <div class="arch-layer-tag">Layer 4</div>
+                        <div class="arch-layer-title">Graph Intelligence Engine</div>
+                        <div class="arch-layer-desc">Dynamic directed multigraph construction with money mule star-topology detection, DFS-based cycle detection, and k-hop subgraph extraction for GNN scoring. 278K-parameter FraudGAT with 3-layer Graph Attention Networks.</div>
+                        <div class="arch-layer-tech">
+                            <span class="tech-pill">NetworkX</span>
+                            <span class="tech-pill">PyG</span>
+                            <span class="tech-pill">FraudGAT</span>
+                            <span class="tech-pill">GATConv</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Layer 5 -->
+                <div class="arch-layer">
+                    <div class="arch-layer-number"><div class="arch-dot"></div><div class="arch-line"></div></div>
+                    <div class="arch-layer-content">
+                        <div class="arch-layer-tag">Layer 5</div>
+                        <div class="arch-layer-title">Risk Scoring & Alert Triage</div>
+                        <div class="arch-layer-desc">EMA-based adaptive threshold with 3-tier classification (HIGH → Graph + LLM, MEDIUM → Graph, LOW → drop). Bounded async dispatch with 10K queue backpressure and max-2-retry policy.</div>
+                        <div class="arch-layer-tech">
+                            <span class="tech-pill">DynamicThreshold</span>
+                            <span class="tech-pill">AlertRouter</span>
+                            <span class="tech-pill">10K Queue</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Layer 6 -->
+                <div class="arch-layer">
+                    <div class="arch-layer-number"><div class="arch-dot"></div><div class="arch-line"></div></div>
+                    <div class="arch-layer-content">
+                        <div class="arch-layer-tag">Layer 6</div>
+                        <div class="arch-layer-title">LLM Investigation Agent</div>
+                        <div class="arch-layer-desc">Qwen 3 via Ollama with Chain-of-Thought reasoning. Stateful investigator agent with tool-calling for graph queries, ML feature analysis, and blockchain log reads. Human-in-the-Loop escalation below confidence threshold.</div>
+                        <div class="arch-layer-tech">
+                            <span class="tech-pill">Qwen 3</span>
+                            <span class="tech-pill">Ollama</span>
+                            <span class="tech-pill">CoT Reasoning</span>
+                            <span class="tech-pill">HITL</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Layer 7 -->
+                <div class="arch-layer">
+                    <div class="arch-layer-number"><div class="arch-dot"></div><div class="arch-line"></div></div>
+                    <div class="arch-layer-content">
+                        <div class="arch-layer-tag">Layer 7</div>
+                        <div class="arch-layer-title">Tamper-Evident Audit Ledger & Regulatory Reporting</div>
+                        <div class="arch-layer-desc">SHA-256 hash-chain with Ed25519 signatures, Merkle tree checkpoints, and ZKP-verified compliance proofs. Circuit breaker smart contracts for autonomous account freezing. Auto-generated STR / FMR / CTR PDFs for FIU-IND.</div>
+                        <div class="arch-layer-tech">
+                            <span class="tech-pill">SHA-256</span>
+                            <span class="tech-pill">Ed25519</span>
+                            <span class="tech-pill">ZKP</span>
+                            <span class="tech-pill">MerkleTree</span>
+                            <span class="tech-pill">ReportLab</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ FEATURES SECTION ═══ -->
+<section class="features-section" id="features">
+    <div class="container">
+        <div class="reveal">
+            <div class="section-label">Capabilities</div>
+            <h2 class="section-title">End-to-End Intelligence<br><span class="gradient-text">at Every Layer</span></h2>
+            <p class="section-subtitle">
+                From transaction interception to regulatory filing — every capability is production-ready and fully autonomous.
+            </p>
+        </div>
+
+        <div class="features-grid">
+            <div class="feature-card reveal reveal-delay-1">
+                <span class="feature-icon">🕸️</span>
+                <h3>Graph-Based Mule Detection</h3>
+                <p>Star-topology analysis identifies money mule convergence patterns — the high-fan-in accounts that funnel proceeds from dozens of victims into single extraction points.</p>
+            </div>
+            <div class="feature-card reveal reveal-delay-2">
+                <span class="feature-icon">🔁</span>
+                <h3>Cycle Detection Engine</h3>
+                <p>DFS-based circular flow detection with configurable max depth. Catches round-tripping laundering patterns (A→B→C→A) that rule-based systems completely miss.</p>
+            </div>
+            <div class="feature-card reveal reveal-delay-3">
+                <span class="feature-icon">🧠</span>
+                <h3>LLM Forensic Investigator</h3>
+                <p>Qwen 3 reasons step-by-step through flagged cases using Chain-of-Thought, querying the graph and ML layers as tools to produce full forensic narratives.</p>
+            </div>
+            <div class="feature-card reveal reveal-delay-1">
+                <span class="feature-icon">🔒</span>
+                <h3>Blockchain Audit Trail</h3>
+                <p>Every AI decision is anchored in a SHA-256 hash-chain with Ed25519 signatures. Tamper-evident, restart-resilient, and averages 0.365ms per block.</p>
+            </div>
+            <div class="feature-card reveal reveal-delay-2">
+                <span class="feature-icon">⚡</span>
+                <h3>Smart Contract Circuit Breaker</h3>
+                <p>Autonomous account freezing when multi-model consensus reaches critical threshold. Millisecond execution with cryptographic proof logged for compliance.</p>
+            </div>
+            <div class="feature-card reveal reveal-delay-3">
+                <span class="feature-icon">🛡️</span>
+                <h3>Zero-Knowledge Compliance</h3>
+                <p>ZKP verification validates KYC/CFR status without exposing PII. Privacy-preserving by design — compliant with RBI data protection guidelines.</p>
+            </div>
+            <div class="feature-card reveal reveal-delay-1">
+                <span class="feature-icon">📊</span>
+                <h3>Behavioral Deviation Scoring</h3>
+                <p>Per-account rolling 90-day behavioral profiles with Z-score deviation detection across amounts, frequencies, geolocations, and device fingerprints.</p>
+            </div>
+            <div class="feature-card reveal reveal-delay-2">
+                <span class="feature-icon">🔤</span>
+                <h3>Text Anomaly Analysis</h3>
+                <p>Detects Cyrillic homoglyph attacks, high-entropy strings, and social engineering patterns in beneficiary names and transaction notes - preventing SWIFT-style spoofing.</p>
+            </div>
+            <div class="feature-card reveal reveal-delay-3">
+                <span class="feature-icon">📋</span>
+                <h3>Auto-Generated STR / FMR / CTR</h3>
+                <p>One-click regulatory report generation for FIU-IND filing. Suspicious Transaction Reports, Financial Monitoring Returns, and Cash Transaction Reports — all PDF-ready.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ CASE STUDIES ═══ -->
+<section class="cases-section" id="cases">
+    <div class="container">
+        <div class="reveal">
+            <div class="section-label">Real-World Intelligence</div>
+            <h2 class="section-title">Built to Stop the World's<br>Costliest Fraud Patterns</h2>
+            <p class="section-subtitle">
+                PayFlow's architecture was directly engineered from the forensic analysis of history's most devastating financial crimes.
+            </p>
+        </div>
+
+        <div class="cases-grid">
+            <div class="case-card reveal reveal-delay-1">
+                <div class="case-header">
+                    <h3>Danske Bank Estonia</h3>
+                    <span class="case-loss">€200B laundered</span>
+                </div>
+                <p>Non-resident shell companies layered €200B through circular multi-hop transfers over 8 years. The bank's siloed IT systems and rule-based monitoring were completely blind to the network topology.</p>
+                <div class="case-lesson">
+                    <strong>PayFlow counter:</strong> Graph cycle detection + GNN topological scoring identifies circular flows in real-time, regardless of individual transaction amounts.
+                </div>
+            </div>
+            <div class="case-card reveal reveal-delay-2">
+                <div class="case-header">
+                    <h3>Bangladesh Bank SWIFT Heist</h3>
+                    <span class="case-loss">$81M stolen</span>
+                </div>
+                <p>Attackers deployed malware to manipulate SWIFT logs, delete transaction records, and disable physical printers — covering tracks while exfiltrating $81M through casino accounts.</p>
+                <div class="case-lesson">
+                    <strong>PayFlow counter:</strong> SHA-256 blockchain audit trail with Ed25519 signatures makes log manipulation cryptographically impossible — every event is immutably anchored.
+                </div>
+            </div>
+            <div class="case-card reveal reveal-delay-3">
+                <div class="case-header">
+                    <h3>Carbanak Cyber Heist</h3>
+                    <span class="case-loss">$1B+ stolen</span>
+                </div>
+                <p>Spear-phishing gave attackers direct ATM control and internal server access across 100+ financial institutions. Money mules collected dispensed cash globally.</p>
+                <div class="case-lesson">
+                    <strong>PayFlow counter:</strong> Text anomaly detection catches phishing indicators; mule network star-topology analysis identifies coordinated cash-out patterns.
+                </div>
+            </div>
+            <div class="case-card reveal reveal-delay-4">
+                <div class="case-header">
+                    <h3>Indian UPI Mule Networks</h3>
+                    <span class="case-loss">₹2,000Cr laundered</span>
+                </div>
+                <p>44–180 mule accounts rapidly split and forwarded fraud proceeds through dozens of UPI transfers within hours, vanishing before banks could react.</p>
+                <div class="case-lesson">
+                    <strong>PayFlow counter:</strong> Velocity tracking + fan-in/fan-out analysis + circuit breaker freezes suspicious nodes in milliseconds — before funds exit custody.
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ TECH STACK ═══ -->
+<section class="tech-section" id="tech">
+    <div class="container">
+        <div class="reveal">
+            <div class="section-label">Technology</div>
+            <h2 class="section-title">Built on a Modern,<br><span class="gradient-text">GPU-Optimized Stack</span></h2>
+            <p class="section-subtitle">
+                Edge-deployed on RTX 4070 (8GB VRAM) with real-time VRAM load-shedding and automatic CPU fallback.
+            </p>
+        </div>
+
+        <div class="tech-grid">
+            <div class="tech-item reveal reveal-delay-1">
+                <span class="tech-item-icon">⚡</span>
+                <div class="tech-item-name">FastAPI</div>
+                <div class="tech-item-role">Backend & WebSocket</div>
+            </div>
+            <div class="tech-item reveal reveal-delay-1">
+                <span class="tech-item-icon">🌳</span>
+                <div class="tech-item-name">XGBoost</div>
+                <div class="tech-item-role">Primary Classifier</div>
+            </div>
+            <div class="tech-item reveal reveal-delay-2">
+                <span class="tech-item-icon">🔥</span>
+                <div class="tech-item-name">PyTorch</div>
+                <div class="tech-item-role">Autoencoder & GNN</div>
+            </div>
+            <div class="tech-item reveal reveal-delay-2">
+                <span class="tech-item-icon">🕸️</span>
+                <div class="tech-item-name">NetworkX + PyG</div>
+                <div class="tech-item-role">Graph Analytics</div>
+            </div>
+            <div class="tech-item reveal reveal-delay-3">
+                <span class="tech-item-icon">🤖</span>
+                <div class="tech-item-name">Qwen 3 + Ollama</div>
+                <div class="tech-item-role">LLM Investigator</div>
+            </div>
+            <div class="tech-item reveal reveal-delay-3">
+                <span class="tech-item-icon">🔗</span>
+                <div class="tech-item-name">Ed25519 + SHA-256</div>
+                <div class="tech-item-role">Blockchain Ledger</div>
+            </div>
+            <div class="tech-item reveal reveal-delay-4">
+                <span class="tech-item-icon">⚛️</span>
+                <div class="tech-item-name">React 19 + Sigma</div>
+                <div class="tech-item-role">Frontend & Graph Viz</div>
+            </div>
+            <div class="tech-item reveal reveal-delay-4">
+                <span class="tech-item-icon">🖥️</span>
+                <div class="tech-item-name">RTX 4070 8GB</div>
+                <div class="tech-item-role">Edge GPU Inference</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═══ DEMO BANNER ═══ -->
+<section class="demo-banner">
+    <div class="container reveal">
+        <h2>Experience the <span class="gradient-text">Intelligence Center</span></h2>
+        <p>Launch live attack simulations, watch the graph evolve in real-time, and see the AI investigator reason through fraud cases step by step.</p>
+        <a href="/dashboard" class="btn btn-primary" style="font-size: 1.05rem; padding: 14px 36px;">
+            Open Live Dashboard →
+        </a>
+    </div>
+</section>
+
+<!-- ═══ FOOTER ═══ -->
+<footer class="footer">
+    <div class="container">
+        <div class="footer-inner">
+            <div class="footer-brand">
+                <svg width="20" height="20" viewBox="0 0 32 32" fill="none">
+                    <rect width="32" height="32" rx="8" fill="url(#brandGrad2)"/>
+                    <path d="M8 12h6v2H10v2h4v2H10v4H8V12zm9 0h4a3 3 0 010 6h-2v4h-2V12zm2 4h2a1 1 0 100-2h-2v2z" fill="#fff"/>
+                    <defs><linearGradient id="brandGrad2" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#3b82f6"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs>
+                </svg>
+                PayFlow Intelligence Center
+            </div>
+            <ul class="footer-links">
+                <li><a href="#architecture">Architecture</a></li>
+                <li><a href="#features">Features</a></li>
+                <li><a href="#cases">Case Studies</a></li>
+                <li><a href="/dashboard">Dashboard</a></li>
+            </ul>
+            <div class="footer-copy">
+                iDEA 2.0 Hackathon · Union Bank of India · PS-3: Tracking of Funds within Bank for Fraud Detection
+            </div>
+        </div>
+    </div>
+</footer>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SCRIPTS
+     ═══════════════════════════════════════════════════════════════════════ -->
+<script>
+// ── NETWORK MESH BACKGROUND ────────────────────────────────────────────
+(function() {
+    const canvas = document.getElementById('network-canvas');
+    const ctx = canvas.getContext('2d');
+    let w, h, particles = [], mouseX = -1000, mouseY = -1000;
+
+    function resize() {
+        w = canvas.width = window.innerWidth;
+        h = canvas.height = window.innerHeight;
+    }
+
+    function createParticles() {
+        particles = [];
+        const count = Math.floor((w * h) / 18000);
+        for (let i = 0; i < count; i++) {
+            particles.push({
+                x: Math.random() * w,
+                y: Math.random() * h,
+                vx: (Math.random() - 0.5) * 0.3,
+                vy: (Math.random() - 0.5) * 0.3,
+                r: Math.random() * 1.5 + 0.5,
+                hue: Math.random() > 0.7 ? 200 : 220,
+            });
+        }
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, w, h);
+        const maxDist = 140;
+
+        for (let i = 0; i < particles.length; i++) {
+            const p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            if (p.x < 0) p.x = w;
+            if (p.x > w) p.x = 0;
+            if (p.y < 0) p.y = h;
+            if (p.y > h) p.y = 0;
+
+            // Draw particle
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+            ctx.fillStyle = `hsla(${p.hue}, 70%, 60%, 0.5)`;
+            ctx.fill();
+
+            // Draw connections
+            for (let j = i + 1; j < particles.length; j++) {
+                const q = particles[j];
+                const dx = p.x - q.x;
+                const dy = p.y - q.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < maxDist) {
+                    ctx.beginPath();
+                    ctx.moveTo(p.x, p.y);
+                    ctx.lineTo(q.x, q.y);
+                    const alpha = (1 - dist / maxDist) * 0.12;
+                    ctx.strokeStyle = `rgba(59, 130, 246, ${alpha})`;
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                }
+            }
+
+            // Mouse interaction
+            const dx = p.x - mouseX;
+            const dy = p.y - mouseY;
+            const mouseDist = Math.sqrt(dx * dx + dy * dy);
+            if (mouseDist < 200) {
+                ctx.beginPath();
+                ctx.moveTo(p.x, p.y);
+                ctx.lineTo(mouseX, mouseY);
+                const alpha = (1 - mouseDist / 200) * 0.2;
+                ctx.strokeStyle = `rgba(6, 182, 212, ${alpha})`;
+                ctx.lineWidth = 0.8;
+                ctx.stroke();
+            }
+        }
+        requestAnimationFrame(draw);
+    }
+
+    resize();
+    createParticles();
+    draw();
+
+    window.addEventListener('resize', () => { resize(); createParticles(); });
+    document.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
+})();
+
+// ── NAVBAR SCROLL ───────────────────────────────────────────────────────
+const nav = document.getElementById('nav');
+window.addEventListener('scroll', () => {
+    nav.classList.toggle('scrolled', window.scrollY > 40);
+});
+
+// ── SCROLL REVEAL ───────────────────────────────────────────────────────
+const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+        }
+    });
+}, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+// ── COUNTER ANIMATION ───────────────────────────────────────────────────
+const counterObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            const el = entry.target;
+            const target = parseInt(el.dataset.count);
+            const suffix = el.dataset.suffix || '';
+            if (isNaN(target)) return;
+            let current = 0;
+            const step = Math.max(1, Math.floor(target / 30));
+            const interval = setInterval(() => {
+                current += step;
+                if (current >= target) {
+                    current = target;
+                    clearInterval(interval);
+                }
+                el.textContent = current + suffix;
+            }, 40);
+            counterObserver.unobserve(el);
+        }
+    });
+}, { threshold: 0.5 });
+
+document.querySelectorAll('[data-count]').forEach(el => counterObserver.observe(el));
+
+// ── CODE TYPING ANIMATION ───────────────────────────────────────────────
+(function() {
+    const codeLines = [
+        { text: '# PayFlow Intelligence Pipeline', cls: 'comment' },
+        { text: '' },
+        { text: '<span class="keyword">async def</span> <span class="func">analyze_transaction</span>(txn: <span class="type">Transaction</span>) -> <span class="type">Verdict</span>:', cls: '' },
+        { text: '    <span class="comment"># Layer 1-2: Ingest + extract 42 features</span>', cls: '' },
+        { text: '    features = <span class="keyword">await</span> <span class="func">feature_engine</span>.<span class="func">extract</span>(txn)', cls: '' },
+        { text: '' },
+        { text: '    <span class="comment"># Layer 3: ML ensemble — XGBoost + IsoForest + Autoencoder</span>', cls: '' },
+        { text: '    risk_score = <span class="func">ensemble</span>.<span class="func">predict</span>(features)  <span class="comment"># GPU-accelerated</span>', cls: '' },
+        { text: '' },
+        { text: '    <span class="comment"># Layer 4: Graph Intelligence — cycle + mule detection</span>', cls: '' },
+        { text: '    <span class="keyword">if</span> risk_score <span class="operator">></span> <span class="number">0.65</span>:', cls: '' },
+        { text: '        subgraph = <span class="func">graph</span>.<span class="func">k_hop</span>(txn.sender, k=<span class="number">2</span>)', cls: '' },
+        { text: '        topology = <span class="keyword">await</span> <span class="func">fraud_gat</span>.<span class="func">score</span>(subgraph)', cls: '' },
+        { text: '' },
+        { text: '    <span class="comment"># Layer 5-6: Alert triage → LLM investigator</span>', cls: '' },
+        { text: '    verdict = <span class="keyword">await</span> <span class="func">investigator</span>.<span class="func">reason</span>(features, topology)', cls: '' },
+        { text: '' },
+        { text: '    <span class="comment"># Layer 7: Anchor to blockchain + generate STR</span>', cls: '' },
+        { text: '    <span class="keyword">await</span> <span class="func">ledger</span>.<span class="func">anchor</span>(verdict, signature=<span class="func">ed25519_sign</span>(verdict))', cls: '' },
+        { text: '    <span class="keyword">return</span> verdict', cls: '' },
+    ];
+
+    const codeBody = document.getElementById('codeBody');
+    let lineIndex = 0;
+
+    function typeLine() {
+        if (lineIndex >= codeLines.length) {
+            // Add blinking cursor at the end
+            const cursor = document.createElement('span');
+            cursor.className = 'typing-cursor';
+            codeBody.appendChild(cursor);
+            return;
+        }
+
+        const line = codeLines[lineIndex];
+        const div = document.createElement('div');
+        div.style.minHeight = '1.85em';
+        div.style.opacity = '0';
+        div.style.transform = 'translateX(-8px)';
+        div.style.transition = 'all 0.3s ease';
+
+        if (line.text === '') {
+            div.innerHTML = '&nbsp;';
+        } else {
+            div.innerHTML = line.text;
+        }
+
+        codeBody.appendChild(div);
+
+        requestAnimationFrame(() => {
+            div.style.opacity = '1';
+            div.style.transform = 'translateX(0)';
+        });
+
+        lineIndex++;
+        setTimeout(typeLine, 80 + Math.random() * 60);
+    }
+
+    // Start typing when code window is visible
+    const codeObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                setTimeout(typeLine, 600);
+                codeObserver.unobserve(entry.target);
+            }
+        });
+    }, { threshold: 0.3 });
+
+    codeObserver.observe(document.querySelector('.code-window'));
+})();
+
+// ── SMOOTH SCROLL ───────────────────────────────────────────────────────
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+    anchor.addEventListener('click', function(e) {
+        e.preventDefault();
+        const target = document.querySelector(this.getAttribute('href'));
+        if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    });
+});
+</script>
+
+</body>
+</html>

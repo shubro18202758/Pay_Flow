@@ -1,0 +1,1457 @@
+// ============================================================================
+// Sigma Graph -- Force-directed fraud network visualization
+// ForceAtlas2 layout with fraud-prioritized node selection
+// ============================================================================
+
+import { useEffect, useRef, useMemo, useState, useCallback } from 'react'
+import Graph from 'graphology'
+import forceAtlas2 from 'graphology-layout-forceatlas2'
+import {
+  SigmaContainer,
+  useRegisterEvents,
+  useSigma,
+  useSetSettings,
+} from '@react-sigma/core'
+import '@react-sigma/core/lib/style.css'
+
+import { useDashboardStore } from '@/stores/use-dashboard-store'
+import { useUIStore } from '@/stores/use-ui-store'
+import { useTopology } from '@/hooks/use-api'
+import { FRAUD_PATTERN_LABELS } from '@/lib/types'
+import type { CytoNode, CytoEdge } from '@/lib/types'
+import type { NodeDisplayData, EdgeDisplayData } from 'sigma/types'
+import {
+  Network,
+  AlertTriangle,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Tag,
+  RotateCcw,
+  Filter,
+  Search,
+  Crosshair,
+  Download,
+  Repeat,
+  Type,
+} from 'lucide-react'
+
+// ─── Layout constants ────────────────────────────────────────────────────────
+const MAX_NODES = 60
+
+const NODE_COLOR_ROOT = '#f59e0b'                   // amber hub
+const NODE_COLOR_SAFE = '#64748b'                   // slate-500 visible
+
+// ─── Per-fraud-type color palette (vibrant, high-contrast on dark bg) ───────
+const FRAUD_TYPE_COLORS: Record<number, string> = {
+  0: '#64748b',   // None → muted slate
+  1: '#3b82f6',   // Layering → blue
+  2: '#a855f7',   // Round-Tripping → purple
+  3: '#14b8a6',   // Structuring → teal
+  4: '#6366f1',   // Dormant Activation → indigo
+  5: '#ec4899',   // Profile Mismatch → pink
+  6: '#f97316',   // UPI Mule Network → orange
+  7: '#e11d48',   // Circular Laundering → rose
+  8: '#06b6d4',   // Velocity Phishing → cyan
+}
+
+const FRAUD_TYPE_EDGE_COLORS: Record<number, string> = {
+  0: 'rgba(100,116,139,0.30)',   // None → slate
+  1: 'rgba(59,130,246,0.70)',    // Layering → blue
+  2: 'rgba(168,85,247,0.70)',    // Round-Tripping → purple
+  3: 'rgba(20,184,166,0.70)',    // Structuring → teal
+  4: 'rgba(99,102,241,0.70)',    // Dormant Activation → indigo
+  5: 'rgba(236,72,153,0.70)',    // Profile Mismatch → pink
+  6: 'rgba(249,115,22,0.70)',    // UPI Mule Network → orange
+  7: 'rgba(225,29,72,0.70)',     // Circular Laundering → rose
+  8: 'rgba(6,182,212,0.70)',     // Velocity Phishing → cyan
+}
+
+// Status-based border ring colors
+const STATUS_BORDER_COLORS: Record<string, string> = {
+  frozen: '#f87171',     // red ring
+  suspicious: '#facc15', // yellow ring
+  paused: '#fb923c',     // orange ring
+  normal: '#475569',     // subtle slate
+}
+
+// Community-based pastel tints for non-fraud nodes (8 community colors)
+const COMMUNITY_COLORS = [
+  '#475569', '#5b6b7a', '#4a6670', '#5a5f6e',
+  '#556270', '#4b5c6b', '#526065', '#4d5a68',
+]
+
+/** Determine the dominant fraud type for a node from its connected edges */
+function dominantFraudType(nodeId: string, edges: CytoEdge[]): number {
+  const counts = new Map<number, number>()
+  for (const e of edges) {
+    const fl = e.data.fraud_label ?? 0
+    if (fl === 0) continue
+    if (e.data.source === nodeId || e.data.target === nodeId) {
+      counts.set(fl, (counts.get(fl) ?? 0) + 1)
+    }
+  }
+  if (counts.size === 0) return 0
+  let best = 0, bestCount = 0
+  for (const [fl, c] of counts) {
+    if (c > bestCount) { best = fl; bestCount = c }
+  }
+  return best
+}
+
+// ─── Select top fraud-relevant nodes ─────────────────────────────────────────
+interface SelectionResult {
+  nodes: CytoNode[]
+  edges: CytoEdge[]
+  fraudCounts: Map<string, { fraud: number; total: number }>
+  hub: string
+}
+
+function selectTopNodes(allNodes: CytoNode[], allEdges: CytoEdge[]): SelectionResult {
+  const fraudCounts = new Map<string, { fraud: number; total: number }>()
+  for (const e of allEdges) {
+    const { source, target, fraud_label } = e.data
+    const isFraud = (fraud_label ?? 0) > 0
+    for (const nid of [source, target]) {
+      const c = fraudCounts.get(nid) ?? { fraud: 0, total: 0 }
+      c.total++
+      if (isFraud) c.fraud++
+      fraudCounts.set(nid, c)
+    }
+  }
+
+  // Score nodes: status priority + fraud edge count + degree
+  const scored = allNodes.map(n => {
+    const id = n.data.id
+    const counts = fraudCounts.get(id) ?? { fraud: 0, total: 0 }
+    const statusScore = n.data.status === 'frozen' ? 100
+      : n.data.status === 'suspicious' ? 50
+      : n.data.status === 'paused' ? 25 : 0
+    return { node: n, score: statusScore + counts.fraud * 10 + counts.total }
+  })
+
+  scored.sort((a, b) => b.score - a.score)
+  const selected = scored.slice(0, MAX_NODES).map(s => s.node)
+  const nodeSet = new Set(selected.map(n => n.data.id))
+  const edges = allEdges.filter(e => nodeSet.has(e.data.source) && nodeSet.has(e.data.target))
+
+  // Hub = highest fraud degree node
+  let hub = ''
+  let maxFraud = 0
+  for (const n of selected) {
+    const fc = fraudCounts.get(n.data.id)?.fraud ?? 0
+    if (fc > maxFraud) { hub = n.data.id; maxFraud = fc }
+  }
+  if (!hub && selected.length > 0) hub = selected[0].data.id
+
+  return { nodes: selected, edges, fraudCounts, hub }
+}
+
+// ─── Cycle detection via DFS (directed graph) ───────────────────────────────
+function detectCycles(graph: Graph): string[][] {
+  const cycles: string[][] = []
+  const visited = new Set<string>()
+  const inStack = new Set<string>()
+  const path: string[] = []
+
+  function dfs(node: string) {
+    visited.add(node)
+    inStack.add(node)
+    path.push(node)
+
+    graph.forEachOutNeighbor(node, (neighbor) => {
+      if (inStack.has(neighbor)) {
+        const cycleStart = path.indexOf(neighbor)
+        if (cycleStart >= 0) cycles.push(path.slice(cycleStart))
+      } else if (!visited.has(neighbor)) {
+        dfs(neighbor)
+      }
+    })
+
+    path.pop()
+    inStack.delete(node)
+  }
+
+  graph.forEachNode((node) => {
+    if (!visited.has(node)) dfs(node)
+  })
+  return cycles
+}
+
+// ─── New fraud node arrival tracker (for pulse animation) ───────────────────
+const _newFraudNodes = new Map<string, number>()
+
+// ─── Sync graphology with ForceAtlas2 layout ────────────────────────────────
+let _prevNodeIds = ''
+
+function syncGraphology(graph: Graph, allNodes: CytoNode[], allEdges: CytoEdge[]) {
+  const { nodes, edges, fraudCounts, hub } = selectTopNodes(allNodes, allEdges)
+  const visibleIds = new Set(nodes.map(n => n.data.id))
+  const now = Date.now()
+
+  // Detect if node set changed → need layout recalculation
+  const nodeIdStr = [...visibleIds].sort().join(',')
+  const needsLayout = nodeIdStr !== _prevNodeIds || graph.order === 0
+  _prevNodeIds = nodeIdStr
+
+  // Pre-compute max amount for edge thickness scaling
+  let maxAmount = 1
+  for (const e of edges) {
+    const amt = e.data.amount_paisa ?? 0
+    if (amt > maxAmount) maxAmount = amt
+  }
+
+  // Collect which fraud types are present (for legend)
+  const fraudTypesPresent = new Set<number>()
+
+  const n = nodes.length
+  for (let i = 0; i < n; i++) {
+    const node = nodes[i]
+    const { id, txn_count, status } = node.data
+    const counts = fraudCounts.get(id) ?? { fraud: 0, total: 0 }
+    const fraudRatio = counts.total > 0 ? counts.fraud / counts.total : 0
+    const isFraudNode = status !== 'normal' || fraudRatio > 0.3
+    const isHub = id === hub
+
+    // Track new fraud node arrivals for pulse
+    if (!graph.hasNode(id) && isFraudNode) _newFraudNodes.set(id, now)
+    const isNew = _newFraudNodes.has(id) && (now - _newFraudNodes.get(id)!) < 3000
+
+    // Substantially bigger nodes for visibility
+    const baseSize = isHub
+      ? 26
+      : isFraudNode
+        ? Math.min(10 + counts.fraud * 1.5, 18)
+        : Math.max(5, Math.min(5 + Math.sqrt(txn_count) * 0.15, 8))
+    const finalSize = isNew ? baseSize * 1.4 : baseSize
+
+    // Determine dominant fraud type for this node's color
+    const domFraud = dominantFraudType(id, edges)
+    if (domFraud > 0) fraudTypesPresent.add(domFraud)
+
+    // Color by fraud type (not a fixed 4-color set)
+    const communityIdx = (node.data.community_id ?? 0) % COMMUNITY_COLORS.length
+    const nodeColor = isHub ? NODE_COLOR_ROOT
+      : domFraud > 0 ? (FRAUD_TYPE_COLORS[domFraud] ?? '#ef4444')
+      : isFraudNode ? (STATUS_BORDER_COLORS[status] ?? '#ef4444')
+      : COMMUNITY_COLORS[communityIdx < 0 ? 0 : communityIdx]
+
+    // Status-based border ring
+    const borderCol = isHub ? '#fcd34d'
+      : STATUS_BORDER_COLORS[status] ?? '#475569'
+
+    // Label with fraud type name when applicable
+    const shortId = id.length > 12 ? id.slice(-6) : id
+    const riskPct = (fraudRatio * 100).toFixed(0)
+    const fraudTypeName = domFraud > 0 ? (FRAUD_PATTERN_LABELS[domFraud] ?? '') : ''
+    const nodeLabel = isHub
+      ? `⬣ HUB ${shortId}`
+      : domFraud > 0
+        ? `${shortId} · ${fraudTypeName}`
+        : isFraudNode
+          ? `${shortId} · ${riskPct}%`
+          : shortId
+
+    // Initial circular position for new nodes (FA2 will reposition)
+    const hasPos = graph.hasNode(id)
+    const angle = (2 * Math.PI * i) / n
+    const r = 150
+
+    graph.mergeNode(id, {
+      txn_count, status, fraudRatio,
+      fraudEdgeCount: node.data.fraud_edge_count ?? counts.fraud,
+      totalEdgeCount: counts.total,
+      accountType: node.data.account_type ?? 'UNKNOWN',
+      communityId: node.data.community_id ?? -1,
+      totalVolumePaisa: node.data.total_volume_paisa ?? 0,
+      dominantFraudType: domFraud,
+      label: nodeLabel,
+      size: finalSize,
+      color: nodeColor,
+      borderColor: borderCol,
+      ...(hasPos ? {} : { x: r * Math.cos(angle), y: r * Math.sin(angle) }),
+    })
+  }
+
+  // Remove nodes not in selection
+  graph.forEachNode(id => {
+    if (!visibleIds.has(id)) graph.dropNode(id)
+  })
+
+  // Add/update edges between visible nodes
+  const existingEdges = new Set<string>()
+  graph.forEachEdge(e => existingEdges.add(e))
+  const newEdgeKeys = new Set<string>()
+
+  for (const e of edges) {
+    const { id, source, target, amount_paisa, channel, fraud_label, timestamp, device_fingerprint } = e.data
+    if (!graph.hasNode(source) || !graph.hasNode(target)) continue
+    const fl = fraud_label ?? 0
+    const fraudLabelName = e.data.fraud_label_name ?? FRAUD_PATTERN_LABELS[fl] ?? 'NONE'
+
+    if (fl > 0) fraudTypesPresent.add(fl)
+
+    // Per-fraud-type edge color
+    const color = FRAUD_TYPE_EDGE_COLORS[fl] ?? FRAUD_TYPE_EDGE_COLORS[0]
+
+    // Edge thickness: fraud edges scaled by amount, normal edges thin
+    const amtNorm = Math.min((amount_paisa ?? 0) / maxAmount, 1)
+    const size = fl > 0
+      ? 1.2 + amtNorm * 2.8   // fraud: 1.2–4.0 thickness by amount
+      : 0.5 + amtNorm * 0.5   // normal: 0.5–1.0
+
+    const amountRupees = (amount_paisa ?? 0) / 100
+    const amtLabel = amountRupees >= 10_000_000 ? `₹${(amountRupees / 10_000_000).toFixed(1)}Cr`
+      : amountRupees >= 100_000 ? `₹${(amountRupees / 100_000).toFixed(1)}L`
+      : amountRupees >= 1000 ? `₹${(amountRupees / 1000).toFixed(0)}K`
+      : amountRupees > 0 ? `₹${amountRupees.toFixed(0)}` : ''
+    const edgeLabel = fl > 0 ? `${amtLabel} ${fraudLabelName}` : ''
+
+    newEdgeKeys.add(id)
+    graph.mergeEdgeWithKey(id, source, target, {
+      amount_paisa, channel, fraud_label, fraud_label_name: fraudLabelName,
+      timestamp, device_fingerprint,
+      color, size, type: 'arrow', label: edgeLabel,
+    })
+  }
+
+  // Remove stale edges
+  for (const eid of existingEdges) {
+    if (!newEdgeKeys.has(eid) && graph.hasEdge(eid)) graph.dropEdge(eid)
+  }
+
+  // Store active fraud types on graph for legend lookup
+  ;(graph as any).__fraudTypesPresent = fraudTypesPresent
+
+  // Run ForceAtlas2 synchronously when topology changes
+  if (needsLayout && graph.order > 1) {
+    forceAtlas2.assign(graph, {
+      iterations: 300,
+      settings: {
+        gravity: 5,
+        scalingRatio: 15,
+        strongGravityMode: true,
+        barnesHutOptimize: false,
+        slowDown: 5,
+        adjustSizes: true,
+      },
+    })
+  }
+
+  // Decay pulse animations
+  for (const [nid, ts] of _newFraudNodes) {
+    if (now - ts > 3000) {
+      _newFraudNodes.delete(nid)
+      if (graph.hasNode(nid)) {
+        const attrs = graph.getNodeAttributes(nid)
+        const isH = nid === hub
+        const isFraud = attrs.status !== 'normal' || (attrs.fraudRatio ?? 0) > 0.3
+        const bs = isH ? 26
+          : isFraud ? Math.min(10 + (attrs.fraudEdgeCount ?? 0) * 1.5, 18)
+          : Math.max(5, Math.min(5 + Math.sqrt(attrs.txn_count ?? 0) * 0.15, 8))
+        graph.setNodeAttribute(nid, 'size', bs)
+      }
+    }
+  }
+}
+
+// ─── Tooltip type ──────────────────────────────────────────────────────────
+interface TooltipData {
+  nodeId: string
+  x: number
+  y: number
+  status: string
+  txnCount: number
+  fraudEdgeCount: number
+  totalEdgeCount: number
+  fraudRatio: number
+  accountType: string
+  communityId: number
+  totalVolumePaisa: number
+}
+
+interface EdgeTooltipData {
+  x: number
+  y: number
+  edgeId: string
+  source: string
+  target: string
+  amountPaisa: number
+  channel: number
+  fraudLabel: number
+  fraudLabelName: string
+  timestamp: number
+}
+
+type GraphFilter = 'all' | 'fraud' | 'frozen' | 'cycles' | `type-${number}`
+
+// ─── Inner component: click/hover handlers + filtering ──────────────────────
+function GraphEvents({
+  onTooltip,
+  onEdgeTooltip,
+  filter,
+  highlightedNodes,
+  searchMatch,
+}: {
+  onTooltip: (data: TooltipData | null) => void
+  onEdgeTooltip: (data: EdgeTooltipData | null) => void
+  filter: GraphFilter
+  highlightedNodes: Set<string>
+  searchMatch: string | null
+}) {
+  const sigma = useSigma()
+  const registerEvents = useRegisterEvents()
+  const setSettings = useSetSettings()
+  const selectedNodeId = useUIStore((s) => s.selectedNodeId)
+  const setSelectedNode = useUIStore((s) => s.setSelectedNode)
+
+  useEffect(() => {
+    registerEvents({
+      clickNode: ({ node }) => setSelectedNode(node),
+      clickStage: () => {
+        setSelectedNode(null)
+        onTooltip(null)
+      },
+      enterNode: ({ node }) => {
+        const graph = sigma.getGraph()
+        if (!graph.hasNode(node)) return
+        const attrs = graph.getNodeAttributes(node)
+        const viewPos = sigma.graphToViewport({
+          x: graph.getNodeAttribute(node, 'x'),
+          y: graph.getNodeAttribute(node, 'y'),
+        })
+        onTooltip({
+          nodeId: node,
+          x: viewPos.x,
+          y: viewPos.y,
+          status: attrs.status ?? 'normal',
+          txnCount: attrs.txn_count ?? 0,
+          fraudEdgeCount: attrs.fraudEdgeCount ?? 0,
+          totalEdgeCount: attrs.totalEdgeCount ?? 0,
+          fraudRatio: attrs.fraudRatio ?? 0,
+          accountType: attrs.accountType ?? 'UNKNOWN',
+          communityId: attrs.communityId ?? -1,
+          totalVolumePaisa: attrs.totalVolumePaisa ?? 0,
+        })
+        const container = sigma.getContainer()
+        if (container) container.style.cursor = 'pointer'
+      },
+      leaveNode: () => {
+        onTooltip(null)
+        const container = sigma.getContainer()
+        if (container) container.style.cursor = 'default'
+      },
+      enterEdge: ({ edge }) => {
+        const graph = sigma.getGraph()
+        if (!graph.hasEdge(edge)) return
+        const attrs = graph.getEdgeAttributes(edge)
+        const src = graph.source(edge)
+        const tgt = graph.target(edge)
+        // Get midpoint for tooltip position
+        const srcPos = sigma.graphToViewport({
+          x: graph.getNodeAttribute(src, 'x'),
+          y: graph.getNodeAttribute(src, 'y'),
+        })
+        const tgtPos = sigma.graphToViewport({
+          x: graph.getNodeAttribute(tgt, 'x'),
+          y: graph.getNodeAttribute(tgt, 'y'),
+        })
+        onEdgeTooltip({
+          x: (srcPos.x + tgtPos.x) / 2,
+          y: (srcPos.y + tgtPos.y) / 2,
+          edgeId: edge,
+          source: src,
+          target: tgt,
+          amountPaisa: attrs.amount_paisa ?? 0,
+          channel: attrs.channel ?? 0,
+          fraudLabel: attrs.fraud_label ?? 0,
+          fraudLabelName: attrs.fraud_label_name ?? 'NONE',
+          timestamp: attrs.timestamp ?? 0,
+        })
+      },
+      leaveEdge: () => {
+        onEdgeTooltip(null)
+      },
+    })
+  }, [registerEvents, setSelectedNode, sigma, onTooltip, onEdgeTooltip])
+
+  useEffect(() => {
+    const graph = sigma.getGraph()
+
+    const nodeReducer = (node: string, data: Partial<NodeDisplayData>) => {
+      const attrs = graph.hasNode(node) ? graph.getNodeAttributes(node) : {}
+      const status = attrs.status ?? 'normal'
+      const fraudRatio = attrs.fraudRatio ?? 0
+
+      if (filter === 'fraud' && status === 'normal' && fraudRatio < 0.3) {
+        return { ...data, hidden: true }
+      }
+      if (filter === 'frozen' && status !== 'frozen') {
+        return { ...data, hidden: true }
+      }
+      if (filter.startsWith('type-')) {
+        const ft = parseInt(filter.split('-')[1])
+        const domFraud = attrs.dominantFraudType ?? 0
+        if (domFraud !== ft) {
+          return { ...data, color: 'rgba(10,14,20,0.30)', label: '', zIndex: -1 }
+        } else {
+          return { ...data, highlighted: true, zIndex: 1 }
+        }
+      }
+      if (filter === 'cycles' && highlightedNodes.size > 0 && !highlightedNodes.has(node)) {
+        return { ...data, color: 'rgba(10,14,20,0.6)', label: '', zIndex: -1 }
+      }
+
+      // Search match highlighting
+      if (searchMatch) {
+        if (node === searchMatch) {
+          return { ...data, highlighted: true, zIndex: 2, color: '#22d3ee' }
+        }
+        return { ...data, color: 'rgba(10,14,20,0.5)', label: '', zIndex: -1 }
+      }
+
+      if (selectedNodeId) {
+        if (node === selectedNodeId) return { ...data, highlighted: true, zIndex: 1 }
+        const neighbors = new Set<string>()
+        if (graph.hasNode(selectedNodeId)) {
+          graph.forEachNeighbor(selectedNodeId, (n) => neighbors.add(n))
+        }
+        if (neighbors.has(node)) return { ...data, zIndex: 0 }
+        return { ...data, color: 'rgba(10,14,20,0.4)', label: '', zIndex: -1 }
+      }
+
+      return data
+    }
+
+    const edgeReducer = (edge: string, data: Partial<EdgeDisplayData>) => {
+      const src = graph.source(edge)
+      const tgt = graph.target(edge)
+
+      if (filter === 'fraud') {
+        const fl = graph.getEdgeAttribute(edge, 'fraud_label') ?? 0
+        if (fl === 0) return { ...data, hidden: true }
+      }
+      if (filter === 'frozen') {
+        const srcStatus = graph.hasNode(src) ? graph.getNodeAttribute(src, 'status') : 'normal'
+        const tgtStatus = graph.hasNode(tgt) ? graph.getNodeAttribute(tgt, 'status') : 'normal'
+        if (srcStatus !== 'frozen' && tgtStatus !== 'frozen') return { ...data, hidden: true }
+      }
+      if (filter.startsWith('type-')) {
+        const ft = parseInt(filter.split('-')[1])
+        const fl = graph.getEdgeAttribute(edge, 'fraud_label') ?? 0
+        if (fl !== ft) return { ...data, hidden: true }
+        return { ...data, zIndex: 1, size: (data.size ?? 1) * 1.3 }
+      }
+      if (filter === 'cycles' && highlightedNodes.size > 0) {
+        if (!highlightedNodes.has(src) || !highlightedNodes.has(tgt)) {
+          return { ...data, hidden: true }
+        }
+        return { ...data, color: '#22d3ee', size: 2.5, zIndex: 1 }
+      }
+
+      if (searchMatch) {
+        if (src === searchMatch || tgt === searchMatch) return { ...data, zIndex: 1 }
+        return { ...data, hidden: true }
+      }
+
+      if (selectedNodeId) {
+        if (src === selectedNodeId || tgt === selectedNodeId) {
+          // Brighten connected edges
+          return { ...data, zIndex: 1, size: (data.size ?? 1) * 1.5 }
+        }
+        return { ...data, hidden: true }
+      }
+
+      return data
+    }
+
+    setSettings({ nodeReducer, edgeReducer })
+  }, [selectedNodeId, filter, sigma, setSettings, highlightedNodes, searchMatch])
+
+  return null
+}
+
+// ─── Layout controller ──────────────────────────────────────────────────────
+function LayoutController() {
+  // FA2 runs synchronously in syncGraphology; no animated layout needed
+  return null
+}
+
+// ─── Node Tooltip ──────────────────────────────────────────────────────────
+function NodeTooltip({ data }: { data: TooltipData }) {
+  const statusClasses: Record<string, string> = {
+    normal: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+    frozen: 'bg-red-500/20 text-red-300 border-red-500/30',
+    paused: 'bg-orange-500/20 text-orange-300 border-orange-500/30',
+    suspicious: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30',
+  }
+
+  const formatAmount = (paisa: number) => {
+    const inr = paisa / 100
+    if (inr >= 10_000_000) return `₹${(inr / 10_000_000).toFixed(1)}Cr`
+    if (inr >= 100_000) return `₹${(inr / 100_000).toFixed(1)}L`
+    if (inr >= 1000) return `₹${(inr / 1000).toFixed(1)}K`
+    return `₹${inr.toFixed(0)}`
+  }
+
+  return (
+    <div
+      className="absolute z-50 pointer-events-none animate-fade-in"
+      style={{ left: data.x + 12, top: data.y - 8 }}
+    >
+      <div className="bg-bg-surface/95 backdrop-blur-md border border-border-default rounded-lg p-3 shadow-lg min-w-[220px]">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] font-mono font-semibold text-text-primary truncate max-w-[140px]">
+            {data.nodeId}
+          </span>
+          <span className={`text-[8px] px-1.5 py-0.5 rounded border font-semibold uppercase tracking-wider ${statusClasses[data.status] ?? statusClasses.normal}`}>
+            {data.status}
+          </span>
+        </div>
+        <div className="text-[9px] font-semibold text-accent-primary mb-2 uppercase tracking-wider">
+          {data.accountType} {data.communityId >= 0 ? `· Community ${data.communityId}` : ''}
+        </div>
+        <div className="space-y-1 text-[9px]">
+          <div className="flex justify-between">
+            <span className="text-text-muted">Transactions</span>
+            <span className="font-mono tabular-nums text-text-secondary">{data.txnCount}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Total Volume</span>
+            <span className="font-mono tabular-nums text-text-secondary">{formatAmount(data.totalVolumePaisa)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Total Edges</span>
+            <span className="font-mono tabular-nums text-text-secondary">{data.totalEdgeCount}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Fraud Edges</span>
+            <span className={`font-mono tabular-nums ${data.fraudEdgeCount > 0 ? 'text-red-400' : 'text-text-secondary'}`}>
+              {data.fraudEdgeCount}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Risk Ratio</span>
+            <span className={`font-mono tabular-nums ${data.fraudRatio > 0.5 ? 'text-red-400' : data.fraudRatio > 0.2 ? 'text-amber-400' : 'text-text-secondary'}`}>
+              {(data.fraudRatio * 100).toFixed(0)}%
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Edge Tooltip ──────────────────────────────────────────────────────────
+function EdgeTooltip({ data }: { data: EdgeTooltipData }) {
+  const formatAmount = (paisa: number) => {
+    const inr = paisa / 100
+    if (inr >= 10_000_000) return `₹${(inr / 10_000_000).toFixed(1)}Cr`
+    if (inr >= 100_000) return `₹${(inr / 100_000).toFixed(1)}L`
+    if (inr >= 1000) return `₹${(inr / 1000).toFixed(1)}K`
+    return `₹${inr.toFixed(0)}`
+  }
+
+  const CHANNEL_NAMES: Record<number, string> = {
+    0: 'Branch', 1: 'UPI', 2: 'NEFT', 3: 'RTGS', 4: 'IMPS',
+    5: 'Mobile', 6: 'Internet', 7: 'ATM', 8: 'Wallet', 9: 'POS',
+  }
+
+  const isFraud = data.fraudLabel > 0
+
+  return (
+    <div
+      className="absolute z-50 pointer-events-none animate-fade-in"
+      style={{ left: data.x + 12, top: data.y - 8 }}
+    >
+      <div className="bg-bg-surface/95 backdrop-blur-md border border-border-default rounded-lg p-3 shadow-lg min-w-[200px]">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] font-bold text-text-primary">Transaction</span>
+          {isFraud && (
+            <span className="text-[8px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30 font-semibold uppercase">
+              {data.fraudLabelName}
+            </span>
+          )}
+        </div>
+        <div className="space-y-1 text-[9px]">
+          <div className="flex justify-between">
+            <span className="text-text-muted">Amount</span>
+            <span className="font-mono tabular-nums text-text-secondary font-semibold">{formatAmount(data.amountPaisa)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Channel</span>
+            <span className="font-mono text-text-secondary">{CHANNEL_NAMES[data.channel] ?? `CH-${data.channel}`}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">From</span>
+            <span className="font-mono text-text-secondary truncate max-w-[100px]">{data.source}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">To</span>
+            <span className="font-mono text-text-secondary truncate max-w-[100px]">{data.target}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Time</span>
+            <span className="font-mono text-text-secondary">{new Date(data.timestamp * 1000).toLocaleTimeString()}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Node Detail Panel (shown when a node is clicked) ────────────────────────
+function NodeDetailPanel({ graph, nodeId }: { graph: Graph; nodeId: string }) {
+  if (!graph.hasNode(nodeId)) return null
+  const attrs = graph.getNodeAttributes(nodeId)
+  const neighbors = graph.neighbors(nodeId)
+  const fraudNeighbors = neighbors.filter(n => {
+    const nAttrs = graph.getNodeAttributes(n)
+    return nAttrs.status !== 'normal' || (nAttrs.fraudRatio ?? 0) > 0.3
+  })
+  const edgeKeys = graph.edges(nodeId)
+  const fraudEdgeKeys = edgeKeys.filter(e => (graph.getEdgeAttribute(e, 'fraud_label') ?? 0) > 0)
+
+  let totalFlow = 0, maxSingleTxn = 0
+  for (const e of edgeKeys) {
+    const amt = graph.getEdgeAttribute(e, 'amount_paisa') ?? 0
+    totalFlow += amt
+    if (amt > maxSingleTxn) maxSingleTxn = amt
+  }
+
+  const fraudBreakdown = new Map<number, number>()
+  for (const e of edgeKeys) {
+    const fl = graph.getEdgeAttribute(e, 'fraud_label') ?? 0
+    if (fl > 0) fraudBreakdown.set(fl, (fraudBreakdown.get(fl) ?? 0) + 1)
+  }
+
+  const channelCounts = new Map<number, number>()
+  for (const e of edgeKeys) {
+    const ch = graph.getEdgeAttribute(e, 'channel') ?? 0
+    channelCounts.set(ch, (channelCounts.get(ch) ?? 0) + 1)
+  }
+
+  const CHANNEL_NAMES: Record<number, string> = {
+    0: 'Branch', 1: 'UPI', 2: 'NEFT', 3: 'RTGS', 4: 'IMPS',
+    5: 'Mobile', 6: 'Internet', 7: 'ATM', 8: 'Wallet', 9: 'POS',
+  }
+
+  const formatAmount = (paisa: number) => {
+    const inr = paisa / 100
+    if (inr >= 10_000_000) return `₹${(inr / 10_000_000).toFixed(1)}Cr`
+    if (inr >= 100_000) return `₹${(inr / 100_000).toFixed(1)}L`
+    if (inr >= 1000) return `₹${(inr / 1000).toFixed(1)}K`
+    return `₹${inr.toFixed(0)}`
+  }
+
+  const riskLevel = (attrs.fraudRatio ?? 0) > 0.6 ? 'CRITICAL' : (attrs.fraudRatio ?? 0) > 0.3 ? 'HIGH' : (attrs.fraudRatio ?? 0) > 0.1 ? 'MEDIUM' : 'LOW'
+  const riskColor = riskLevel === 'CRITICAL' ? 'text-red-400' : riskLevel === 'HIGH' ? 'text-amber-400' : riskLevel === 'MEDIUM' ? 'text-yellow-400' : 'text-green-400'
+
+  return (
+    <div className="absolute bottom-4 right-4 z-20 animate-slide-in-up">
+      <div className="bg-bg-surface/95 backdrop-blur-md border border-border-default rounded-lg p-3 shadow-xl w-[255px] max-h-[380px] overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center gap-2 mb-2">
+          <span className="w-3 h-3 rounded-full shrink-0 ring-1 ring-white/10" style={{ background: attrs.color ?? '#64748b' }} />
+          <span className="text-[10px] font-mono font-bold text-text-primary truncate flex-1">{nodeId}</span>
+          <span className={`text-[7px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+            attrs.status === 'frozen' ? 'bg-red-500/20 text-red-300 border border-red-500/30' :
+            attrs.status === 'suspicious' ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30' :
+            attrs.status === 'paused' ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30' :
+            'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+          }`}>{attrs.status ?? 'normal'}</span>
+        </div>
+
+        {/* Risk badge */}
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[8px] text-accent-primary font-semibold uppercase tracking-wider">
+            {attrs.accountType ?? 'UNKNOWN'} {attrs.communityId >= 0 ? `· Comm ${attrs.communityId}` : ''}
+          </span>
+          <span className={`ml-auto text-[7px] px-1.5 py-0.5 rounded font-bold ${riskColor} bg-bg-deep/60 border border-border-subtle`}>
+            {riskLevel}
+          </span>
+        </div>
+
+        {/* Metrics grid */}
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[8px] mb-2">
+          <div className="flex justify-between"><span className="text-text-muted">Degree</span><span className="font-mono text-text-primary font-semibold">{neighbors.length}</span></div>
+          <div className="flex justify-between"><span className="text-text-muted">Fraud Nbrs</span><span className="font-mono text-red-400 font-semibold">{fraudNeighbors.length}</span></div>
+          <div className="flex justify-between"><span className="text-text-muted">Edges</span><span className="font-mono text-text-primary font-semibold">{edgeKeys.length}</span></div>
+          <div className="flex justify-between"><span className="text-text-muted">Fraud Edges</span><span className="font-mono text-red-400 font-semibold">{fraudEdgeKeys.length}</span></div>
+          <div className="flex justify-between"><span className="text-text-muted">Total Flow</span><span className="font-mono text-text-primary font-semibold">{formatAmount(totalFlow)}</span></div>
+          <div className="flex justify-between"><span className="text-text-muted">Max Txn</span><span className="font-mono text-text-primary font-semibold">{formatAmount(maxSingleTxn)}</span></div>
+        </div>
+
+        {/* Risk bar */}
+        <div className="mb-2">
+          <div className="flex justify-between text-[7px] text-text-muted mb-0.5">
+            <span>Risk</span>
+            <span className={`font-mono font-bold ${riskColor}`}>{((attrs.fraudRatio ?? 0) * 100).toFixed(0)}%</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-bg-deep overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-700 ease-out" style={{
+              width: `${Math.min((attrs.fraudRatio ?? 0) * 100, 100)}%`,
+              background: riskLevel === 'CRITICAL' ? '#ef4444' : riskLevel === 'HIGH' ? '#f59e0b' : riskLevel === 'MEDIUM' ? '#eab308' : '#22c55e',
+            }} />
+          </div>
+        </div>
+
+        {/* Fraud breakdown */}
+        {fraudBreakdown.size > 0 && (
+          <div className="border-t border-border-subtle pt-1.5 mb-2">
+            <div className="text-[7px] font-semibold uppercase tracking-wider text-text-muted mb-1">Fraud Breakdown</div>
+            {[...fraudBreakdown.entries()].sort((a, b) => b[1] - a[1]).map(([ft, count]) => (
+              <div key={ft} className="flex items-center gap-1.5 py-0.5">
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: FRAUD_TYPE_COLORS[ft] ?? '#ef4444' }} />
+                <span className="text-[8px] text-text-secondary flex-1">{FRAUD_PATTERN_LABELS[ft] ?? `Type ${ft}`}</span>
+                <div className="flex items-center gap-1">
+                  <div className="w-12 h-1 rounded-full bg-bg-deep overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${(count / edgeKeys.length) * 100}%`, background: FRAUD_TYPE_COLORS[ft] ?? '#ef4444' }} />
+                  </div>
+                  <span className="text-[8px] font-mono font-bold text-text-primary w-4 text-right">{count}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Channel distribution */}
+        {channelCounts.size > 0 && (
+          <div className="border-t border-border-subtle pt-1.5">
+            <div className="text-[7px] font-semibold uppercase tracking-wider text-text-muted mb-1">Channel Usage</div>
+            {[...channelCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([ch, count]) => (
+              <div key={ch} className="flex items-center justify-between py-0.5">
+                <span className="text-[8px] text-text-secondary">{CHANNEL_NAMES[ch] ?? `CH-${ch}`}</span>
+                <div className="flex items-center gap-1">
+                  <div className="w-10 h-1 rounded-full bg-bg-deep overflow-hidden">
+                    <div className="h-full rounded-full bg-accent-primary/60" style={{ width: `${(count / edgeKeys.length) * 100}%` }} />
+                  </div>
+                  <span className="text-[8px] font-mono text-text-primary">{count}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Graph Controls (rendered inside SigmaContainer for sigma context) ──────
+function GraphControls({
+  showLabels,
+  showEdgeLabels,
+  filter,
+  onToggleLabels,
+  onToggleEdgeLabels,
+  onFilterChange,
+  onCyclesDetected,
+  onSearchMatch,
+}: {
+  showLabels: boolean
+  showEdgeLabels: boolean
+  filter: GraphFilter
+  onToggleLabels: () => void
+  onToggleEdgeLabels: () => void
+  onFilterChange: (f: GraphFilter) => void
+  onCyclesDetected: (nodes: Set<string>) => void
+  onSearchMatch: (nodeId: string | null) => void
+}) {
+  const sigma = useSigma()
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  const handleZoomIn = useCallback(() => {
+    sigma.getCamera().animatedZoom({ duration: 300 })
+  }, [sigma])
+
+  const handleZoomOut = useCallback(() => {
+    sigma.getCamera().animatedUnzoom({ duration: 300 })
+  }, [sigma])
+
+  const handleFit = useCallback(() => {
+    sigma.getCamera().animatedReset({ duration: 500 })
+  }, [sigma])
+
+  const handleRestartLayout = useCallback(() => {
+    // Re-fit camera to see the full community layout (no FA2)
+    sigma.getCamera().animatedReset({ duration: 600 })
+  }, [sigma])
+
+  // Center on fraud: compute bounding box of fraud nodes, animate camera
+  const handleCenterOnFraud = useCallback(() => {
+    const graph = sigma.getGraph()
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+    let count = 0
+    graph.forEachNode((node, attrs) => {
+      if (attrs.status !== 'normal' || (attrs.fraudRatio ?? 0) > 0.3) {
+        const dd = sigma.getNodeDisplayData(node)
+        if (dd && !dd.hidden) {
+          minX = Math.min(minX, dd.x)
+          maxX = Math.max(maxX, dd.x)
+          minY = Math.min(minY, dd.y)
+          maxY = Math.max(maxY, dd.y)
+          count++
+        }
+      }
+    })
+    if (count === 0) return
+    const cx = (minX + maxX) / 2
+    const cy = (minY + maxY) / 2
+    const dims = sigma.getDimensions()
+    const graphW = maxX - minX || 1
+    const graphH = maxY - minY || 1
+    const ratio = Math.max(graphW / dims.width, graphH / dims.height) * 1.5
+    sigma.getCamera().animate({ x: cx, y: cy, ratio: Math.max(ratio, 0.05) }, { duration: 600 })
+  }, [sigma])
+
+  // Highlight cycles: DFS cycle detection
+  const handleHighlightCycles = useCallback(() => {
+    if (filter === 'cycles') {
+      onFilterChange('all')
+      onCyclesDetected(new Set())
+      return
+    }
+    const graph = sigma.getGraph()
+    const cycles = detectCycles(graph)
+    const cycleNodes = new Set<string>()
+    for (const cycle of cycles) {
+      for (const n of cycle) cycleNodes.add(n)
+    }
+    onCyclesDetected(cycleNodes)
+    onFilterChange('cycles')
+  }, [sigma, filter, onFilterChange, onCyclesDetected])
+
+  // Export PNG: composite all sigma canvases
+  const handleExportPNG = useCallback(() => {
+    const canvases = sigma.getCanvases()
+    const dims = sigma.getDimensions()
+    const out = document.createElement('canvas')
+    out.width = dims.width * 2
+    out.height = dims.height * 2
+    const ctx = out.getContext('2d')
+    if (!ctx) return
+    ctx.fillStyle = '#0a0e14'
+    ctx.fillRect(0, 0, out.width, out.height)
+    ctx.scale(2, 2)
+    Object.values(canvases).forEach((canvas: HTMLCanvasElement) => {
+      ctx.drawImage(canvas, 0, 0)
+    })
+    const dataUrl = out.toDataURL('image/png')
+    const link = document.createElement('a')
+    link.download = `payflow-graph-${Date.now()}.png`
+    link.href = dataUrl
+    link.click()
+  }, [sigma])
+
+  // Search: find matching node and focus camera
+  const handleSearch = useCallback((query: string) => {
+    setSearchQuery(query)
+    if (!query.trim()) {
+      onSearchMatch(null)
+      return
+    }
+    const graph = sigma.getGraph()
+    const q = query.toLowerCase()
+    const match = graph.findNode((_node, attrs) => {
+      const label = (attrs.label ?? '').toLowerCase()
+      const id = _node.toLowerCase()
+      return id.includes(q) || label.includes(q)
+    })
+    if (match) {
+      onSearchMatch(match)
+      const dd = sigma.getNodeDisplayData(match)
+      if (dd) {
+        sigma.getCamera().animate({ x: dd.x, y: dd.y, ratio: 0.15 }, { duration: 400 })
+      }
+    } else {
+      onSearchMatch(null)
+    }
+  }, [sigma, onSearchMatch])
+
+  const handleToggleSearch = useCallback(() => {
+    setSearchOpen((prev) => {
+      if (!prev) setTimeout(() => searchRef.current?.focus(), 50)
+      if (prev) {
+        setSearchQuery('')
+        onSearchMatch(null)
+      }
+      return !prev
+    })
+  }, [onSearchMatch])
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (e.ctrlKey && e.key === 'f') { e.preventDefault(); handleToggleSearch() }
+      if (e.key === 'Escape' && searchOpen) handleToggleSearch()
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [searchOpen, handleToggleSearch])
+
+  // Fraud types present in graph for filter dropdown
+  const graph = sigma.getGraph()
+  const graphFraudTypes: Set<number> = (graph as any).__fraudTypesPresent ?? new Set()
+  const sortedFraudTypes = [...graphFraudTypes].filter(t => t > 0).sort((a, b) => a - b)
+
+  return (
+    <div className="absolute top-3 right-3 z-10 flex flex-col items-end gap-1.5">
+      <div className="flex items-center gap-1.5">
+        <button onClick={handleZoomIn} className="graph-control-btn" title="Zoom in">
+          <ZoomIn className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={handleZoomOut} className="graph-control-btn" title="Zoom out">
+          <ZoomOut className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={handleFit} className="graph-control-btn" title="Fit to view">
+          <Maximize2 className="w-3.5 h-3.5" />
+        </button>
+        <div className="w-px h-5 bg-border-subtle mx-0.5" />
+        <button
+          onClick={onToggleLabels}
+          className={`graph-control-btn ${showLabels ? 'text-accent-primary' : ''}`}
+          title="Toggle node labels"
+        >
+          <Tag className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={onToggleEdgeLabels}
+          className={`graph-control-btn ${showEdgeLabels ? 'text-accent-primary' : ''}`}
+          title="Toggle edge labels (amounts)"
+        >
+          <Type className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={handleRestartLayout} className="graph-control-btn" title="Restart layout">
+          <RotateCcw className="w-3.5 h-3.5" />
+        </button>
+        <div className="w-px h-5 bg-border-subtle mx-0.5" />
+        <button onClick={handleCenterOnFraud} className="graph-control-btn" title="Center on fraud nodes">
+          <Crosshair className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={handleHighlightCycles}
+          className={`graph-control-btn ${filter === 'cycles' ? 'text-cyan-400' : ''}`}
+          title="Highlight cycles"
+        >
+          <Repeat className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={handleToggleSearch} className={`graph-control-btn ${searchOpen ? 'text-accent-primary' : ''}`} title="Search node (Ctrl+F)">
+          <Search className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={handleExportPNG} className="graph-control-btn" title="Export PNG">
+          <Download className="w-3.5 h-3.5" />
+        </button>
+        <div className="w-px h-5 bg-border-subtle mx-0.5" />
+        <div className="relative">
+          <select
+            value={filter === 'cycles' ? 'all' : filter}
+            onChange={(e) => {
+              onCyclesDetected(new Set())
+              onFilterChange(e.target.value as GraphFilter)
+            }}
+            className="graph-control-select"
+            title="Filter nodes"
+          >
+            <option value="all">All Nodes</option>
+            <option value="fraud">All Fraud</option>
+            <option value="frozen">Frozen</option>
+            {sortedFraudTypes.length > 0 && sortedFraudTypes.map(ft => (
+              <option key={ft} value={`type-${ft}`}>● {FRAUD_PATTERN_LABELS[ft] ?? `Type ${ft}`}</option>
+            ))}
+          </select>
+          <Filter className="absolute left-1.5 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none text-text-muted" />
+        </div>
+      </div>
+      {/* Search input */}
+      {searchOpen && (
+        <div className="flex items-center gap-1.5 bg-bg-surface/95 backdrop-blur-sm border border-border-default rounded-lg px-2 py-1 shadow-lg">
+          <Search className="w-3 h-3 text-text-muted shrink-0" />
+          <input
+            ref={searchRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => handleSearch(e.target.value)}
+            placeholder="Search node ID..."
+            className="bg-transparent text-[10px] font-mono text-text-primary outline-none w-36 placeholder:text-text-muted/50"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => { setSearchQuery(''); onSearchMatch(null) }}
+              className="text-text-muted hover:text-text-primary text-[10px]"
+            >
+              &times;
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Enhanced Legend ─────────────────────────────────────────────────────────
+function GraphLegend({
+  fraudCount,
+  visibleCount,
+  edgeCount,
+  graph,
+}: {
+  fraudCount: number
+  visibleCount: number
+  edgeCount: number
+  graph: Graph
+}) {
+  // Dynamically gather fraud types present in the graph
+  const fraudTypesPresent: Set<number> = (graph as any).__fraudTypesPresent ?? new Set()
+
+  // Build node legend dynamically
+  const NODE_ITEMS: { color: string; label: string; desc: string }[] = [
+    { color: NODE_COLOR_ROOT, label: 'Hub', desc: 'Central fraud hub' },
+  ]
+  // Add each fraud type that's actually present
+  const sortedTypes = [...fraudTypesPresent].filter(t => t > 0).sort((a, b) => a - b)
+  for (const ft of sortedTypes) {
+    NODE_ITEMS.push({
+      color: FRAUD_TYPE_COLORS[ft] ?? '#ef4444',
+      label: FRAUD_PATTERN_LABELS[ft] ?? `Type ${ft}`,
+      desc: `Fraud pattern #${ft}`,
+    })
+  }
+  // Add status-based items
+  NODE_ITEMS.push(
+    { color: STATUS_BORDER_COLORS.frozen, label: 'Frozen', desc: 'Circuit breaker triggered' },
+    { color: NODE_COLOR_SAFE, label: 'Safe', desc: 'Low fraud ratio' },
+  )
+
+  // Edge legend: show fraud-type colors present
+  const EDGE_ITEMS: { color: string; label: string }[] = []
+  for (const ft of sortedTypes) {
+    EDGE_ITEMS.push({
+      color: FRAUD_TYPE_EDGE_COLORS[ft] ?? 'rgba(239,68,68,0.65)',
+      label: FRAUD_PATTERN_LABELS[ft] ?? `Type ${ft}`,
+    })
+  }
+  EDGE_ITEMS.push({ color: FRAUD_TYPE_EDGE_COLORS[0], label: 'Normal txn' })
+
+  return (
+    <div className="absolute bottom-4 left-4 pointer-events-none">
+      <div className="bg-bg-surface/90 backdrop-blur-sm rounded-lg border border-border-subtle p-3 space-y-2 max-w-[200px]">
+        <div className="flex items-center gap-1.5 mb-2">
+          <Network className="w-3 h-3 text-accent-primary" />
+          <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
+            Fraud Network
+          </span>
+          <span className="ml-auto w-1.5 h-1.5 rounded-full bg-green-500 animate-data-pulse" title="Live" />
+        </div>
+
+        <div className="text-[8px] font-semibold uppercase tracking-wider text-text-muted mb-1">Nodes</div>
+        {NODE_ITEMS.map(({ color, label, desc }) => (
+          <div key={label} className="flex items-center gap-2">
+            <span
+              className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-white/10"
+              style={{ background: color }}
+            />
+            <div className="flex flex-col">
+              <span className="text-[9px] font-mono font-semibold text-text-primary leading-tight">
+                {label}
+              </span>
+              <span className="text-[7px] text-text-muted leading-tight">{desc}</span>
+            </div>
+          </div>
+        ))}
+
+        <div className="pt-1.5 border-t border-border-subtle">
+          <div className="text-[8px] font-semibold uppercase tracking-wider text-text-muted mb-1">Edges</div>
+          {EDGE_ITEMS.map(({ color, label }) => (
+            <div key={label} className="flex items-center gap-2 py-0.5">
+              <span className="w-4 h-0.5 shrink-0 rounded-full" style={{ background: color }} />
+              <span className="text-[8px] font-mono text-text-secondary">{label}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Visual key */}
+        <div className="pt-1.5 border-t border-border-subtle space-y-0.5">
+          <div className="text-[7px] text-text-muted italic leading-tight">⬤ Node size = fraud connections</div>
+          <div className="text-[7px] text-text-muted italic leading-tight">━ Edge width = txn amount</div>
+          <div className="text-[7px] text-text-muted italic leading-tight">◯ Border ring = account status</div>
+        </div>
+
+        <div className="pt-1.5 border-t border-border-subtle flex flex-col gap-0.5">
+          <div className="flex items-center justify-between text-[9px] font-mono tabular-nums text-text-muted">
+            <span>{visibleCount} nodes</span>
+            <span>{edgeCount} edges</span>
+          </div>
+          {fraudCount > 0 && (
+            <span className="flex items-center gap-1 text-[9px] font-mono text-red-400">
+              <AlertTriangle className="w-2.5 h-2.5" />
+              {fraudCount} flagged
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Graph Stats Overlay ─────────────────────────────────────────────────────
+function GraphStatsOverlay({ nodes, edges, fraudCount, graph }: { nodes: number; edges: number; fraudCount: number; graph: Graph }) {
+  const graphMetrics = useDashboardStore((s) => s.graphMetrics)
+
+  // Graph-theoretic metrics
+  const density = nodes > 1 ? (edges / (nodes * (nodes - 1))).toFixed(3) : '0'
+  const avgDegree = nodes > 0 ? ((2 * edges) / nodes).toFixed(1) : '0'
+
+  // Risk distribution
+  let highRisk = 0, medRisk = 0, lowRisk = 0
+  graph.forEachNode((_n, attrs) => {
+    const fr = attrs.fraudRatio ?? 0
+    if (fr > 0.5) highRisk++
+    else if (fr > 0.2) medRisk++
+    else lowRisk++
+  })
+  const totalForBar = highRisk + medRisk + lowRisk || 1
+
+  // Top fraud type
+  const fraudTypesPresent: Set<number> = (graph as any).__fraudTypesPresent ?? new Set()
+  const topFraudTypes = [...fraudTypesPresent].filter(t => t > 0).sort((a, b) => a - b)
+
+  return (
+    <div className="absolute top-3 left-3 z-10 pointer-events-none">
+      <div className="bg-bg-surface/80 backdrop-blur-sm rounded-lg border border-border-subtle px-3 py-2 space-y-1.5">
+        <div className="text-[8px] font-semibold uppercase tracking-[0.15em] text-accent-primary flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-data-pulse" />
+          Live Graph Analytics
+        </div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[9px]">
+          <div className="flex justify-between gap-3">
+            <span className="text-text-muted">Nodes</span>
+            <span className="font-mono tabular-nums text-text-primary font-semibold">{nodes}</span>
+          </div>
+          <div className="flex justify-between gap-3">
+            <span className="text-text-muted">Edges</span>
+            <span className="font-mono tabular-nums text-text-primary font-semibold">{edges}</span>
+          </div>
+          <div className="flex justify-between gap-3">
+            <span className="text-text-muted">Flagged</span>
+            <span className={`font-mono tabular-nums font-semibold ${fraudCount > 0 ? 'text-red-400' : 'text-text-secondary'}`}>{fraudCount}</span>
+          </div>
+          <div className="flex justify-between gap-3">
+            <span className="text-text-muted">Density</span>
+            <span className="font-mono tabular-nums text-text-secondary font-semibold">{density}</span>
+          </div>
+          <div className="flex justify-between gap-3">
+            <span className="text-text-muted">Avg Degree</span>
+            <span className="font-mono tabular-nums text-text-secondary font-semibold">{avgDegree}</span>
+          </div>
+          {graphMetrics && (
+            <>
+              <div className="flex justify-between gap-3">
+                <span className="text-text-muted">Mules</span>
+                <span className="font-mono tabular-nums text-amber-400 font-semibold">{graphMetrics.mule_detections}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-text-muted">Cycles</span>
+                <span className="font-mono tabular-nums text-cyan-400 font-semibold">{graphMetrics.cycle_detections}</span>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Risk distribution bar */}
+        <div className="pt-1 border-t border-border-subtle">
+          <div className="text-[7px] font-semibold uppercase tracking-wider text-text-muted mb-1">Risk Distribution</div>
+          <div className="flex h-2 rounded-full overflow-hidden gap-px">
+            {highRisk > 0 && <div className="bg-red-500 transition-all duration-500" style={{ width: `${(highRisk / totalForBar) * 100}%` }} title={`High: ${highRisk}`} />}
+            {medRisk > 0 && <div className="bg-amber-500 transition-all duration-500" style={{ width: `${(medRisk / totalForBar) * 100}%` }} title={`Medium: ${medRisk}`} />}
+            {lowRisk > 0 && <div className="bg-green-500/70 transition-all duration-500" style={{ width: `${(lowRisk / totalForBar) * 100}%` }} title={`Low: ${lowRisk}`} />}
+          </div>
+          <div className="flex justify-between text-[7px] text-text-muted mt-0.5">
+            <span className="flex items-center gap-0.5"><span className="w-1.5 h-1.5 rounded-sm bg-red-500 inline-block" />{highRisk}</span>
+            <span className="flex items-center gap-0.5"><span className="w-1.5 h-1.5 rounded-sm bg-amber-500 inline-block" />{medRisk}</span>
+            <span className="flex items-center gap-0.5"><span className="w-1.5 h-1.5 rounded-sm bg-green-500/70 inline-block" />{lowRisk}</span>
+          </div>
+        </div>
+
+        {/* Active fraud types */}
+        {topFraudTypes.length > 0 && (
+          <div className="pt-1 border-t border-border-subtle">
+            <div className="text-[7px] font-semibold uppercase tracking-wider text-text-muted mb-0.5">Active Patterns</div>
+            <div className="flex flex-wrap gap-1">
+              {topFraudTypes.slice(0, 4).map(ft => (
+                <span key={ft} className="text-[7px] font-mono px-1.5 py-0.5 rounded-full border border-border-subtle" style={{ color: FRAUD_TYPE_COLORS[ft], borderColor: FRAUD_TYPE_COLORS[ft] + '40' }}>
+                  {FRAUD_PATTERN_LABELS[ft] ?? `#${ft}`}
+                </span>
+              ))}
+              {topFraudTypes.length > 4 && <span className="text-[7px] text-text-muted">+{topFraudTypes.length - 4}</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Main export ─────────────────────────────────────────────────────────────
+export function SigmaGraph() {
+  const graphRef = useRef<Graph | null>(null)
+  const syncedRef = useRef(false)
+  const [tooltip, setTooltip] = useState<TooltipData | null>(null)
+  const [showLabels, setShowLabels] = useState(true)
+  const [showEdgeLabels, setShowEdgeLabels] = useState(false)
+  const [filter, setFilter] = useState<GraphFilter>('fraud')
+  const [cycleNodes, setCycleNodes] = useState<Set<string>>(new Set())
+  const [searchMatch, setSearchMatch] = useState<string | null>(null)
+
+  const graphNodes = useDashboardStore((s) => s.graphNodes)
+  const graphEdges = useDashboardStore((s) => s.graphEdges)
+  const setInitialTopology = useDashboardStore((s) => s.setInitialTopology)
+
+  const { data: topology } = useTopology()
+
+  if (!graphRef.current) {
+    graphRef.current = new Graph({ multi: true, type: 'directed', allowSelfLoops: true })
+  }
+  const graph = graphRef.current
+
+  useEffect(() => {
+    if (topology && !syncedRef.current) {
+      syncedRef.current = true
+      setInitialTopology(topology.nodes, topology.edges)
+    }
+  }, [topology, setInitialTopology])
+
+  useEffect(() => {
+    if (graphNodes.length > 0) {
+      syncGraphology(graph, graphNodes, graphEdges)
+    }
+  }, [graph, graphNodes, graphEdges])
+
+  const sigmaSettings = useMemo(() => ({
+    allowInvalidContainer: true,
+    renderLabels: showLabels,
+    labelRenderedSizeThreshold: showLabels ? 5 : 999,
+    labelFont: '"JetBrains Mono", "Fira Code", monospace',
+    labelSize: 11,
+    labelWeight: '600',
+    labelColor: { color: '#cbd5e1' },
+    renderEdgeLabels: showEdgeLabels,
+    edgeLabelSize: 9,
+    edgeLabelFont: '"JetBrains Mono", monospace',
+    edgeLabelColor: { color: '#94a3b8' },
+    edgeLabelWeight: '600',
+    defaultEdgeType: 'arrow' as const,
+    defaultNodeColor: '#64748b',
+    defaultEdgeColor: FRAUD_TYPE_EDGE_COLORS[0],
+    minCameraRatio: 0.01,
+    maxCameraRatio: 12,
+    zIndex: true,
+    nodeBorderSize: 2.5,
+    nodeBorderColor: { attribute: 'borderColor' },
+    nodeHoverBorderSize: 5,
+    enableEdgeEvents: true,
+    stagePadding: 80,
+  }), [showLabels, showEdgeLabels])
+
+  const handleTooltip = useCallback((data: TooltipData | null) => {
+    setTooltip(data)
+  }, [])
+
+  const [edgeTooltip, setEdgeTooltip] = useState<EdgeTooltipData | null>(null)
+
+  const selectedNodeId = useUIStore((s) => s.selectedNodeId)
+
+  const handleEdgeTooltip = useCallback((data: EdgeTooltipData | null) => {
+    setEdgeTooltip(data)
+  }, [])
+
+  const fraudCount = graphNodes.filter((n) => n.data.status !== 'normal').length
+  const selection = graphNodes.length > 0
+    ? selectTopNodes(graphNodes, graphEdges)
+    : { nodes: [], edges: [], fraudCounts: new Map(), hub: '' }
+
+  return (
+    <div className="w-full h-full relative bg-grid-pattern">
+      <SigmaContainer
+        graph={graph}
+        settings={sigmaSettings}
+        className="absolute inset-0"
+        style={{ background: 'transparent' }}
+      >
+        <GraphEvents
+          onTooltip={handleTooltip}
+          onEdgeTooltip={handleEdgeTooltip}
+          filter={filter}
+          highlightedNodes={cycleNodes}
+          searchMatch={searchMatch}
+        />
+        <LayoutController />
+        <GraphControls
+          showLabels={showLabels}
+          showEdgeLabels={showEdgeLabels}
+          filter={filter}
+          onToggleLabels={() => setShowLabels((p) => !p)}
+          onToggleEdgeLabels={() => setShowEdgeLabels((p) => !p)}
+          onFilterChange={setFilter}
+          onCyclesDetected={setCycleNodes}
+          onSearchMatch={setSearchMatch}
+        />
+      </SigmaContainer>
+
+      {tooltip && <NodeTooltip data={tooltip} />}
+      {edgeTooltip && <EdgeTooltip data={edgeTooltip} />}
+
+      {graphNodes.length === 0 ? (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="flex flex-col items-center gap-4 animate-fade-in">
+            <div className="relative">
+              <Network className="w-14 h-14 text-accent-primary/20" />
+              <div className="absolute inset-0 w-14 h-14 rounded-full border-2 border-accent-primary/10 animate-ping" />
+            </div>
+            <div className="text-center space-y-1.5">
+              <p className="text-text-muted text-xs uppercase tracking-[0.15em] font-semibold">
+                Awaiting Transaction Data
+              </p>
+              <p className="text-text-muted/50 text-[10px] max-w-[220px]">
+                Launch a threat simulation or inject a custom event to begin real-time graph analysis
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 text-[9px] text-text-muted/40">
+              <span className="w-1 h-1 rounded-full bg-accent-primary/30 animate-pulse" />
+              Pipeline connected
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          <GraphStatsOverlay
+            nodes={selection.nodes.length}
+            edges={selection.edges.length}
+            fraudCount={fraudCount}
+            graph={graph}
+          />
+          <GraphLegend
+            fraudCount={fraudCount}
+            visibleCount={selection.nodes.length}
+            edgeCount={selection.edges.length}
+            graph={graph}
+          />
+          {selectedNodeId && <NodeDetailPanel graph={graph} nodeId={selectedNodeId} />}
+          {!selectedNodeId && (
+            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 pointer-events-none">
+              <div className="text-[8px] text-text-muted/40 font-mono flex items-center gap-3">
+                <span>Ctrl+F search</span>
+                <span>·</span>
+                <span>Click node for details</span>
+                <span>·</span>
+                <span>Scroll to zoom</span>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}

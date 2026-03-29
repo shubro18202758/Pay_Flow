@@ -1,0 +1,68 @@
+# ============================================================================
+# PayFlow — .gitignore
+# ============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Data (too large for git — use DVC or cloud storage)
+data/raw/*
+data/processed/*
+data/synthetic/*
+data/*.db
+!data/**/.gitkeep
+
+# Artifacts
+artifacts/models/*
+artifacts/evidence/*
+artifacts/reports/*
+!artifacts/**/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Environment
+.env
+.env.local
+*.pem
+*.key
+
+# PyTorch / ML
+*.pt
+*.pth
+*.onnx
+*.bin
+checkpoints/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Vite cache
+.vite/
+
+# Frontend
+frontend/app/node_modules/
+frontend/app/dist/
+frontend/app/.vite/

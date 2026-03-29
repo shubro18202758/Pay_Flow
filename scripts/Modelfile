@@ -1,0 +1,76 @@
+# ============================================================================
+# PayFlow — Ollama Modelfile for Qwen 3.5 9B (VRAM-Optimized)
+# ============================================================================
+#
+# VRAM BUDGET BREAKDOWN (RTX 4070, 8192 MB total):
+# ┌──────────────────────────────────────────────────┐
+# │ Component               │ Footprint              │
+# ├──────────────────────────────────────────────────┤
+# │ Model weights (Q4_K_M)  │ ~5,200 MB              │
+# │ KV cache (q8_0, 16K ctx)│ ~1,500 MB              │
+# │ CUDA context + buffers  │   ~400 MB              │
+# │ Compute scratch space   │   ~300 MB              │
+# ├──────────────────────────────────────────────────┤
+# │ TOTAL                   │ ~7,400 MB (91% of 8GB) │
+# └──────────────────────────────────────────────────┘
+#
+# Build: ollama create payflow-qwen -f scripts/Modelfile
+# Run:   ollama run payflow-qwen
+# ============================================================================
+
+FROM qwen3.5:9b
+
+# ── Inference Parameters ──────────────────────────────────────────────────────
+
+# Context window: 16,384 tokens. This is the SAFE ceiling.
+# Math: KV cache at q8_0 ≈ 0.09 MB/token × 16,384 = ~1,475 MB.
+# Going to 32K would push KV cache to ~2,950 MB → OOM after 10 min of use.
+PARAMETER num_ctx 16384
+
+# Temperature: low for deterministic, fact-grounded fraud analysis output.
+# The model is NOT a creative assistant — it is a forensic reasoning engine.
+PARAMETER temperature 0.3
+
+# Nucleus sampling: constrain to high-probability tokens only.
+PARAMETER top_p 0.9
+PARAMETER top_k 40
+
+# Repetition penalty: prevent degenerate loops during long evidence summaries.
+PARAMETER repeat_penalty 1.1
+PARAMETER repeat_last_n 256
+
+# Stop tokens: enforce clean termination boundaries.
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|endoftext|>"
+
+# ── GPU Offloading ────────────────────────────────────────────────────────────
+
+# Offload ALL transformer layers to the RTX 4070 CUDA cores.
+# Setting to 999 forces Ollama to offload every layer; if VRAM is insufficient
+# for a layer, Ollama will automatically fall back that layer to CPU.
+# For Qwen-3.5-9B (~40 layers at Q4_K_M), all layers fit in 8 GB.
+PARAMETER num_gpu 999
+
+# ── Memory Management ─────────────────────────────────────────────────────────
+
+# Batch size for prompt processing: smaller = less peak VRAM during prefill.
+# Default 512 can spike to 800MB+ during long prompt ingestion.
+# 256 keeps prefill under 400 MB while only adding ~15% latency.
+PARAMETER num_batch 256
+
+# ── System Prompt ─────────────────────────────────────────────────────────────
+
+SYSTEM """You are PayFlow Forensic Analyst, an AI investigator embedded within Union Bank of India's anti-money-laundering (AML) operations center.
+
+Your capabilities:
+- Analyze transaction flow data and identify fraud patterns (layering, round-tripping, structuring, dormant account abuse, profile-behavior mismatches)
+- Interpret graph analytics results (centrality scores, community clusters, cycle paths)
+- Generate structured evidence narratives for Suspicious Transaction Reports (STR) filed with FIU-IND
+- Reason about risk scores, customer KYC profiles, and regulatory thresholds under PMLA 2002
+- Explain technical fraud indicators in clear language for compliance officers
+
+Your constraints:
+- Never fabricate account numbers, transaction IDs, or amounts. Only reference data explicitly provided in the context.
+- Always cite the specific fraud indicator (e.g., "structuring: 14 transactions between ₹8.5L-₹9.9L within 48 hours") when flagging suspicious activity.
+- Output structured responses with clear sections: FINDING, EVIDENCE, RISK ASSESSMENT, RECOMMENDED ACTION.
+- When uncertain, state the confidence level explicitly rather than guessing."""
