@@ -735,14 +735,18 @@ class PayFlowOrchestrator:
 
         # 10. AlertRouter
         from src.ml.models.alert_router import AlertRouter
-        self._router = AlertRouter()
+        max_agent_tasks = int(os.getenv("PAYFLOW_MAX_AGENT_TASKS", "2"))
+        self._router = AlertRouter(max_agent_tasks=max_agent_tasks)
         self._router.register_graph_consumer(self._graph.investigate)
         self._router.register_ledger_consumer(self._ledger.anchor_alert)
         self._router.register_circuit_breaker_consumer(self._breaker.on_alert)
         if self._agent:
             self._router.register_agent_consumer(self._agent.on_alert)
-        logger.info("AlertRouter wired (%d consumer groups)",
-                     3 + (1 if self._agent else 0))
+        logger.info(
+            "AlertRouter wired (%d consumer groups, max_agent_tasks=%d)",
+            3 + (1 if self._agent else 0),
+            max_agent_tasks,
+        )
 
         # 11. IngestionPipeline
         from src.ingestion.stream_processor import IngestionPipeline
