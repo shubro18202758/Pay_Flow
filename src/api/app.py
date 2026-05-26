@@ -138,10 +138,62 @@ def create_app(orchestrator=None) -> FastAPI:
                     "model": model,
                     "prompt": "Say hello in one sentence.",
                     "stream": False,
+                    "keep_alive": "30m",
+                    "options": {
+                        "num_ctx": 2048,
+                        "num_predict": 32,
+                        "temperature": 0.1,
+                    },
                 },
             )
             response.raise_for_status()
             return response.json()
+
+    @app.get("/api/v1/llm/status")
+    async def llm_status():
+        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+        target_model = os.getenv("OLLAMA_MODEL", "qwen3.5:4b")
+        status = {
+            "target_model": target_model,
+            "ollama_url": ollama_url,
+            "target_installed": False,
+            "target_running": False,
+            "installed_models": [],
+            "running_models": [],
+            "reachable": False,
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            tags = await client.get(f"{ollama_url}/api/tags")
+            tags.raise_for_status()
+            status["reachable"] = True
+            installed = [
+                row.get("model") or row.get("name")
+                for row in tags.json().get("models", [])
+                if isinstance(row, dict) and (row.get("model") or row.get("name"))
+            ]
+            status["installed_models"] = installed
+            status["target_installed"] = any(
+                name == target_model or name.startswith(f"{target_model}:")
+                for name in installed
+            )
+
+            try:
+                ps = await client.get(f"{ollama_url}/api/ps")
+                ps.raise_for_status()
+                running = [
+                    row.get("model") or row.get("name")
+                    for row in ps.json().get("models", [])
+                    if isinstance(row, dict) and (row.get("model") or row.get("name"))
+                ]
+                status["running_models"] = running
+                status["target_running"] = any(
+                    name == target_model or name.startswith(f"{target_model}:")
+                    for name in running
+                )
+            except Exception:
+                pass
+
+        return status
 
     # Serve production frontend build if available
     if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():
