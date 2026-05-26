@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import {
   useActiveScenarios,
   useScenarioHistory,
+  useSnapshot,
   useTopology,
   useVerdicts,
 } from '@/hooks/use-api'
@@ -11,14 +12,22 @@ import { useActivityStore } from '@/stores/use-activity-store'
 
 export function useDashboardHydration() {
   const hydrateVerdicts = useDashboardStore((s) => s.hydrateVerdicts)
+  const setSystemTelemetry = useDashboardStore((s) => s.setSystemTelemetry)
   const setScenarios = useSimulationStore((s) => s.setScenarios)
   const onGraphBatchUpdate = useActivityStore((s) => s.onGraphBatchUpdate)
   const activityHydratedRef = useRef(false)
 
+  const { data: snapshotData } = useSnapshot()
   const { data: verdictData } = useVerdicts(80)
   const { data: activeData } = useActiveScenarios(true)
   const { data: historyData } = useScenarioHistory()
-  const { data: topologyData } = useTopology(500)
+  const { data: topologyData } = useTopology(300)
+
+  useEffect(() => {
+    if (snapshotData) {
+      setSystemTelemetry(snapshotData as unknown as Record<string, unknown>)
+    }
+  }, [snapshotData, setSystemTelemetry])
 
   useEffect(() => {
     if (verdictData?.verdicts) {

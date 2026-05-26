@@ -15,7 +15,7 @@ Architecture::
            ▼
     UnstructuredAnalysisAgent
            │
-           ├── analyze()  →  LLM call (Qwen 3.5 9B, temp=0.2)
+           ├── analyze()  →  LLM call (Qwen 3.5 4B, temp=0.2)
            │                    ├── Name analysis
            │                    ├── Social engineering detection
            │                    ├── Device fingerprint analysis
@@ -157,7 +157,7 @@ class UnstructuredAnalysisAgent:
 
         Pipeline:
         1. Heuristic pre-filter (instant, deterministic)
-        2. LLM deep analysis (Qwen 3.5 9B, async)
+        2. LLM deep analysis (Qwen 3.5 4B, async)
         3. Merge & deduplicate findings
         4. Compute aggregate risk scores
 
@@ -480,7 +480,7 @@ class UnstructuredAnalysisAgent:
         self, payload: UnstructuredPayload,
     ) -> list[SemanticFinding]:
         """
-        Call Qwen 3.5 9B for deep semantic analysis of unstructured data.
+        Call Qwen 3.5 4B for deep semantic analysis of unstructured data.
 
         The LLM handles nuanced detection that heuristics can't:
         - Name transliteration consistency across scripts
@@ -502,7 +502,7 @@ class UnstructuredAnalysisAgent:
         return self._parse_llm_findings(content)
 
     def _call_llm(self, messages: list[dict]) -> dict:
-        """Call Qwen 3.5 9B for NLU analysis."""
+        """Call Qwen 3.5 4B for NLU analysis."""
         if self._llm is None:
             return {"content": "", "tool_calls": []}
 
@@ -515,6 +515,7 @@ class UnstructuredAnalysisAgent:
             kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
+                "think": False,
                 "options": {
                     "temperature": 0.2,  # lower than main agent for precision
                     "num_predict": self._cfg.max_thinking_tokens,

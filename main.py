@@ -349,10 +349,17 @@ class LoadShedder:
 
     def _score_on_cpu(self, subgraph, center_nodes, reference_timestamp):
         """Fall back to CPU-based GNN scoring to preserve real risk scores."""
+        from src.ml.models.gnn_scorer import GNNScoringResult
+
         try:
             result = self._gnn.score_subgraph_cpu(
                 subgraph, center_nodes, reference_timestamp,
             )
+            if not isinstance(result, GNNScoringResult):
+                raise TypeError(
+                    f"score_subgraph_cpu returned {type(result).__name__}, "
+                    "expected GNNScoringResult",
+                )
             self._cpu_fallback_count += 1
             if self._cpu_fallback_count % 50 == 1:
                 logger.info(
@@ -362,7 +369,6 @@ class LoadShedder:
             return result
         except Exception as exc:
             logger.warning("GNN CPU fallback failed: %s — returning sentinel", exc)
-            from src.ml.models.gnn_scorer import GNNScoringResult
             return GNNScoringResult(
                 risk_score=-1.0,
                 node_count=0,
@@ -437,6 +443,7 @@ class PayFlowOrchestrator:
         vram_shed_threshold_mb: float = 7500.0,
         vram_resume_threshold_mb: float = 6500.0,
         enable_dashboard: bool = True,
+        dashboard_host: str = "127.0.0.1",
         dashboard_port: int = 8000,
     ) -> None:
         self._num_accounts = num_accounts
@@ -447,6 +454,7 @@ class PayFlowOrchestrator:
         self._skip_llm = skip_llm
         self._inference_batch_size = inference_batch_size
         self._enable_dashboard = enable_dashboard
+        self._dashboard_host = dashboard_host
         self._dashboard_port = dashboard_port
 
         self.metrics = OrchestratorMetrics()
@@ -477,6 +485,7 @@ class PayFlowOrchestrator:
         self._gpu_queue = None  # GPUPriorityQueue, created in initialize()
         self._threat_engine = None  # ThreatSimulationEngine, created in initialize()
         self._live_inference_task = None  # Background task for continuous inference
+        self._live_traffic_task = None  # Background task for serve-mode live banking flow
         self._inference_cursor = 0  # Tracks scored feature_store entries
         self._rule_engine = None  # TransactionRuleEngine, created in initialize()
         self._pre_approval_gate = None  # PreApprovalGate, created in initialize()
@@ -805,7 +814,7 @@ class PayFlowOrchestrator:
                 self._dashboard_app = create_app(orchestrator=self)
                 config = uvicorn.Config(
                     self._dashboard_app,
-                    host="127.0.0.1",
+                    host=self._dashboard_host,
                     port=self._dashboard_port,
                     log_level="warning",
                 )
@@ -817,7 +826,8 @@ class PayFlowOrchestrator:
                     self._broadcast_telemetry(), name="telemetry-broadcaster",
                 )
                 logger.info(
-                    "Dashboard server started on http://127.0.0.1:%d",
+                    "Dashboard server started on http://%s:%d",
+                    self._dashboard_host,
                     self._dashboard_port,
                 )
             except Exception as exc:
@@ -856,6 +866,9 @@ class PayFlowOrchestrator:
         # Start live inference loop (continuous scoring for simulation events)
         self._live_inference_task = asyncio.create_task(
             self._live_inference_loop(), name="live-inference",
+        )
+        self._live_traffic_task = asyncio.create_task(
+            self._live_traffic_loop(), name="live-banking-traffic",
         )
 
         self.metrics.pipeline_end_time = time.time()
@@ -1280,6 +1293,32 @@ class PayFlowOrchestrator:
                                     "evaluation_ms": round(gate_result.evaluation_ms, 2),
                                 })
 
+                            # Best-effort Adaptive Event Lab correlation.
+                            try:
+                                from src.simulation import get_event_lab_service
+
+                                _event_id = all_txn_ids[i] if i < len(all_txn_ids) else f"txn_{i}"
+                                await get_event_lab_service().record_stage_for_ids(
+                                    [_event_id],
+                                    "rule_scored",
+                                    {
+                                        "rule_violations": len(rule_result.violations),
+                                        "rule_max_severity": rule_result.max_severity.value,
+                                    },
+                                )
+                                await get_event_lab_service().record_stage_for_ids(
+                                    [_event_id],
+                                    "gate_evaluated",
+                                    {
+                                        "decision": decision,
+                                        "risk_score": round(gate_result.risk_score, 4),
+                                        "reason": gate_result.reason,
+                                    },
+                                    round(gate_result.evaluation_ms, 2),
+                                )
+                            except Exception:
+                                pass
+
                         # Broadcast batch summary
                         await _bc.publish("transaction_decision", {
                             "type": "batch_summary",
@@ -1330,6 +1369,113 @@ class PayFlowOrchestrator:
                 logger.error("Live inference error: %s", exc, exc_info=True)
                 await asyncio.sleep(5.0)  # Back off on error
 
+    def _retime_live_event(self, event, timestamp: int):
+        """Move generated synthetic events onto the current live clock."""
+        from msgspec.structs import replace
+        from src.ingestion.schemas import AuthEvent, InterbankMessage, Transaction
+        from src.ingestion.validators import (
+            compute_auth_checksum,
+            compute_interbank_checksum,
+            compute_transaction_checksum,
+        )
+
+        if isinstance(event, Transaction):
+            checksum = compute_transaction_checksum(
+                event.txn_id,
+                timestamp,
+                event.sender_id,
+                event.receiver_id,
+                event.amount_paisa,
+                int(event.channel),
+            )
+            return replace(event, timestamp=timestamp, checksum=checksum)
+
+        if isinstance(event, InterbankMessage):
+            checksum = compute_interbank_checksum(
+                event.msg_id,
+                timestamp,
+                event.sender_ifsc,
+                event.receiver_ifsc,
+                event.amount_paisa,
+                int(event.channel),
+            )
+            return replace(event, timestamp=timestamp, checksum=checksum)
+
+        if isinstance(event, AuthEvent):
+            checksum = compute_auth_checksum(
+                event.event_id,
+                timestamp,
+                event.account_id,
+                int(event.action),
+                event.ip_address,
+            )
+            return replace(event, timestamp=timestamp, checksum=checksum)
+
+        return event
+
+    async def _live_traffic_loop(self) -> None:
+        """
+        Keep serve mode visibly alive by injecting a bounded stream of fresh
+        Union Bank-like transactions through the same ingestion, graph, ledger,
+        ML, alert-routing, and SSE pipeline used by the main run.
+        """
+        from src.ingestion.generators import synthetic_transactions as gen
+
+        logger.info("Live banking traffic pulse started (adaptive 1-2s bursts)")
+        burst = 0
+        scenario_cycle = ("normal", "normal", "structuring", "normal", "layering", "normal", "profile")
+
+        while True:
+            try:
+                await asyncio.sleep(1.35 if burst % 3 else 1.8)
+
+                if self._world is None or self._pipeline is None:
+                    continue
+                if not getattr(self._pipeline, "_running", False):
+                    continue
+
+                now = int(time.time())
+                mode = scenario_cycle[burst % len(scenario_cycle)]
+                events = []
+
+                normal_count = 10 + (burst % 4) * 2
+                for _ in range(normal_count):
+                    events.append(gen._generate_normal_transaction(self._world, now - 120))
+
+                if mode == "structuring":
+                    events.extend(gen.generate_structuring_burst(
+                        self._world,
+                        now - 20,
+                        num_transactions=5,
+                    ))
+                elif mode == "layering":
+                    events.extend(gen.generate_layering_chain(
+                        self._world,
+                        now - 18,
+                        chain_length=4,
+                    ))
+                elif mode == "profile":
+                    events.extend(gen.generate_profile_mismatch(self._world, now - 15))
+
+                emitted = 0
+                for idx, event in enumerate(events[:24]):
+                    live_ts = now + min(idx // 8, 2)
+                    await self._pipeline.ingest(self._retime_live_event(event, live_ts))
+                    emitted += 1
+                    if emitted % 8 == 0:
+                        await asyncio.sleep(0.04)
+
+                burst += 1
+                if burst % 10 == 0:
+                    logger.info("Live traffic pulse: %d fresh events ingested", emitted)
+
+            except asyncio.CancelledError:
+                logger.info("Live banking traffic pulse stopped")
+                break
+            except Exception as exc:
+                logger.error("Live traffic pulse error: %s", exc, exc_info=True)
+                await asyncio.sleep(5.0)
+
     # ── Shutdown ──────────────────────────────────────────────────────────
 
     async def shutdown(self) -> None:
@@ -1345,6 +1491,12 @@ class PayFlowOrchestrator:
             self._live_inference_task.cancel()
             try:
                 await self._live_inference_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._live_traffic_task and not self._live_traffic_task.done():
+            self._live_traffic_task.cancel()
+            try:
+                await self._live_traffic_task
             except (asyncio.CancelledError, Exception):
                 pass
 
@@ -1430,6 +1582,12 @@ class PayFlowOrchestrator:
                 "events_per_sec": round(self.metrics.events_per_sec, 1),
             },
             "hardware": self.profiler.snapshot(),
+            "live_stream": {
+                "enabled": bool(self._live_traffic_task and not self._live_traffic_task.done()),
+                "mode": "continuous_banking_pulse",
+                "source": "local_synthetic_world_through_production_pipeline",
+                "bounded": True,
+            },
         }
         if self._gnn_proxy:
             snap["load_shedder"] = self._gnn_proxy.snapshot()
@@ -1544,7 +1702,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable the real-time web dashboard",
     )
     p.add_argument(
-        "--dashboard-port", type=int, default=8000,
+        "--dashboard-host",
+        default=os.getenv("PAYFLOW_DASHBOARD_HOST", os.getenv("PAYFLOW_HOST", "127.0.0.1")),
+        help="Host/interface for the dashboard web server (default: 127.0.0.1)",
+    )
+    p.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=int(os.getenv("PAYFLOW_DASHBOARD_PORT", os.getenv("PORT", "8000"))),
         help="Port for the dashboard web server (default: 8000)",
     )
     p.add_argument(
@@ -1555,6 +1720,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _print_banner() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     print("""
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
@@ -1604,6 +1773,7 @@ async def async_main(args: argparse.Namespace) -> None:
         vram_shed_threshold_mb=args.vram_shed_mb,
         vram_resume_threshold_mb=args.vram_resume_mb,
         enable_dashboard=not args.no_dashboard,
+        dashboard_host=args.dashboard_host,
         dashboard_port=args.dashboard_port,
     )
 
@@ -1616,7 +1786,11 @@ async def async_main(args: argparse.Namespace) -> None:
         except Exception as exc:
             logger.warning("Pipeline run failed: %s — dashboard still alive", exc)
         if args.serve:
-            logger.info("Serve mode: dashboard staying alive at http://127.0.0.1:%d — Ctrl+C to stop", args.dashboard_port)
+            logger.info(
+                "Serve mode: dashboard staying alive at http://%s:%d — Ctrl+C to stop",
+                args.dashboard_host,
+                args.dashboard_port,
+            )
             await asyncio.sleep(float('inf'))
     finally:
         await orchestrator.shutdown()

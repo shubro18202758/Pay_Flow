@@ -937,6 +937,28 @@ async def get_investigation_case(
     return result
 
 
+@router.get("/investigation/case/{case_id}/trace")
+async def get_investigation_case_trace(
+    case_id: str, request: Request,
+) -> dict[str, Any]:
+    """Build a PS3-ready fund-flow trace for an investigation case."""
+    from src.api.ps3_case import build_case_trace
+
+    orch = getattr(request.app.state, "orchestrator", None)
+    return build_case_trace(orch, case_id)
+
+
+@router.post("/investigation/case/{case_id}/evidence-package")
+async def create_investigation_evidence_package(
+    case_id: str, request: Request,
+) -> dict[str, Any]:
+    """Generate a FIU-ready evidence package for the case workbench."""
+    from src.api.ps3_case import build_evidence_package
+
+    orch = getattr(request.app.state, "orchestrator", None)
+    return await build_evidence_package(orch, case_id)
+
+
 @router.get("/investigation/stats")
 async def investigation_stats(request: Request) -> dict[str, Any]:
     """Get investigation module statistics."""

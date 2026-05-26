@@ -2,7 +2,7 @@
 PayFlow — Natural Language Query Interface
 =============================================
 Enables analysts to query the fraud detection system using natural
-language, powered by Qwen 3.5 9b. Translates questions into
+language, powered by Qwen 3.5 4B. Translates questions into
 structured API calls and returns contextual responses.
 
 Supports queries like:
@@ -19,6 +19,8 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
+
+from config.settings import OLLAMA_CFG
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,7 @@ You have access to the following data sources:
 5. Central Fraud Registry (CFR) - cross-bank fraud intelligence
 6. Agent Verdicts - AI agent investigation results
 7. System Metrics - hardware, pipeline, model performance
+8. Pre-Fraud Intel Radar - external OSINT/SOCMINT trends and guarded adaptive playbooks
 
 When answering:
 - Be precise with numbers and account IDs
@@ -69,7 +72,7 @@ Respond in a structured format with clear sections."""
 {
     "intent": "one of: risk_query, account_lookup, fraud_patterns, system_status, explanation, statistics, recommendation, general",
     "entities": {"account_id": "...", "time_range": "...", "fraud_type": "...", "limit": N},
-    "data_sources": ["graph", "circuit_breaker", "ml_models", "ledger", "cfr", "verdicts", "metrics"]
+    "data_sources": ["graph", "circuit_breaker", "ml_models", "ledger", "cfr", "verdicts", "metrics", "pre_fraud_intel"]
 }
 
 User query: """
@@ -116,7 +119,7 @@ User query: """
             sources=data_sources,
             confidence=0.85 if self._llm else 0.5,
             processing_ms=round(elapsed, 2),
-            model_used="qwen3.5:9b-q4_K_M" if self._llm else "fallback",
+            model_used=getattr(self._llm, "_model", OLLAMA_CFG.model) if self._llm else "fallback",
         )
 
     async def _classify_intent(self, question: str) -> dict:
@@ -140,8 +143,10 @@ User query: """
             return {"intent": "risk_query", "entities": {}, "data_sources": ["ml_models", "graph"]}
         if any(w in q for w in ["account", "acc_", "frozen", "freeze"]):
             return {"intent": "account_lookup", "entities": {}, "data_sources": ["graph", "circuit_breaker"]}
+        if any(w in q for w in ["latest", "trend", "osint", "socmint", "digital arrest", "kyc", "loan app", "public signal"]):
+            return {"intent": "fraud_patterns", "entities": {}, "data_sources": ["pre_fraud_intel", "graph", "verdicts"]}
         if any(w in q for w in ["pattern", "mule", "laundering", "phishing", "swift"]):
-            return {"intent": "fraud_patterns", "entities": {}, "data_sources": ["graph", "verdicts"]}
+            return {"intent": "fraud_patterns", "entities": {}, "data_sources": ["graph", "verdicts", "pre_fraud_intel"]}
         if any(w in q for w in ["status", "health", "gpu", "vram", "cpu", "pipeline"]):
             return {"intent": "system_status", "entities": {}, "data_sources": ["metrics"]}
         if any(w in q for w in ["why", "explain", "reason", "because"]):
@@ -160,6 +165,20 @@ User query: """
             return context
 
         orch = self._orchestrator
+
+        if "pre_fraud_intel" in data_sources:
+            try:
+                from src.intel import get_pre_fraud_intel_service
+
+                context["pre_fraud_intelligence"] = (
+                    get_pre_fraud_intel_service().active_context_for_ai()
+                )
+            except Exception:
+                context["pre_fraud_intelligence"] = {
+                    "active_playbooks": [],
+                    "top_trends": [],
+                    "guardrail": "Pre-fraud intelligence context unavailable.",
+                }
 
         if "metrics" in data_sources or intent == "system_status":
             try:
@@ -283,9 +302,18 @@ User query: """
 
         elif intent == "fraud_patterns":
             graph_sum = context.get("graph_summary", {})
+            intel = context.get("pre_fraud_intelligence", {})
             parts.append(f"Fraud Pattern Summary:")
             parts.append(f"• Total Fraud Edges: {graph_sum.get('fraud_edges', 0)}")
             parts.append(f"• Total Nodes: {graph_sum.get('nodes', 0)}")
+            trends = intel.get("top_trends", [])
+            if trends:
+                parts.append("Pre-Fraud Intel Radar:")
+                for trend in trends[:3]:
+                    parts.append(
+                        f"• {trend.get('title', 'External trend')} "
+                        f"(trust {trend.get('trust_score', 0)})"
+                    )
 
         elif intent == "statistics":
             snap = context.get("system_snapshot", {})

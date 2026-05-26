@@ -352,13 +352,14 @@ def _make_engine():
 
 
 def test_engine_available_attacks():
-    """Engine reports 3 available attack types."""
+    """Engine reports all available attack types."""
     engine, _ = _make_engine()
     attacks = engine.available_attacks()
-    assert len(attacks) == 3
+    assert len(attacks) == 4
     assert "upi_mule_network" in attacks
     assert "circular_laundering" in attacks
     assert "velocity_phishing" in attacks
+    assert "swift_heist" in attacks
 
 
 def test_engine_launch_and_complete():
@@ -555,12 +556,13 @@ def _make_test_app():
 
 
 def test_route_list_attacks():
-    """GET /attacks returns 3 attack types."""
+    """GET /attacks returns all attack types."""
     client, _, pipeline = _make_test_app()
     resp = client.get("/api/v1/simulation/attacks")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["attacks"]) == 3
+    assert len(data["attacks"]) == 4
+    assert "swift_heist" in data["attacks"]
 
 
 def test_route_launch_attack():

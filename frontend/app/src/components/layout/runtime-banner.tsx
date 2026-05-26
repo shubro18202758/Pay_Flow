@@ -2,26 +2,34 @@ import { useDashboardStore } from '@/stores/use-dashboard-store'
 import { useUIStore } from '@/stores/use-ui-store'
 import { cn } from '@/lib/utils'
 import { AlertCircle, CheckCircle2, Radio, Server, Wifi } from 'lucide-react'
+import { useEffect, useState } from 'react'
 
 function buildUiBase(): string {
-  if (typeof window === 'undefined') return 'http://127.0.0.1:3000'
-  const { protocol, hostname, port } = window.location
-  if (!port || port === '3000') return `${protocol}//${hostname}:3000`
-  return `${protocol}//${hostname}:${port}`
+  if (typeof window === 'undefined') return 'http://127.0.0.1:8010'
+  return window.location.origin
 }
 
 function buildApiBase(): string {
-  if (typeof window === 'undefined') return 'http://127.0.0.1:8000'
-  const { protocol, hostname } = window.location
-  return `${protocol}//${hostname}:8000`
+  if (typeof window === 'undefined') return 'http://127.0.0.1:8010'
+  return window.location.origin
 }
 
 export function RuntimeBanner() {
   const connected = useUIStore((s) => s.connected)
   const orchestrator = useDashboardStore((s) => s.orchestrator)
   const hardware = useDashboardStore((s) => s.hardware)
+  const [warmup, setWarmup] = useState(true)
 
-  if (connected && orchestrator && hardware) {
+  useEffect(() => {
+    if (connected || (orchestrator && hardware)) {
+      setWarmup(false)
+      return
+    }
+    const timer = window.setTimeout(() => setWarmup(false), 14_000)
+    return () => window.clearTimeout(timer)
+  }, [connected, orchestrator, hardware])
+
+  if ((connected || !warmup) && orchestrator && hardware) {
     return null
   }
 
@@ -29,18 +37,23 @@ export function RuntimeBanner() {
   const apiBase = buildApiBase()
 
   const title = connected
-    ? 'Connected to stream. Waiting for telemetry payload...'
-    : 'Live feed disconnected. Start backend stream to hydrate dashboard.'
+    ? 'Live stream connected. Waiting for the next telemetry frame.'
+    : warmup
+      ? 'Starting live telemetry. REST snapshot is hydrating the prototype while SSE attaches.'
+      : 'Live stream is reconnecting in the background. Current REST snapshot remains available.'
 
   const StatusIcon = connected ? CheckCircle2 : AlertCircle
+  const tone = connected ? 'ready' : warmup ? 'warming' : 'snapshot'
 
   return (
     <section
       className={cn(
         'shrink-0 border-b border-border-default px-4 py-2.5 text-[11px] animate-fade-in',
-        connected
+        tone === 'ready'
           ? 'bg-linear-to-r from-bg-elevated via-bg-surface to-bg-elevated text-text-secondary'
-          : 'bg-linear-to-r from-alert-critical/20 via-bg-surface to-alert-high/15 text-text-primary',
+          : tone === 'warming'
+            ? 'bg-linear-to-r from-[#fff6dd] via-bg-surface to-[#e7f2ff] text-text-primary'
+            : 'bg-linear-to-r from-[#fff6dd] via-bg-surface to-bg-elevated text-text-primary',
       )}
     >
       {/* Status line */}
@@ -48,7 +61,7 @@ export function RuntimeBanner() {
         <StatusIcon
           className={cn(
             'w-3.5 h-3.5 shrink-0',
-            connected ? 'text-green-400' : 'text-red-400',
+            connected ? 'text-emerald-500' : 'text-amber-600',
           )}
           strokeWidth={2}
         />

@@ -299,6 +299,7 @@ class CycleDetector:
         node_ids: list[str],
         current_time: int,
         k_hops: int = 3,
+        max_results: int = 100,
     ) -> list[TransactionCycle]:
         """
         Extract a k-hop subgraph around the given nodes and run cycle
@@ -318,7 +319,7 @@ class CycleDetector:
             return []
 
         subgraph = graph.subgraph(neighborhood)
-        return self.detect(subgraph, current_time)
+        return self.detect(subgraph, current_time, max_results=max_results)
 
     # ── internals ───────────────────────────────────────────────────────
 

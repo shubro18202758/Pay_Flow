@@ -218,6 +218,39 @@ export interface AttackTypesResponse {
   attacks: Record<string, AttackTypeDetail>
 }
 
+export type PS3ScenarioId =
+  | 'rapid_layering'
+  | 'round_tripping'
+  | 'structuring'
+  | 'dormant_activation'
+  | 'profile_mismatch'
+
+export interface PS3ScenarioSummary {
+  id: PS3ScenarioId
+  label: string
+  typologies: string[]
+  expected_indicators: string[]
+  recommended_actions: string[]
+}
+
+export interface PS3ScenariosResponse {
+  scenarios: PS3ScenarioSummary[]
+}
+
+export interface PS3LaunchRequest {
+  scenario: PS3ScenarioId
+  intensity?: 'demo' | 'scale'
+  seed?: number
+}
+
+export interface PS3LaunchResponse {
+  scenario_id: string
+  primary_case_id: string
+  focus_account_id: string
+  focus_txn_id: string
+  expected_indicators: string[]
+}
+
 // === Custom Event Injection (POST /api/v1/simulation/inject) ===
 
 export interface InjectEventRequest {
@@ -247,6 +280,220 @@ export interface InjectEventResponse {
   status: string
   event: Record<string, unknown>
   timestamp: number
+}
+
+// === Adaptive Event Lab ===
+
+export type EventLabMode = 'single' | 'burst' | 'chain'
+export type EventLabIntensity = 'demo' | 'scale'
+export type CountermeasureStatus = 'proposed' | 'approved' | 'rejected' | 'executing' | 'executed' | 'failed' | 'expired'
+
+export interface EventLabTemplate {
+  template_id: string
+  title: string
+  typologies: string[]
+  channels: string[]
+  default_mode: EventLabMode
+  description: string
+  expected_indicators: string[]
+  countermeasure_actions: string[]
+  linked_playbooks: Array<AdaptivePlaybook & { trend?: FraudTrendCluster; matched_typologies?: string[] }>
+  trust_policy: string
+  execution_allowed: boolean
+}
+
+export interface EventLabTemplatesResponse {
+  templates: EventLabTemplate[]
+  active_playbooks: AdaptivePlaybook[]
+  generated_at: number
+}
+
+export interface EventLabRequest {
+  template_id: string
+  playbook_id?: string | null
+  mode?: EventLabMode | null
+  intensity?: EventLabIntensity
+  seed?: number | null
+}
+
+export interface EventLabRunRequest extends EventLabRequest {
+  analyst_required?: boolean
+}
+
+export interface EventLabGeneratedEvent {
+  type: 'transaction' | 'auth' | 'interbank'
+  event_id: string
+  txn_id?: string
+  msg_id?: string
+  sequence: number
+  sender?: string
+  receiver?: string
+  account?: string
+  amount_paisa?: number
+  channel?: string
+  fraud_label?: string
+  action?: string
+  success?: boolean
+  ip?: string
+  device_fingerprint?: string
+  counterparty_role?: string
+  narrative: string
+  [key: string]: unknown
+}
+
+export interface EventLabStage {
+  stage: string
+  timestamp: number
+  status: string
+  duration_ms?: number | null
+  event_ids: string[]
+  meta: Record<string, unknown>
+}
+
+export interface EventLabRunResponse {
+  run_id: string
+  correlation_id: string
+  template_id: string
+  template_title: string
+  mode: EventLabMode
+  intensity: EventLabIntensity
+  status: string
+  analyst_required: boolean
+  linked_intel: Record<string, unknown>
+  expected_indicators: string[]
+  event_ids: string[]
+  events: EventLabGeneratedEvent[]
+  proposal_ids: string[]
+  stages: EventLabStage[]
+  qwen_explanation: string
+  decision_authority: string
+  audit_hash: string
+  countermeasure_proposals: CountermeasureProposal[]
+  countermeasure_policy: {
+    authority: string
+    execution_allowed: boolean
+    source_trust: number
+    qwen_role: string
+    decision_authority: string
+  }
+  latency_metrics: {
+    stage_count: number
+    known_stage_latency_ms: number
+    age_seconds: number
+  }
+}
+
+export interface EventLabPreviewResponse {
+  template: EventLabTemplate
+  run_preview: {
+    correlation_id: string
+    mode: EventLabMode
+    intensity: EventLabIntensity
+    event_ids: string[]
+    events: EventLabGeneratedEvent[]
+    expected_indicators: string[]
+    countermeasure_policy: EventLabRunResponse['countermeasure_policy']
+    qwen_explanation: string
+  }
+  generated_at: number
+}
+
+export interface CountermeasureProposal {
+  proposal_id: string
+  run_id: string
+  action: string
+  status: CountermeasureStatus
+  title: string
+  reason: string
+  targets: string[]
+  trigger_event_ids: string[]
+  risk_evidence: Record<string, unknown>
+  intel_context: Record<string, unknown>
+  ttl_seconds: number
+  expires_at: number
+  execution_allowed: boolean
+  rollback_available: boolean
+  created_at: number
+  updated_at: number
+  analyst?: string | null
+  analyst_reason?: string | null
+  executed_at?: number | null
+  execution_result: Record<string, unknown>
+  audit_hash: string
+}
+
+export interface CountermeasureProposalsResponse {
+  count: number
+  proposals: CountermeasureProposal[]
+  generated_at: number
+}
+
+export interface EventLabExplainabilityStage extends EventLabStage {
+  label: string
+  group: string
+  evidence_summary: string
+}
+
+export interface EventLabExplainabilityStageGroup {
+  group: string
+  label: string
+  description: string
+  completed: boolean
+  stage_count: number
+  latency_ms: number
+  stages: EventLabExplainabilityStage[]
+}
+
+export interface EventLabEvidencePanel {
+  key: string
+  title: string
+  status: string
+  authority: string
+  summary: string
+  metrics: Record<string, string | number | boolean>
+  items: string[]
+}
+
+export interface EventLabProposalLifecycle {
+  proposal_id: string
+  action: string
+  status: CountermeasureStatus
+  title: string
+  targets: string[]
+  analyst?: string | null
+  analyst_reason?: string | null
+  execution_allowed: boolean
+  ttl_remaining_seconds: number
+  rollback_available: boolean
+  risk_evidence: Record<string, unknown>
+  execution_result: Record<string, unknown>
+  audit_hash: string
+  decision_summary: string
+}
+
+export interface EventLabAuthorityRow {
+  layer: string
+  role: string
+  authority: string
+  can_execute: boolean
+}
+
+export interface EventLabExplainabilityResponse {
+  run: EventLabRunResponse
+  stage_groups: EventLabExplainabilityStageGroup[]
+  evidence_panels: EventLabEvidencePanel[]
+  proposal_lifecycle: EventLabProposalLifecycle[]
+  authority_matrix: EventLabAuthorityRow[]
+  runtime: {
+    latest_stage: string
+    stage_count: number
+    proposal_count: number
+    executed_count: number
+    pending_count: number
+    ledger_hashes: string[]
+    rollback_available: boolean
+  }
+  generated_at: number
 }
 
 // === Enums (GET /api/v1/simulation/enums) ===
@@ -289,6 +536,10 @@ export type SSEChannel =
   | 'system'
   | 'simulation'
   | 'pipeline'
+  | 'intel'
+  | 'event_lab'
+  | 'countermeasure'
+  | 'transaction_decision'
 
 export interface SSEEnvelope {
   channel: SSEChannel
@@ -326,9 +577,11 @@ export interface SSEAgentToolCall {
   txn_id: string
   iteration?: number
   tool_name: string
+  tool_args?: unknown
   success: boolean
   duration_ms: number
   output_summary?: string
+  result_summary?: string
 }
 
 export interface SSEAgentVerdict {
@@ -339,6 +592,7 @@ export interface SSEAgentVerdict {
   confidence: number
   fraud_typology: string
   reasoning_summary: string
+  evidence?: string[]
   evidence_cited?: string[]
   recommended_action: string
   thinking_steps: number
@@ -458,6 +712,7 @@ export const FraudPattern = {
   UPI_MULE_NETWORK: 6,
   CIRCULAR_LAUNDERING: 7,
   VELOCITY_PHISHING: 8,
+  SWIFT_HEIST: 9,
 } as const
 
 export type FraudPatternValue = (typeof FraudPattern)[keyof typeof FraudPattern]
@@ -472,6 +727,7 @@ export const FRAUD_PATTERN_LABELS: Record<number, string> = {
   6: 'UPI Mule Network',
   7: 'Circular Laundering',
   8: 'Velocity Phishing',
+  9: 'SWIFT Heist',
 }
 
 // === Pipeline SSE Events ===
@@ -638,6 +894,7 @@ export interface FeatureDrift {
   feature: string
   psi: number
   severity: DriftSeverity
+  has_drift?: boolean
 }
 
 export interface DriftResponse {
@@ -681,6 +938,7 @@ export interface ConsortiumAlertData {
 }
 
 export interface ConsortiumStatusResponse {
+  member_count?: number
   member_banks: number
   members: Record<string, { joined: number; alerts_published: number; trust_score: number }>
   total_alerts: number
@@ -814,6 +1072,522 @@ export interface InvestigationStatsResponse {
   legal_proceedings: number
   total_fraud_amount_paisa: number
   [key: string]: unknown
+}
+
+export interface CaseTimelineEntry {
+  step: number
+  timestamp: number
+  title: string
+  txn_id: string
+  amount_paisa: number
+  amount_display: string
+  channel: string
+  indicator: string
+  evidence_id: string
+}
+
+export interface CaseTransaction {
+  txn_id: string
+  source: string
+  target: string
+  amount_paisa: number
+  channel: string
+  fraud_label: number
+  fraud_label_name: string
+  timestamp: number
+  device_fingerprint: string
+  evidence_id: string
+}
+
+export interface CaseAccountRole {
+  account_id: string
+  role: string
+  position: string
+}
+
+export interface CaseTraceResponse {
+  case_id: string
+  scenario_id: string
+  scenario: string
+  scenario_label: string
+  status: string
+  focus_account_id: string
+  focus_txn_id: string
+  ps3_typologies: string[]
+  expected_indicators: string[]
+  timeline: CaseTimelineEntry[]
+  transaction_chain: CaseTransaction[]
+  graph_path: string[]
+  account_roles: CaseAccountRole[]
+  risk_scores: {
+    graph_evidence_score: number
+    fraud_edge_count: number
+    transaction_count: number
+    total_amount_paisa: number
+    total_amount_display: string
+  }
+  evidence_references: string[]
+  recommended_actions: string[]
+  pre_fraud_intelligence?: PreFraudEvidenceContext
+  narrative: string
+  generated_at: number
+}
+
+export interface EvidencePackageResponse {
+  package_id: string
+  case_id: string
+  fiu_summary: string
+  suspicious_indicators: string[]
+  involved_entities: CaseAccountRole[]
+  transactions: CaseTransaction[]
+  case_trace: CaseTraceResponse
+  audit_hashes: {
+    latest_block_hash: string
+    latest_block_index: number | null
+    package_hash: string
+  }
+  model_metadata: {
+    model: string
+    role: string
+    decision_authority: string
+  }
+  pre_fraud_intelligence?: PreFraudEvidenceContext
+  event_lab_run_id?: string | null
+  countermeasure_proposals?: CountermeasureProposal[]
+  analyst_decisions?: Array<Record<string, unknown>>
+  executed_actions?: CountermeasureProposal[]
+  qwen_explanation?: string
+  pre_fraud_playbook?: Record<string, unknown> | null
+  countermeasure_audit_hashes?: string[]
+  json_payload: Record<string, unknown>
+  printable_html: string
+  generated_at: number
+}
+
+export interface PS3ReadinessRequirement {
+  id: string
+  label: string
+  status: 'ready' | 'partial' | 'blocked'
+  evidence: string
+}
+
+export interface PS3ReadinessResponse {
+  title: string
+  requirements: PS3ReadinessRequirement[]
+  runtime_health: {
+    orchestrator: boolean
+    graph: boolean
+    simulation: boolean
+    qwen_model: string
+    single_port_app: string
+    pre_fraud_intel?: boolean
+    active_intel_playbooks?: number
+  }
+  scale_metrics: {
+    events_ingested: number
+    events_per_sec: number
+    graph_nodes: number
+    graph_edges: number
+    active_scenarios: number
+    gpu_vram_free_mb: number
+    llm_tokens_total: number
+    intel_queue_depth?: number
+  }
+  pilot_architecture: string[]
+  generated_at: number
+}
+
+// === Pre-Fraud Intelligence Layer ===
+
+export interface IntelSourceConfig {
+  source_id: string
+  name: string
+  tier: 'tier_0' | 'tier_1' | 'tier_2' | 'tier_3'
+  category: string
+  jurisdiction: string
+  url: string
+  poll_interval_sec: number
+  enabled: boolean
+  terms_mode: string
+  last_polled_at: number | null
+  last_status: string
+}
+
+export interface IntelSourcesResponse {
+  sources: IntelSourceConfig[]
+  trust_policy: {
+    tiers: Record<string, string>
+    base_trust: Record<string, number>
+    promotion_threshold: number
+    promotion_rule: string
+    guardrails: string[]
+  }
+  last_refresh_at: number | null
+}
+
+export interface ExternalThreatSignal {
+  signal_id: string
+  source_id: string
+  source_name: string
+  source_tier: string
+  title: string
+  normalized_text: string
+  url: string
+  observed_at: number
+  region: string
+  language: string
+  entities: string[]
+  typologies: string[]
+  affected_channels: string[]
+  trust_score: number
+  confidence: number
+  corroboration_ids: string[]
+  sovereignty_tags: string[]
+  media_preview: IntelMediaPreview
+  geo_scope: IntelGeoHotspot[]
+  public_reach_score: number
+  signal_velocity_score: number
+  audit_hash: string
+}
+
+export interface IntelSignalsResponse {
+  count: number
+  signals: ExternalThreatSignal[]
+  last_refresh_at: number | null
+}
+
+export interface FraudTrendCluster {
+  trend_id: string
+  title: string
+  typologies: string[]
+  affected_channels: string[]
+  first_seen: number
+  last_seen: number
+  velocity_score: number
+  reach_score: number
+  india_relevance_score: number
+  evidence_count: number
+  source_tiers: string[]
+  evidence_ids: string[]
+  trust_score: number
+  audit_hash: string
+}
+
+export interface IntelTrendsResponse {
+  count: number
+  trends: FraudTrendCluster[]
+  generated_at: number
+}
+
+export interface AdaptivePlaybook {
+  playbook_id: string
+  trend_id: string
+  title: string
+  prompt_context: string
+  rule_deltas: Record<string, number>
+  risk_weight_deltas: Record<string, number>
+  watchlist_terms: string[]
+  scenario_seed: string
+  ttl_seconds: number
+  expires_at: number
+  promotion_status: 'applied' | 'shadow' | 'advisory'
+  promotion_reason: string
+  rollback_available: boolean
+  audit_hash: string
+}
+
+export interface IntelTuningStatus {
+  active_playbooks: number
+  shadow_changes: number
+  advisory_changes: number
+  applied_changes: string[]
+  rollback_available: boolean
+  last_refresh_at: number | null
+  bounded_queue: {
+    depth: number
+    max_depth: number
+    state: string
+  }
+  qwen_model: string
+  decision_authority: string
+}
+
+export interface IntelPlaybooksResponse {
+  count: number
+  playbooks: AdaptivePlaybook[]
+  tuning_status: IntelTuningStatus
+}
+
+export interface IntelRefreshResponse {
+  status: string
+  signals_added: number
+  signals: ExternalThreatSignal[]
+  trends: FraudTrendCluster[]
+  playbooks: AdaptivePlaybook[]
+  tuning_status: IntelTuningStatus
+}
+
+export interface IntelSimulateResponse {
+  status: string
+  scenario: string
+  signal: ExternalThreatSignal
+  trends: FraudTrendCluster[]
+  playbooks: AdaptivePlaybook[]
+  tuning_status: IntelTuningStatus
+}
+
+export interface IntelMediaResponse {
+  generated_at: number
+  count: number
+  summary: {
+    live_media: number
+    real_images?: number
+    real_videos?: number
+    source_cards?: number
+    publisher_logo_only?: number
+    generated_fallbacks: number
+    broken: number
+    stale_sources?: number
+    last_successful_poll?: number | null
+    health: number
+  }
+  media_previews: IntelMediaPreview[]
+  media_evidence_matrix: NonNullable<IntelCockpitResponse['media_evidence_matrix']>
+}
+
+export interface IntelMediaPreview {
+  media_id: string
+  media_type: 'image' | 'video'
+  source_kind: string
+  title: string
+  caption: string
+  thumbnail_key: string
+  source_url: string
+  publisher: string
+  language: string
+  duration_sec?: number | null
+  published_at?: number | null
+  image_url?: string | null
+  source_domain?: string | null
+  media_origin?: 'live_image' | 'gdelt_social_image' | 'open_graph_image' | 'publisher_logo' | 'generated_poster' | string
+  media_url?: string | null
+  thumbnail_url?: string | null
+  image_status?: 'real_image' | 'real_video_embed' | 'source_card' | 'publisher_logo_only' | 'generated_fallback' | 'broken' | string
+  fallback_reason?: string | null
+  license_hint?: string
+  fetched_at?: number | null
+  publisher_logo_url?: string | null
+  preview_status?: 'real_image' | 'real_video_embed' | 'source_card' | 'publisher_logo_only' | 'generated_fallback' | 'broken' | string
+  is_real_media?: boolean
+  video_embed_url?: string | null
+  video_page_url?: string | null
+  video_provider?: string | null
+  embed_allowed?: boolean
+  signal_id?: string
+  source_id?: string
+  source_tier?: string
+  trust_score?: number
+  typologies?: string[]
+  affected_channels?: string[]
+  region?: string
+}
+
+export interface IntelGeoHotspot {
+  label: string
+  lat: number
+  lng: number
+  risk?: number
+  weight?: number
+  signals?: number
+  trust?: number
+  velocity?: number
+  delta?: number
+  rank?: number
+  primary_typology?: string
+  primary_channel?: string
+  typologies?: string[]
+  channels?: string[]
+}
+
+export interface IntelCockpitResponse {
+  generated_at: number
+  cadence: string
+  live_state?: {
+    pulse_seq: number
+    last_refresh_at?: number | null
+    freshness_sec: number
+    live_sources: number
+    public_mode: string
+    source_health: Array<{
+      source_id: string
+      tier: string
+      status: string
+      age_sec?: number | null
+      enabled: boolean
+    }>
+  }
+  metrics: {
+    signal_count: number
+    trend_count: number
+    active_sources: number
+    active_playbooks: number
+    trust_index: number
+    india_fit: number
+    media_items: number
+    live_media_items?: number
+    real_images?: number
+    real_videos?: number
+    source_cards?: number
+    publisher_logo_only?: number
+    generated_fallbacks?: number
+    broken?: number
+    stale_sources?: number
+    last_successful_poll?: number | null
+    media_health?: number
+    live_mentions: number
+    velocity_index?: number
+    map_coverage?: number
+    corroboration_rate?: number
+    freshness_sec?: number
+  }
+  source_mix: Array<{
+    tier: string
+    label: string
+    sources: number
+    signals: number
+    trust: number
+  }>
+  channel_exposure: Array<{
+    channel: string
+    exposure: number
+    signals: number
+    trust: number
+    delta?: number
+    velocity?: number
+  }>
+  typology_matrix: Array<{
+    typology: string
+    label: string
+    official: number
+    news: number
+    social: number
+    open_web: number
+    trust: number
+  }>
+  signal_timeline: Array<{
+    time: string
+    official: number
+    news: number
+    social: number
+    total: number
+    trust: number
+  }>
+  geo_hotspots: IntelGeoHotspot[]
+  geo_links?: Array<{ source: string; target: string; weight: number; channel: string }>
+  geo_layers?: {
+    hotspots: IntelGeoHotspot[]
+    channels: string[]
+    typologies: string[]
+    max_risk: number
+    coverage_count: number
+  }
+  media_previews: IntelMediaPreview[]
+  media_evidence_matrix?: Array<{
+    origin: string
+    label: string
+    items: number
+    resolved: number
+    generated: number
+    official: number
+    news: number
+    social: number
+    open_web: number
+    trust: number
+  }>
+  fusion_graph: {
+    nodes: Array<{ id: string; label: string; kind: string; tier: string; trust: number }>
+    links: Array<{ source: string; target: string; weight: number }>
+  }
+  source_velocity_series?: Array<{
+    time: string
+    official: number
+    news: number
+    social: number
+    open_web: number
+    total: number
+  }>
+  typology_velocity_series?: Array<{
+    typology: string
+    label: string
+    signals: number
+    velocity: number
+    trust: number
+    mentions: number
+    delta: number
+  }>
+  channel_typology_heatmap?: Array<Record<string, string | number>>
+  playbook_impact_series?: Array<{
+    playbook_id: string
+    title: string
+    status: string
+    watchlist_terms: number
+    risk_delta: number
+    evidence_count: number
+    trust: number
+    ttl_hours: number
+    rank: number
+  }>
+  source_freshness_sla?: Array<{
+    source_id: string
+    name: string
+    tier: string
+    category: string
+    status: string
+    age_sec: number | null
+    poll_interval_sec: number
+    freshness: number
+    enabled: boolean
+  }>
+  corroboration_network?: {
+    nodes: Array<{ id: string; label: string; tier: string; trust: number; typologies: string[] }>
+    links: Array<{ source: string; target: string; weight: number }>
+  }
+  social_pulse: Array<{
+    label: string
+    note: string
+    mentions: number
+    velocity: number
+    trust: number
+  }>
+  top_trends: FraudTrendCluster[]
+  active_playbooks: AdaptivePlaybook[]
+  guardrails: IntelTuningStatus
+}
+
+export interface PreFraudEvidenceContext {
+  source: string
+  role: string
+  active_playbooks: Array<{
+    playbook_id: string
+    title: string
+    prompt_context: string
+    watchlist_terms: string[]
+    expires_at: number
+    audit_hash: string
+  }>
+  top_trends: Array<{
+    trend_id: string
+    title: string
+    typologies: string[]
+    trust_score: number
+    india_relevance_score: number
+    evidence_count: number
+  }>
+  guardrail: string
+  tuning_status?: IntelTuningStatus
+  source_count?: number
+  signal_count?: number
+  trend_count?: number
 }
 
 // -- Mule Detection --

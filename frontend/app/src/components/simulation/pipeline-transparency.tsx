@@ -89,8 +89,8 @@ const TRANSPARENCY_STAGES: TransparencyStageConfig[] = [
     icon: Bot,
     color: 'oklch(0.65 0.18 25)',
     algorithmName: 'LangGraph ReAct Agent (Qwen 3.5 via Ollama)',
-    algorithmDetail: 'Runs a multi-step LangGraph ReAct loop: (1) Analyze transaction context, (2) Query graph neighbors, (3) Check historical patterns, (4) Cross-reference velocity data, (5) Generate forensic reasoning chain. Uses Ollama-hosted Qwen 3.5 (8B) with custom system prompt for Indian banking fraud patterns.',
-    techStack: ['Qwen 3.5 (8B)', 'LangGraph ReAct', 'Ollama', 'Tool-Calling Agent', 'Chain-of-Thought'],
+    algorithmDetail: 'Runs a bounded LangGraph ReAct loop: (1) Analyze transaction context, (2) Query graph neighbors, (3) Check historical patterns, (4) Cross-reference velocity data, (5) Generate forensic explanation. Uses Ollama-hosted qwen3.5:4b-q4_K_M with a custom Indian banking fraud prompt, while PayFlow rules, ML, graph, circuit breaker, and ledger remain authoritative.',
+    techStack: ['qwen3.5:4b-q4_K_M', 'LangGraph ReAct', 'Ollama', 'Tool-Calling Agent', 'Bounded Copilot'],
   },
   {
     key: 'verdict',

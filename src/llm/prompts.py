@@ -4,7 +4,7 @@ PayFlow -- Investigator Agent Prompts & CoT Templates
 System prompts, Chain-of-Thought activation templates, and structured
 verdict schemas for the LangGraph Investigator Agent.
 
-The prompts are designed for Qwen 3.5 9B running via Ollama with low
+The prompts are designed for Qwen 3.5 4B running via Ollama with low
 temperature (0.3 for thinking, 0.1 for verdicts) to produce deterministic,
 fact-grounded forensic reasoning.
 """

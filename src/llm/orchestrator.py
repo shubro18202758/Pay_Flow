@@ -7,6 +7,7 @@ Every call flows through: health_check → VRAM mode switch → inference → re
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
@@ -155,6 +156,7 @@ class PayFlowLLM:
             response = self._client.chat(
                 model=model,
                 messages=messages,
+                think=False,
                 options={
                     "temperature": temperature or OLLAMA_CFG.temperature,
                     "num_predict": max_tokens,
@@ -170,6 +172,21 @@ class PayFlowLLM:
             completion_tokens=response.eval_count or 0,
             total_duration_ms=(response.total_duration or 0) / 1_000_000,
         )
+
+    async def generate(
+        self,
+        prompt: str,
+        temperature: float | None = None,
+        max_tokens: int = 2048,
+    ) -> str:
+        """Async text-generation adapter used by dashboard NL query routes."""
+        response = await asyncio.to_thread(
+            self.query,
+            prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response.content
 
     def analyze_fraud(
         self,
@@ -220,6 +237,7 @@ class PayFlowLLM:
             model=model,
             messages=messages,
             stream=True,
+            think=False,
             options={
                 "temperature": OLLAMA_CFG.temperature,
                 "num_ctx": OLLAMA_CFG.num_ctx,

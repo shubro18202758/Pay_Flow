@@ -66,6 +66,15 @@ async def full_snapshot(request: Request):
     return orch.full_snapshot()
 
 
+@router.get("/api/v1/readiness/ps3")
+async def ps3_readiness(request: Request):
+    """Judge-facing readiness scorecard for iDEA 2.0 PS3."""
+    from src.api.ps3_case import build_ps3_readiness
+
+    orch = request.app.state.orchestrator
+    return build_ps3_readiness(orch)
+
+
 @router.get("/api/v1/graph/topology")
 async def graph_topology(
     request: Request,
@@ -264,7 +273,19 @@ async def recent_blocks(
 
 # ── SSE: Unified Event Stream ─────────────────────────────────────────────────
 
-ALL_CHANNELS = ["graph", "agent", "circuit_breaker", "risk_scores", "system", "simulation", "pipeline"]
+ALL_CHANNELS = [
+    "graph",
+    "agent",
+    "circuit_breaker",
+    "risk_scores",
+    "system",
+    "simulation",
+    "pipeline",
+    "intel",
+    "event_lab",
+    "countermeasure",
+    "transaction_decision",
+]
 
 
 @router.get("/api/v1/stream/events")

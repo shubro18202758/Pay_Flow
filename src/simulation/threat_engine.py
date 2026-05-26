@@ -31,6 +31,8 @@ from src.ingestion.schemas import (
 from src.ingestion.stream_processor import IngestionPipeline
 from src.ingestion.generators.synthetic_transactions import WorldState
 from src.simulation.attack_generators import (
+    PS3_SCENARIO_DETAILS,
+    generate_ps3_scenario,
     generate_circular_laundering,
     generate_swift_heist,
     generate_upi_mule_network,
@@ -57,6 +59,7 @@ class AttackScenario:
     events_generated: int = 0
     events_ingested: int = 0
     account_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     _task: asyncio.Task | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,7 +68,7 @@ class AttackScenario:
             round(self.events_ingested / self.events_generated * 100, 1)
             if self.events_generated > 0 else 0.0
         )
-        return {
+        payload = {
             "scenario_id": self.scenario_id,
             "attack_type": self.attack_type,
             "attack_label": self.attack_label,
@@ -78,6 +81,9 @@ class AttackScenario:
             "stopped_at": self.stopped_at,
             "elapsed_sec": round(elapsed, 2),
         }
+        if self.metadata:
+            payload["metadata"] = self.metadata
+        return payload
 
 
 # -- Engine ----------------------------------------------------------------
@@ -170,6 +176,80 @@ class ThreatSimulationEngine:
         )
         return scenario_id
 
+    async def launch_ps3_scenario(
+        self,
+        scenario: str,
+        intensity: str = "demo",
+        seed: int | None = None,
+    ) -> dict[str, Any]:
+        """
+        Launch a deterministic iDEA 2.0 PS3 scenario.
+
+        The generated events still pass through the same ingestion pipeline as
+        every other attack.  The extra metadata only gives the dashboard a
+        stable case id and focus transaction for a judge-facing workflow.
+        """
+        if scenario not in PS3_SCENARIO_DETAILS:
+            raise ValueError(
+                f"Unknown PS3 scenario '{scenario}'. "
+                f"Available: {list(PS3_SCENARIO_DETAILS)}"
+            )
+        if intensity not in {"demo", "scale"}:
+            raise ValueError("intensity must be 'demo' or 'scale'")
+
+        active = [s for s in self._scenarios.values() if s.status == "running"]
+        if len(active) >= self._config.max_concurrent_attacks:
+            raise RuntimeError(
+                f"Max concurrent attacks ({self._config.max_concurrent_attacks}) reached"
+            )
+
+        scenario_id = str(uuid.uuid4())[:8]
+        rng = random.Random(seed if seed is not None else int(time.time()))
+        events = generate_ps3_scenario(
+            scenario=scenario,
+            world=self._world,
+            rng=rng,
+            base_timestamp=int(time.time()),
+            intensity=intensity,
+        )
+        account_ids = get_account_ids(events)
+        metadata = self._build_ps3_metadata(
+            scenario_id=scenario_id,
+            scenario=scenario,
+            intensity=intensity,
+            seed=seed,
+            events=events,
+            account_ids=account_ids,
+        )
+
+        attack = AttackScenario(
+            scenario_id=scenario_id,
+            attack_type=f"ps3_{scenario}",
+            attack_label=str(PS3_SCENARIO_DETAILS[scenario]["label"]),
+            events_generated=len(events),
+            account_ids=account_ids,
+            metadata=metadata,
+        )
+        self._scenarios[scenario_id] = attack
+
+        interval = 0.01 if intensity == "scale" else min(
+            self._config.default_event_interval_sec,
+            0.12,
+        )
+        attack._task = asyncio.create_task(
+            self._drip_feed(attack, events, interval),
+            name=f"sim-ps3-{scenario}-{scenario_id}",
+        )
+
+        await self._broadcast_status(attack, "started")
+        logger.info(
+            "PS3 scenario launched: %s [%s] -- %d events",
+            attack.attack_label,
+            scenario_id,
+            len(events),
+        )
+        return metadata
+
     async def stop_attack(self, scenario_id: str) -> bool:
         """Stop a running attack. Returns True if found and stopped."""
         scenario = self._scenarios.get(scenario_id)
@@ -213,6 +293,19 @@ class ThreatSimulationEngine:
     def list_all(self) -> list[dict]:
         """List all scenarios (active + completed + stopped)."""
         return [s.to_dict() for s in self._scenarios.values()]
+
+    def get_ps3_case(self, case_id: str) -> dict[str, Any] | None:
+        """Return PS3 scenario metadata by case id."""
+        for scenario in self._scenarios.values():
+            metadata = scenario.metadata or {}
+            if metadata.get("primary_case_id") == case_id:
+                result = dict(metadata)
+                result["scenario_status"] = scenario.status
+                result["events_ingested"] = scenario.events_ingested
+                result["events_generated"] = scenario.events_generated
+                result["accounts_involved"] = scenario.account_ids
+                return result
+        return None
 
     def available_attacks(self) -> dict[str, str]:
         """Return the attack type registry."""
@@ -322,6 +415,44 @@ class ThreatSimulationEngine:
         else:
             raise ValueError(f"No generator for '{attack_type}'")
 
+    def _build_ps3_metadata(
+        self,
+        scenario_id: str,
+        scenario: str,
+        intensity: str,
+        seed: int | None,
+        events: list[Event],
+        account_ids: list[str],
+    ) -> dict[str, Any]:
+        details = PS3_SCENARIO_DETAILS[scenario]
+        transaction_chain: list[dict[str, Any]] = []
+        for event in events:
+            if isinstance(event, Transaction):
+                transaction_chain.append(self._event_summary(event))
+
+        focus_txn = transaction_chain[0] if transaction_chain else {}
+        focus_account = (
+            focus_txn.get("sender")
+            or (account_ids[0] if account_ids else "")
+        )
+        case_id = f"PS3-{scenario_id.upper()}"
+
+        return {
+            "primary_case_id": case_id,
+            "scenario_id": scenario_id,
+            "scenario": scenario,
+            "scenario_label": details["label"],
+            "intensity": intensity,
+            "seed": seed,
+            "focus_account_id": focus_account,
+            "focus_txn_id": focus_txn.get("txn_id", ""),
+            "expected_indicators": list(details["expected_indicators"]),
+            "typologies": list(details["typologies"]),
+            "recommended_actions": list(details["recommended_actions"]),
+            "transaction_chain": transaction_chain[:80],
+            "generated_at": time.time(),
+        }
+
     async def _drip_feed(
         self,
         scenario: AttackScenario,
@@ -415,6 +546,7 @@ class ThreatSimulationEngine:
                 "events_generated": scenario.events_generated,
                 "events_ingested": scenario.events_ingested,
                 "accounts_involved": scenario.account_ids,
+                "metadata": scenario.metadata,
             })
         except Exception:
             pass

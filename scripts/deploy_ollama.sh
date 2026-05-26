@@ -26,7 +26,7 @@ info() { echo -e "${CYAN}[INFO]${NC} $*"; }
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODELFILE_PATH="${PROJECT_ROOT}/scripts/Modelfile"
 CUSTOM_MODEL_TAG="payflow-qwen"
-BASE_MODEL="qwen3.5:9b"
+BASE_MODEL="qwen3.5:4b-q4_K_M"
 
 # ── Step 0: Preflight — Verify Ollama Installation ───────────────────────────
 
@@ -149,7 +149,7 @@ log "Ensuring base model '${BASE_MODEL}' is available..."
 if ollama list 2>/dev/null | grep -q "${BASE_MODEL}"; then
     log "Base model '${BASE_MODEL}' already downloaded."
 else
-    log "Pulling '${BASE_MODEL}' (Q4_K_M, ~5.5 GB). This may take several minutes..."
+    log "Pulling '${BASE_MODEL}' (Q4_K_M, ~3.4 GB). This may take several minutes..."
     ollama pull "${BASE_MODEL}"
     log "Base model downloaded."
 fi
@@ -213,7 +213,7 @@ echo -e "${CYAN}╔════════════════════�
 echo -e "${CYAN}║          PayFlow — Ollama Deployment Complete                   ║${NC}"
 echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${CYAN}║${NC}  Model tag:     ${GREEN}${CUSTOM_MODEL_TAG}${NC}"
-echo -e "${CYAN}║${NC}  Base model:    ${GREEN}${BASE_MODEL} (Q4_K_M)${NC}"
+echo -e "${CYAN}║${NC}  Base model:    ${GREEN}${BASE_MODEL}${NC}"
 echo -e "${CYAN}║${NC}  Context:       ${GREEN}16,384 tokens${NC}"
 echo -e "${CYAN}║${NC}  KV cache:      ${GREEN}q8_0 (halved memory)${NC}"
 echo -e "${CYAN}║${NC}  Flash attn:    ${GREEN}enabled${NC}"
@@ -222,10 +222,10 @@ echo -e "${CYAN}║${NC}  Parallelism:   ${GREEN}1 slot (env-controlled)${NC}"
 echo -e "${CYAN}║${NC}  Keep-alive:    ${GREEN}5 min via daemon env${NC}"
 echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${CYAN}║${NC}  ${BOLD}VRAM BUDGET:${NC}"
-echo -e "${CYAN}║${NC}    Weights (Q4_K_M):    ~5,200 MB${NC}"
-echo -e "${CYAN}║${NC}    KV cache (q8_0,16K): ~1,475 MB${NC}"
+echo -e "${CYAN}║${NC}    Weights (Q4_K_M):    ~3,400 MB${NC}"
+echo -e "${CYAN}║${NC}    KV cache (q8_0,16K):   ~768 MB${NC}"
 echo -e "${CYAN}║${NC}    CUDA overhead:         ~400 MB${NC}"
-echo -e "${CYAN}║${NC}    Headroom:               ~517 MB${NC}"
+echo -e "${CYAN}║${NC}    Safety margin:          ~300 MB${NC}"
 echo -e "${CYAN}║${NC}    ───────────────────────────────${NC}"
-echo -e "${CYAN}║${NC}    TOTAL:               ~7,592 / 8,192 MB (93%)${NC}"
+echo -e "${CYAN}║${NC}    TOTAL:               ~4,868 / 8,192 MB (59%)${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════╝${NC}"

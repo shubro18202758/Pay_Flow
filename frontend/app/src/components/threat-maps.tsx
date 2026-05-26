@@ -3,7 +3,7 @@
 // World map, India regional map, attack vectors, live feeds, corridor analysis
 // ============================================================================
 
-import { useMemo, useState, useCallback } from 'react'
+import { useMemo, useState, useCallback, type MouseEvent } from 'react'
 import {
   ComposableMap,
   Geographies,
@@ -22,6 +22,12 @@ import type {
 } from '../stores/use-analytics-store'
 
 const WORLD_GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
+
+type MapGeography = {
+  rsmKey: string
+  id: string | number
+  [key: string]: unknown
+}
 
 // ISO 3166-1 numeric → alpha-3 mapping for world-atlas@2 geo.id
 const ISO_NUM_TO_A3: Record<string, string> = {
@@ -212,12 +218,12 @@ export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatM
         <ZoomableGroup>
           {/* Country fills */}
           <Geographies geography={WORLD_GEO_URL}>
-            {({ geographies }) =>
+            {({ geographies }: { geographies: MapGeography[] }) =>
               geographies.map((geo) => (
                 <Geography
                   key={geo.rsmKey}
                   geography={geo}
-                  fill={getCountryFill(geo.id)}
+                  fill={getCountryFill(String(geo.id))}
                   stroke="rgba(100, 116, 139, 0.25)"
                   strokeWidth={0.4}
                   style={{
@@ -225,8 +231,8 @@ export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatM
                     hover: { fill: 'rgba(99, 102, 241, 0.45)', outline: 'none', cursor: 'pointer' },
                     pressed: { outline: 'none' },
                   }}
-                  onMouseEnter={(e) => {
-                    const iso3 = ISO_NUM_TO_A3[geo.id]
+                  onMouseEnter={(e: MouseEvent<SVGPathElement>) => {
+                    const iso3 = ISO_NUM_TO_A3[String(geo.id)]
                     const ct = iso3 ? threatLookup.get(iso3) : undefined
                     if (ct) {
                       const rect = (e.target as SVGElement).closest('svg')?.getBoundingClientRect()
@@ -515,9 +521,9 @@ export function IndiaRegionalMap({ regions }: IndiaRegionalMapProps) {
       >
         {/* Geography — India highlighted */}
         <Geographies geography={WORLD_GEO_URL}>
-          {({ geographies }) =>
+          {({ geographies }: { geographies: MapGeography[] }) =>
             geographies.map((geo) => {
-              const isIndia = geo.id === '356'
+              const isIndia = String(geo.id) === '356'
               return (
                 <Geography
                   key={geo.rsmKey}

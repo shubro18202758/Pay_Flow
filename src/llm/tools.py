@@ -5,7 +5,7 @@ OpenAI-compatible function-calling schemas and a ToolExecutor that dispatches
 tool calls to live PayFlow subsystems (TransactionGraph, FeatureEngine,
 AuditLedger, CircuitBreaker).
 
-The schemas follow the OpenAI ``tools`` format so that Ollama's Qwen 3.5 9B
+The schemas follow the OpenAI ``tools`` format so that Ollama's Qwen 3.5 4B
 model can invoke them via its native function-calling capability.
 """
 

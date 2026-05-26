@@ -1,7 +1,7 @@
 """
 PayFlow -- LangGraph Investigator Agent
 =========================================
-Autonomous fraud investigation agent powered by Qwen 3.5 9B via Ollama,
+Autonomous fraud investigation agent powered by Qwen 3.5 4B via Ollama,
 orchestrated through a LangGraph state-machine graph.
 
 The agent implements a **think-act-observe** loop:
@@ -44,7 +44,7 @@ Integration::
 
 Dependencies:
     - langgraph (LangGraph state machine)
-    - ollama (Qwen 3.5 9B inference via PayFlowLLM)
+    - ollama (Qwen 3.5 4B inference via PayFlowLLM)
     - src.llm.tools (ToolExecutor, ToolCall, ToolResult)
     - src.llm.prompts (system prompts, CoT templates)
 """
@@ -177,7 +177,7 @@ class AgentMetrics:
 
 class InvestigatorAgent:
     """
-    LangGraph-powered fraud investigation agent using Qwen 3.5 9B.
+    LangGraph-powered fraud investigation agent using Qwen 3.5 4B.
 
     Implements a think-act-observe loop where the LLM reasons through
     fraud typologies step-by-step (Chain-of-Thought / Thinking Mode),
@@ -248,9 +248,18 @@ class InvestigatorAgent:
         # Build the prompt for this iteration
         if iteration == 0:
             # First iteration: investigation prompt
+            context = {"gnn_score": state.get("gnn_score", -1.0)}
+            try:
+                from src.intel import get_pre_fraud_intel_service
+
+                context["pre_fraud_intelligence"] = (
+                    get_pre_fraud_intel_service().active_context_for_ai()
+                )
+            except Exception:
+                pass
             user_msg = build_investigation_prompt(
                 state["alert"],
-                context={"gnn_score": state.get("gnn_score", -1.0)},
+                context=context,
             )
         else:
             # Continuation: CoT prompt with accumulated evidence
@@ -947,7 +956,7 @@ class InvestigatorAgent:
         tools: list[dict] | None = None,
     ) -> dict:
         """
-        Call the Qwen 3.5 9B model via the PayFlowLLM client.
+        Call the Qwen 3.5 4B model via the PayFlowLLM client.
 
         Returns a dict with ``content`` (str) and optionally ``tool_calls``
         (list of dicts with ``name`` and ``arguments``).
@@ -967,6 +976,7 @@ class InvestigatorAgent:
                 "model": model,
                 "messages": messages,
                 "stream": False,
+                "think": False,
                 "options": {
                     "temperature": self._cfg.thinking_temperature,
                     "num_predict": self._cfg.max_thinking_tokens,

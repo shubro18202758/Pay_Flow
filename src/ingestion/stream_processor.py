@@ -48,6 +48,26 @@ Event = Union[Transaction, InterbankMessage, AuthEvent]
 _SHUTDOWN = object()
 
 
+async def _record_event_lab_stage(
+    txn_ids: list[str],
+    stage: str,
+    meta: dict[str, Any] | None = None,
+    duration_ms: float | None = None,
+) -> None:
+    """Best-effort sidecar correlation for Adaptive Event Lab runs."""
+    try:
+        from src.simulation import get_event_lab_service
+
+        await get_event_lab_service().record_stage_for_ids(
+            txn_ids,
+            stage=stage,
+            meta=meta or {},
+            duration_ms=duration_ms,
+        )
+    except Exception:
+        return
+
+
 # ── Pipeline Metrics ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -313,6 +333,12 @@ class IngestionPipeline:
             })
         except Exception:
             pass
+        await _record_event_lab_stage(
+            txn_ids,
+            "ingested",
+            {"batch_id": self._batch_counter, "pipeline": "validator_to_batcher"},
+            0,
+        )
 
         # Fan-out to all consumers concurrently, tracking per-consumer timing
         if self._consumers:
@@ -358,6 +384,12 @@ class IngestionPipeline:
                         })
                     except Exception:
                         pass
+                    await _record_event_lab_stage(
+                        txn_ids,
+                        stage_name,
+                        {"batch_id": self._batch_counter, "consumer": consumer_name},
+                        duration_ms,
+                    )
 
             # Broadcast pipeline stage details via SSE
             try:
@@ -374,6 +406,15 @@ class IngestionPipeline:
                 })
             except Exception:
                 pass
+            await _record_event_lab_stage(
+                txn_ids,
+                "pipeline_dispatched",
+                {
+                    "batch_id": self._batch_counter,
+                    "event_count": total,
+                    "consumers": consumer_results,
+                },
+            )
 
         self.metrics.events_dispatched += total
         self.metrics.batches_emitted += 1

@@ -1,30 +1,30 @@
 # ============================================================================
-# PayFlow — Ollama Modelfile for Qwen 3.5 9B (VRAM-Optimized)
+# PayFlow — Ollama Modelfile for Qwen 3.5 4B (VRAM-Optimized)
 # ============================================================================
 #
 # VRAM BUDGET BREAKDOWN (RTX 4070, 8192 MB total):
 # ┌──────────────────────────────────────────────────┐
 # │ Component               │ Footprint              │
 # ├──────────────────────────────────────────────────┤
-# │ Model weights (Q4_K_M)  │ ~5,200 MB              │
-# │ KV cache (q8_0, 16K ctx)│ ~1,500 MB              │
+# │ Model weights (Q4_K_M)  │ ~3,400 MB              │
+# │ KV cache (q8_0, 16K ctx)│   ~800 MB              │
 # │ CUDA context + buffers  │   ~400 MB              │
 # │ Compute scratch space   │   ~300 MB              │
 # ├──────────────────────────────────────────────────┤
-# │ TOTAL                   │ ~7,400 MB (91% of 8GB) │
+# │ TOTAL                   │ ~4,900 MB (60% of 8GB) │
 # └──────────────────────────────────────────────────┘
 #
 # Build: ollama create payflow-qwen -f scripts/Modelfile
 # Run:   ollama run payflow-qwen
 # ============================================================================
 
-FROM qwen3.5:9b
+FROM qwen3.5:4b-q4_K_M
 
 # ── Inference Parameters ──────────────────────────────────────────────────────
 
 # Context window: 16,384 tokens. This is the SAFE ceiling.
-# Math: KV cache at q8_0 ≈ 0.09 MB/token × 16,384 = ~1,475 MB.
-# Going to 32K would push KV cache to ~2,950 MB → OOM after 10 min of use.
+# The 4B model gives more headroom than the upstream 9B build while keeping
+# the forensic prompt behavior and 16K investigation context.
 PARAMETER num_ctx 16384
 
 # Temperature: low for deterministic, fact-grounded fraud analysis output.
@@ -48,7 +48,7 @@ PARAMETER stop "<|endoftext|>"
 # Offload ALL transformer layers to the RTX 4070 CUDA cores.
 # Setting to 999 forces Ollama to offload every layer; if VRAM is insufficient
 # for a layer, Ollama will automatically fall back that layer to CPU.
-# For Qwen-3.5-9B (~40 layers at Q4_K_M), all layers fit in 8 GB.
+# For Qwen-3.5-4B Q4_K_M, all layers fit comfortably in 8 GB.
 PARAMETER num_gpu 999
 
 # ── Memory Management ─────────────────────────────────────────────────────────

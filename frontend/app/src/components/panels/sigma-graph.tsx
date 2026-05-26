@@ -23,7 +23,9 @@ import {
 } from 'lucide-react'
 
 // --- Constants ---
-const MAX_NODES = 300
+const MAX_NODES = 78
+const MAX_GRAPH_EDGES = 150
+const GRAPH_SYNC_MS = 4_000
 const NODE_COLOR_SAFE = '#4a90d9'
 
 // Degree-based color gradient for safe (non-fraud) nodes — visual hierarchy
@@ -417,6 +419,13 @@ interface FGNode {
   degree: number
   borderColor: string
   channels: number[]
+  rank?: number
+  x?: number
+  y?: number
+  z?: number
+  fx?: number
+  fy?: number
+  fz?: number
 }
 
 interface FGLink {
@@ -431,17 +440,28 @@ interface FGLink {
 
 type GraphFilter = 'none' | 'fraud-only' | 'high-risk' | 'cycles' | 'community' | 'threat-path' | 'mule' | 'layering'
 
-// Fibonacci sphere — distributes N points uniformly across a sphere surface
-function fibonacciSphere(n: number, radius: number): { x: number; y: number; z: number }[] {
-  const pts: { x: number; y: number; z: number }[] = []
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5))
-  for (let i = 0; i < n; i++) {
-    const y = 1 - (i / (n - 1)) * 2 // -1 to 1
-    const rSlice = Math.sqrt(1 - y * y)
-    const theta = goldenAngle * i
-    pts.push({ x: rSlice * Math.cos(theta) * radius, y: y * radius, z: rSlice * Math.sin(theta) * radius })
+function hashString(value: string): number {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
   }
-  return pts
+  return hash >>> 0
+}
+
+function stableSpherePosition(id: string, radius: number): { x: number; y: number; z: number } {
+  const h1 = hashString(id)
+  const h2 = hashString(`${id}:payflow`)
+  const u = h1 / 0xffffffff
+  const v = h2 / 0xffffffff
+  const theta = Math.PI * 2 * u
+  const zNorm = 2 * v - 1
+  const ring = Math.sqrt(Math.max(0, 1 - zNorm * zNorm))
+  return {
+    x: radius * ring * Math.cos(theta),
+    y: radius * zNorm,
+    z: radius * ring * Math.sin(theta),
+  }
 }
 
 function buildForceGraphData(nodes: CytoNode[], edges: CytoEdge[]): { fgNodes: FGNode[]; fgLinks: FGLink[] } {
@@ -459,11 +479,8 @@ function buildForceGraphData(nodes: CytoNode[], edges: CytoEdge[]): { fgNodes: F
   let maxDeg = 1
   degMap.forEach(d => { if (d > maxDeg) maxDeg = d })
 
-  // Pre-compute Fibonacci sphere positions for uniform distribution
-  const spherePositions = fibonacciSphere(top.length, 140)
-
   const fgNodes: FGNode[] = []
-  for (const n of top) {
+  for (const [rank, n] of top.entries()) {
     const nodeEdges = edgeIdx.get(n.data.id) ?? []
     const fraudEdges = nodeEdges.filter(e => (e.data.fraud_label ?? 0) > 0)
     const fraudRatio = nodeEdges.length > 0 ? fraudEdges.length / nodeEdges.length : 0
@@ -497,7 +514,7 @@ function buildForceGraphData(nodes: CytoNode[], edges: CytoEdge[]): { fgNodes: F
       nodeChannels.add(Number(e.data.channel ?? 0))
     }
 
-    const pos = spherePositions[fgNodes.length] ?? { x: 0, y: 0, z: 0 }
+    const pos = stableSpherePosition(n.data.id, 140)
     fgNodes.push({
       id: n.data.id,
       color,
@@ -508,9 +525,13 @@ function buildForceGraphData(nodes: CytoNode[], edges: CytoEdge[]): { fgNodes: F
       degree: deg,
       borderColor: STATUS_BORDER_COLORS[n.data.status] ?? '#384858',
       channels: [...nodeChannels],
+      rank,
       x: pos.x,
       y: pos.y,
       z: pos.z,
+      fx: pos.x,
+      fy: pos.y,
+      fz: pos.z,
     } as FGNode)
   }
 
@@ -547,6 +568,24 @@ function buildForceGraphData(nodes: CytoNode[], edges: CytoEdge[]): { fgNodes: F
   return { fgNodes, fgLinks }
 }
 
+function buildDisplayGraphInput(nodes: CytoNode[], edges: CytoEdge[]): { nodes: CytoNode[]; edges: CytoEdge[] } {
+  if (nodes.length === 0 && edges.length === 0) return { nodes: [], edges: [] }
+  const edgeIdx = buildEdgeIndex(edges)
+  const selectedNodes = selectTopNodes(nodes, edges, edgeIdx)
+  const selectedIds = new Set(selectedNodes.map((node) => node.data.id))
+  const selectedEdges: CytoEdge[] = []
+
+  for (let i = edges.length - 1; i >= 0 && selectedEdges.length < MAX_GRAPH_EDGES; i -= 1) {
+    const edge = edges[i]
+    if (selectedIds.has(edge.data.source) && selectedIds.has(edge.data.target)) {
+      selectedEdges.push(edge)
+    }
+  }
+
+  selectedEdges.reverse()
+  return { nodes: selectedNodes, edges: selectedEdges }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getLinkSourceId(link: any): string {
   return typeof link.source === 'object' ? link.source.id : link.source
@@ -579,7 +618,8 @@ function ActivitySparkline() {
       ctx.beginPath()
       _activityHistory.forEach((v, i) => {
         const x = i * step, y = H - (v / max) * (H - 2)
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+        if (i === 0) ctx.moveTo(x, y)
+        else ctx.lineTo(x, y)
       })
       ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.5; ctx.stroke()
       const last = _activityHistory.length - 1
@@ -938,13 +978,15 @@ function Graph3DControls({
               </div>
             </div>
             <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
-              {CHANNEL_LABELS.map((label, i) => {
+              {Object.entries(CHANNEL_LABELS).map(([rawChannel, label]) => {
+                const i = Number(rawChannel)
                 const on = activeChannels.has(i)
                 return (
                   <label key={i} className="flex items-center gap-1.5 cursor-pointer group" title={label}>
                     <input type="checkbox" checked={on} onChange={() => {
                       const next = new Set(activeChannels)
-                      on ? next.delete(i) : next.add(i)
+                      if (on) next.delete(i)
+                      else next.add(i)
                       setActiveChannels(next)
                     }} className="hidden" />
                     <div className={`w-2.5 h-2.5 rounded-sm border transition-all ${on ? 'border-transparent' : 'border-slate-600 bg-slate-800'}`}
@@ -965,14 +1007,16 @@ function Graph3DControls({
               </div>
             </div>
             <div className="space-y-0.5">
-              {FRAUD_PATTERN_LABELS.map((label, i) => {
+              {Object.entries(FRAUD_PATTERN_LABELS).map(([rawFraudType, label]) => {
+                const i = Number(rawFraudType)
                 const on = activeFraudTypes.has(i)
                 const color = FRAUD_TYPE_COLORS[i] ?? '#888'
                 return (
                   <label key={i} className="flex items-center gap-1.5 cursor-pointer group" title={label}>
                     <input type="checkbox" checked={on} onChange={() => {
                       const next = new Set(activeFraudTypes)
-                      on ? next.delete(i) : next.add(i)
+                      if (on) next.delete(i)
+                      else next.add(i)
                       setActiveFraudTypes(next)
                     }} className="hidden" />
                     <div className={`w-2.5 h-2.5 rounded-sm border transition-all ${on ? 'border-transparent' : 'border-slate-600 bg-slate-800'}`}
@@ -1448,6 +1492,10 @@ export default function SigmaGraph() {
 
   const nodes: CytoNode[] = graphNodes
   const edges: CytoEdge[] = graphEdges
+  const displayInput = useMemo(() => buildDisplayGraphInput(nodes, edges), [nodes, edges])
+  const visibleNodes = displayInput.nodes
+  const visibleEdges = displayInput.edges
+  const hasGraphData = nodes.length > 0 || edges.length > 0
 
   // -- UI state --
   const [filter, setFilter] = useState<GraphFilter>('none')
@@ -1457,10 +1505,10 @@ export default function SigmaGraph() {
   const [cycleNodes, setCycleNodes] = useState<Set<string>>(new Set())
   const [particlesEnabled, setParticlesEnabled] = useState(false)
   const [autoRotate, setAutoRotate] = useState(false)
-  const [fogEnabled, setFogEnabled] = useState(true)
-  const [glowEnabled, setGlowEnabled] = useState(true)
-  const [labelsEnabled, setLabelsEnabled] = useState(true)
-  const [starsEnabled, setStarsEnabled] = useState(true)
+  const [fogEnabled, setFogEnabled] = useState(false)
+  const [glowEnabled, setGlowEnabled] = useState(false)
+  const [labelsEnabled, setLabelsEnabled] = useState(false)
+  const [starsEnabled, setStarsEnabled] = useState(false)
   // Advanced filters
   const [activeChannels, setActiveChannels] = useState<Set<number>>(new Set([0,1,2,3,4,5,6,7,8,9]))
   const [activeFraudTypes, setActiveFraudTypes] = useState<Set<number>>(new Set([0,1,2,3,4,5,6,7,8]))
@@ -1482,6 +1530,7 @@ export default function SigmaGraph() {
   const fgRef = useRef<any>(null)
   const [version, setVersion] = useState(0)
   const setSelectedNodeUI = useUIStore(s => s.setSelectedNode)
+  const renderPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // -- Container sizing --
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1504,41 +1553,84 @@ export default function SigmaGraph() {
     })
     observer.observe(containerRef.current)
     return () => { observer.disconnect(); clearTimeout(t) }
-  }, [])
+  }, [hasGraphData])
+
+  useEffect(() => {
+    if (!fgRef.current) return
+    fgRef.current.width?.(dimensions.width)
+    fgRef.current.height?.(dimensions.height)
+    const renderer = fgRef.current.renderer?.()
+    renderer?.setPixelRatio?.(Math.min(window.devicePixelRatio || 1, 1))
+    renderer?.setSize?.(dimensions.width, dimensions.height, false)
+    requestAnimationFrame(() => fgRef.current?.zoomToFit?.(350, 48))
+  }, [dimensions.width, dimensions.height])
 
   // -- Sync graphology for analytics (throttled — runs at most every 3s) --
   const lastSyncRef = useRef(0)
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    if (nodes.length === 0 && edges.length === 0) return
+    if (visibleNodes.length === 0 && visibleEdges.length === 0) return
     const doSync = () => {
       lastSyncRef.current = Date.now()
-      syncGraphology(graphRef.current, nodes, edges)
+      syncGraphology(graphRef.current, visibleNodes, visibleEdges)
       setVersion(v => v + 1)
-      recordActivity(edges.length)
+      recordActivity(visibleEdges.length)
     }
     const elapsed = Date.now() - lastSyncRef.current
-    if (elapsed >= 3000) {
+    if (elapsed >= GRAPH_SYNC_MS) {
       doSync()
     } else if (!syncTimerRef.current) {
       syncTimerRef.current = setTimeout(() => {
         syncTimerRef.current = null
         doSync()
-      }, 3000 - elapsed)
+      }, GRAPH_SYNC_MS - elapsed)
     }
     return () => {
       if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = null }
     }
-  }, [nodes, edges])
+  }, [visibleNodes, visibleEdges])
 
   // -- Build ForceGraph3D data (throttled via version to avoid recalc on every SSE tick) --
   const graphData = useMemo(() => {
     void version // depend on throttled version counter instead of raw nodes/edges
-    if (nodes.length === 0 && edges.length === 0) return { nodes: [] as FGNode[], links: [] as FGLink[] }
-    const { fgNodes, fgLinks } = buildForceGraphData(nodes, edges)
+    if (visibleNodes.length === 0 && visibleEdges.length === 0) return { nodes: [] as FGNode[], links: [] as FGLink[] }
+    const { fgNodes, fgLinks } = buildForceGraphData(visibleNodes, visibleEdges)
     return { nodes: fgNodes, links: fgLinks }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version])
+
+  const denseScene = graphData.nodes.length > 64 || graphData.links.length > 120
+  const labelCap = denseScene ? 24 : 64
+  const useCustomNodeObjects = labelsEnabled || filter === 'cycles' || filter === 'mule' || filter === 'layering'
+
+  const resumeRenderer = useCallback(() => {
+    if (renderPauseTimerRef.current) {
+      clearTimeout(renderPauseTimerRef.current)
+      renderPauseTimerRef.current = null
+    }
+    fgRef.current?.resumeAnimation?.()
+  }, [])
+
+  const scheduleRenderPause = useCallback((delay = 1_200) => {
+    if (autoRotate || particlesEnabled) return
+    if (renderPauseTimerRef.current) clearTimeout(renderPauseTimerRef.current)
+    renderPauseTimerRef.current = setTimeout(() => {
+      fgRef.current?.pauseAnimation?.()
+      renderPauseTimerRef.current = null
+    }, delay)
+  }, [autoRotate, particlesEnabled])
+
+  useEffect(() => {
+    if (!fgRef.current) return
+    resumeRenderer()
+    scheduleRenderPause(1_500)
+    return () => {
+      if (renderPauseTimerRef.current) {
+        clearTimeout(renderPauseTimerRef.current)
+        renderPauseTimerRef.current = null
+      }
+    }
+  }, [graphData, dimensions.width, dimensions.height, autoRotate, particlesEnabled, resumeRenderer, scheduleRenderPause])
 
   // -- Recompute analytics (debounced — 3s after last graph sync) --
   useEffect(() => {
@@ -1549,12 +1641,13 @@ export default function SigmaGraph() {
       setBetweennessMap(computeBetweenness(g))
       setClusteringCoeff(computeClusteringCoeff(g))
       setThreatLevels(computeThreatPaths(g))
-      setMuleNodes(detectMuleAccounts(edges))
-      setLayeringNodes(detectLayeringChains(edges))
-      setStructuringEdgeKeys(detectStructuringEdges(edges))
+      setMuleNodes(detectMuleAccounts(visibleEdges))
+      setLayeringNodes(detectLayeringChains(visibleEdges))
+      setStructuringEdgeKeys(detectStructuringEdges(visibleEdges))
     }, 3000)
     return () => clearTimeout(timer)
-  }, [version])
+    // Intentionally keyed to throttled graph version so analytics do not run on every SSE edge append.
+  }, [version, visibleEdges])
 
   // -- Neighbor set for hover highlighting --
   const neighborSet = useMemo(() => {
@@ -1570,11 +1663,12 @@ export default function SigmaGraph() {
   }, [hoveredNode, graphData.links])
 
   // -- Scene setup: lighting & fog --
-  const sceneInitialized = useRef(false)
+  const sceneInitializedFor = useRef<unknown | null>(null)
   useEffect(() => {
-    if (!fgRef.current || sceneInitialized.current) return
-    sceneInitialized.current = true
-    const scene = fgRef.current.scene()
+    const graph = fgRef.current
+    if (!graph || sceneInitializedFor.current === graph) return
+    sceneInitializedFor.current = graph
+    const scene = graph.scene()
     // Strong lighting so 3D spheres are clearly lit from all angles
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.7)
     scene.add(ambientLight)
@@ -1609,11 +1703,11 @@ export default function SigmaGraph() {
     })
     scene.add(new THREE.Mesh(innerGeo, innerMat))
 
-    // Exponential fog — distant objects fade for depth perception
-    scene.fog = new THREE.FogExp2(0x0f172a, 0.0018)
+    // Exponential fog is optional; the default demo path keeps it off for smoother rendering.
+    scene.fog = fogEnabled ? new THREE.FogExp2(0x0f172a, 0.0018) : null
 
-    // Star field backdrop — scattered points in a large outer sphere
-    const starCount = 600
+    // Star field backdrop — kept lightweight and disabled by default.
+    const starCount = 180
     const starPositions = new Float32Array(starCount * 3)
     const starSizes = new Float32Array(starCount)
     for (let i = 0; i < starCount; i++) {
@@ -1637,6 +1731,7 @@ export default function SigmaGraph() {
     })
     const stars = new THREE.Points(starGeo, starMat)
     stars.name = '__payflow_stars'
+    stars.visible = starsEnabled
     scene.add(stars)
 
     // Latitude guide rings — equator and ±35° latitude lines
@@ -1665,39 +1760,15 @@ export default function SigmaGraph() {
       scene.add(new THREE.Line(lonLineGeo, ringMaterial))
     }
 
-    // Configure forces — nodes distributed ON the surface of a sphere
-    // Strong charge repels nodes evenly across the sphere surface
-    fgRef.current.d3Force('charge').strength(-80).distanceMax(350)
-    // Links connect nodes but are weak enough not to overpower radial force
-    fgRef.current.d3Force('link').distance(40).strength(0.15)
-    // Custom radial force — pins every node TO the sphere surface (not inside)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const radialForce = (() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let _nodes: any[] = []
-      const sphereRadius = 140
-      function force(alpha: number) {
-        for (const nd of _nodes) {
-          const x = nd.x || 0, y = nd.y || 0, z = nd.z || 0
-          const r = Math.sqrt(x * x + y * y + z * z) || 1
-          // Very strong pull TO the exact sphere surface — not inside, not outside
-          const k = ((sphereRadius - r) / r) * 3.5 * alpha
-          nd.vx = (nd.vx || 0) + x * k
-          nd.vy = (nd.vy || 0) + y * k
-          nd.vz = (nd.vz || 0) + z * k
-        }
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      force.initialize = (n: any[]) => { _nodes = n }
-      return force
-    })()
-    fgRef.current.d3Force('radial', radialForce)
-    // Keep center force to anchor the sphere at origin
-    fgRef.current.d3Force('center', null)
+    // Nodes are fixed onto deterministic sphere coordinates. This avoids heavy
+    // force-layout churn while still rendering live graph growth immediately.
+    graph.d3Force('charge', null)
+    graph.d3Force('link')?.strength(0)
+    graph.d3Force('center', null)
     // Zoom to fit after simulation settles
     setTimeout(() => fgRef.current?.zoomToFit(800, 40), 2000)
     setTimeout(() => fgRef.current?.zoomToFit(800, 40), 5000)
-  }, [graphData, dimensions])
+  }, [graphData, dimensions, fogEnabled, starsEnabled])
 
   // -- Auto-rotate --
   useEffect(() => {
@@ -1843,8 +1914,9 @@ export default function SigmaGraph() {
     const src = getLinkSourceId(link)
     const tgt = getLinkTargetId(link)
     const fmtAmt = link.amount >= 1e7 ? `₹${(link.amount / 1e7).toFixed(2)} Cr` : link.amount >= 1e5 ? `₹${(link.amount / 1e5).toFixed(2)} L` : `₹${(link.amount / 100).toLocaleString()}`
-    const chLabel = CHANNEL_LABELS[link.channel] ?? `Ch ${link.channel}`
-    const chColor = CHANNEL_COLORS[link.channel] ?? '#94a3b8'
+    const channel = Number(link.channel)
+    const chLabel = CHANNEL_LABELS[channel] ?? `Ch ${link.channel}`
+    const chColor = CHANNEL_COLORS[channel] ?? '#94a3b8'
     const isFraud = link.fraud_label > 0
     const borderClr = isFraud ? FRAUD_TYPE_COLORS[link.fraud_label] + '66' : 'rgba(71,85,105,0.5)'
     return `<div style="background:rgba(15,23,42,0.97);border:1px solid ${borderClr};border-radius:10px;padding:10px 14px;min-width:200px;font-family:system-ui;backdrop-filter:blur(12px);box-shadow:0 8px 32px rgba(0,0,0,0.4);">
@@ -1868,16 +1940,27 @@ export default function SigmaGraph() {
     const size = Math.cbrt(getNodeVal(node)) * 2.0
     const color = getNodeColor(node)
     const isDimmed = color === '#2a3a4d'
+    const isSelected = selectedNode === node.id
+    const isHovered = hoveredNode === node.id
+    const shouldShowLabel = labelsEnabled && (
+      isSelected ||
+      isHovered ||
+      node.status === 'frozen' ||
+      node.status === 'suspicious' ||
+      node.fraudRatio > 0.35 ||
+      node.degree >= 6 ||
+      (node.rank ?? Number.MAX_SAFE_INTEGER) < labelCap
+    )
 
     // Smooth lit sphere
-    const geo = new THREE.SphereGeometry(size, 16, 16)
+    const geo = new THREE.SphereGeometry(size, denseScene ? 10 : 16, denseScene ? 10 : 16)
     const mat = new THREE.MeshPhongMaterial({
       color: new THREE.Color(color),
       transparent: true,
       opacity: isDimmed ? 0.06 : 0.92,
       emissive: new THREE.Color(color),
-      emissiveIntensity: isDimmed ? 0 : 0.45,
-      shininess: 80,
+      emissiveIntensity: isDimmed ? 0 : denseScene ? 0.28 : 0.45,
+      shininess: denseScene ? 55 : 80,
       specular: new THREE.Color(0x444444),
     })
     const sphere = new THREE.Mesh(geo, mat)
@@ -1913,8 +1996,8 @@ export default function SigmaGraph() {
     }
 
     // Outer glow halo — larger transparent sphere for bloom effect
-    if (glowEnabled && node.fraudRatio > 0.15) {
-      const glowGeo = new THREE.SphereGeometry(size * 2.2, 12, 12)
+    if (glowEnabled && node.fraudRatio > (denseScene ? 0.3 : 0.15)) {
+      const glowGeo = new THREE.SphereGeometry(size * 2.2, denseScene ? 8 : 12, denseScene ? 8 : 12)
       const glowMat = new THREE.MeshBasicMaterial({
         color: new THREE.Color(color),
         transparent: true,
@@ -1993,7 +2076,7 @@ export default function SigmaGraph() {
     }
 
     // Multi-channel diversity indicator — colored dots orbiting multi-channel nodes
-    if (node.channels.length >= 3) {
+    if (!denseScene && node.channels.length >= 3) {
       const chCount = Math.min(node.channels.length, 8)
       const chRadius = size * 2.8
       for (let ci = 0; ci < chCount; ci++) {
@@ -2012,7 +2095,7 @@ export default function SigmaGraph() {
     }
 
     // --- Informative labelling with classification ---
-    if (labelsEnabled) {
+    if (shouldShowLabel) {
       const idStr = node.id.length > 12
         ? node.id.slice(0, 6) + '..' + node.id.slice(-4)
         : node.id
@@ -2059,7 +2142,7 @@ export default function SigmaGraph() {
     }
 
     return group
-  }, [getNodeColor, getNodeVal, glowEnabled, labelsEnabled, filter, cycleNodes, heatmapMode, muleNodes, layeringNodes])
+  }, [getNodeColor, getNodeVal, selectedNode, hoveredNode, labelsEnabled, labelCap, denseScene, glowEnabled, filter, cycleNodes, muleNodes, layeringNodes])
 
   // -- Handlers --
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2134,14 +2217,14 @@ export default function SigmaGraph() {
   }, [setSelectedNodeUI])
 
   // -- Loading state --
-  if (nodes.length === 0 && edges.length === 0) {
+  if (!hasGraphData) {
     return (
-      <div className="flex items-center justify-center h-full bg-slate-950/50 rounded-xl border border-slate-800">
+      <div className="flex h-full items-center justify-center rounded-xl border border-border-subtle bg-bg-surface">
         <div className="text-center space-y-3">
           <Network size={32} className="text-slate-600 mx-auto animate-pulse" />
           <p className="text-xs text-slate-500">Waiting for graph topology…</p>
-          <div className="w-32 h-1 bg-slate-800 rounded-full overflow-hidden mx-auto">
-            <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 animate-[shimmer_1.5s_ease-in-out_infinite] w-1/3" />
+          <div className="mx-auto h-1 w-32 overflow-hidden rounded-full bg-bg-elevated">
+            <div className="h-full w-1/3 animate-[shimmer_1.5s_ease-in-out_infinite] bg-gradient-to-r from-accent-primary to-alert-critical" />
           </div>
         </div>
       </div>
@@ -2149,14 +2232,29 @@ export default function SigmaGraph() {
   }
 
   return (
-    <div ref={containerRef} className="relative w-full h-full rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
+    <div
+      ref={containerRef}
+      className="relative h-full w-full overflow-hidden rounded-xl border border-border-subtle bg-bg-surface"
+      onPointerDown={resumeRenderer}
+      onPointerUp={() => scheduleRenderPause(900)}
+      onPointerLeave={() => scheduleRenderPause(900)}
+      onWheel={() => {
+        resumeRenderer()
+        scheduleRenderPause(900)
+      }}
+    >
       <ForceGraph3D
+          key={`${dimensions.width}x${dimensions.height}`}
           ref={fgRef}
           width={dimensions.width}
           height={dimensions.height}
+          rendererConfig={{ antialias: false, alpha: false, powerPreference: 'high-performance' }}
           graphData={graphData}
-          backgroundColor="#0f172a"
-          nodeThreeObject={nodeThreeObject}
+          backgroundColor="#f8fbff"
+          nodeColor={getNodeColor}
+          nodeVal={getNodeVal}
+          nodeResolution={denseScene ? 6 : 10}
+          nodeThreeObject={useCustomNodeObjects ? nodeThreeObject : undefined}
           nodeThreeObjectExtend={false}
           nodeLabel={getNodeLabel}
           linkColor={(link: FGLink) => {
@@ -2198,11 +2296,15 @@ export default function SigmaGraph() {
             }
             return link.width
           }}
-          linkOpacity={0.35}
-          linkCurvature={0.12}
+          linkOpacity={denseScene ? 0.26 : 0.35}
+          linkCurvature={denseScene && filter === 'none' ? 0 : 0.08}
           linkCurveRotation={0}
           linkVisibility={getLinkVis}
-          linkDirectionalArrowLength={(link: FGLink) => link.fraud_label > 0 ? 3.0 : 1.5}
+          linkDirectionalArrowLength={(link: FGLink) => {
+            if (denseScene && filter === 'none') return 0
+            if (link.fraud_label > 0) return 2.4
+            return denseScene && filter === 'none' ? 0 : 1.2
+          }}
           linkDirectionalArrowRelPos={0.85}
           linkDirectionalArrowColor={(link: FGLink) => link.color}
           linkDirectionalParticles={particlesEnabled ? ((link: FGLink) => {
@@ -2259,11 +2361,11 @@ export default function SigmaGraph() {
           linkLabel={getLinkLabel}
           onNodeClick={handleNodeClick}
           onNodeHover={handleNodeHover}
-          enableNodeDrag={true}
-          warmupTicks={200}
-          cooldownTicks={400}
-          d3AlphaDecay={0.025}
-          d3VelocityDecay={0.4}
+          enableNodeDrag={false}
+          warmupTicks={0}
+          cooldownTicks={0}
+          d3AlphaDecay={1}
+          d3VelocityDecay={1}
         />
 
       {/* Controls overlay */}

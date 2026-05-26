@@ -10,6 +10,9 @@ import type {
   AttackTypesResponse,
   LaunchRequest,
   LaunchResponse,
+  PS3ScenariosResponse,
+  PS3LaunchRequest,
+  PS3LaunchResponse,
   StopResponse,
   StopAllResponse,
   ScenarioStatus,
@@ -20,6 +23,14 @@ import type {
   EnumsResponse,
   InjectEventRequest,
   InjectEventResponse,
+  EventLabRequest,
+  EventLabRunRequest,
+  EventLabTemplatesResponse,
+  EventLabPreviewResponse,
+  EventLabRunResponse,
+  EventLabExplainabilityResponse,
+  CountermeasureProposal,
+  CountermeasureProposalsResponse,
   InvestigationRecord,
   RiskDistributionResponse,
   FraudTypologyResponse,
@@ -44,6 +55,18 @@ import type {
   FIUStatsResponse,
   FIUHighRiskResponse,
   InvestigationStatsResponse,
+  CaseTraceResponse,
+  EvidencePackageResponse,
+  PS3ReadinessResponse,
+  IntelSourcesResponse,
+  IntelSignalsResponse,
+  IntelTrendsResponse,
+  IntelPlaybooksResponse,
+  IntelTuningStatus,
+  IntelRefreshResponse,
+  IntelSimulateResponse,
+  IntelCockpitResponse,
+  IntelMediaResponse,
   MuleChainsResponse,
   MuleStatsResponse,
   SuspectedMulesResponse,
@@ -95,6 +118,18 @@ export function fetchAttackTypes(): Promise<AttackTypesResponse> {
   return fetchJson('/api/v1/simulation/attacks')
 }
 
+export function fetchPS3Scenarios(): Promise<PS3ScenariosResponse> {
+  return fetchJson('/api/v1/simulation/ps3/scenarios')
+}
+
+export function launchPS3Scenario(body: PS3LaunchRequest): Promise<PS3LaunchResponse> {
+  return fetchJson('/api/v1/simulation/ps3/launch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export function launchAttack(body: LaunchRequest): Promise<LaunchResponse> {
   return fetchJson('/api/v1/simulation/launch', {
     method: 'POST',
@@ -140,6 +175,70 @@ export function injectEvent(body: InjectEventRequest): Promise<InjectEventRespon
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  })
+}
+
+export function fetchEventLabTemplates(): Promise<EventLabTemplatesResponse> {
+  return fetchJson('/api/v1/simulation/event-lab/templates')
+}
+
+export function previewEventLabRun(body: EventLabRequest): Promise<EventLabPreviewResponse> {
+  return fetchJson('/api/v1/simulation/event-lab/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function createEventLabRun(body: EventLabRunRequest): Promise<EventLabRunResponse> {
+  return fetchJson('/api/v1/simulation/event-lab/runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function fetchEventLabRun(runId: string): Promise<EventLabRunResponse> {
+  return fetchJson(`/api/v1/simulation/event-lab/runs/${runId}`)
+}
+
+export function fetchEventLabExplainability(runId: string): Promise<EventLabExplainabilityResponse> {
+  return fetchJson(`/api/v1/simulation/event-lab/runs/${runId}/explainability`)
+}
+
+export function fetchCountermeasureProposals(runId?: string, status?: string): Promise<CountermeasureProposalsResponse> {
+  const params = new URLSearchParams()
+  if (runId) params.set('run_id', runId)
+  if (status) params.set('status', status)
+  const suffix = params.toString() ? `?${params}` : ''
+  return fetchJson(`/api/v1/countermeasures/proposals${suffix}`)
+}
+
+export function approveCountermeasure(
+  proposalId: string,
+  body: { analyst?: string; reason?: string } = {},
+): Promise<CountermeasureProposal> {
+  return fetchJson(`/api/v1/countermeasures/proposals/${proposalId}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      analyst: body.analyst ?? 'union_bank_analyst',
+      reason: body.reason ?? 'analyst_approved_from_event_lab',
+    }),
+  })
+}
+
+export function rejectCountermeasure(
+  proposalId: string,
+  body: { analyst?: string; reason?: string } = {},
+): Promise<CountermeasureProposal> {
+  return fetchJson(`/api/v1/countermeasures/proposals/${proposalId}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      analyst: body.analyst ?? 'union_bank_analyst',
+      reason: body.reason ?? 'analyst_rejected_from_event_lab',
+    }),
   })
 }
 
@@ -294,6 +393,79 @@ export function fetchFIUHighRisk(): Promise<FIUHighRiskResponse> {
 // Investigation
 export function fetchInvestigationStats(): Promise<InvestigationStatsResponse> {
   return fetchJson('/api/v1/fraud/investigation/stats')
+}
+
+export function fetchCaseTrace(caseId: string): Promise<CaseTraceResponse> {
+  return fetchJson(`/api/v1/fraud/investigation/case/${caseId}/trace`)
+}
+
+export function createEvidencePackage(caseId: string): Promise<EvidencePackageResponse> {
+  return fetchJson(`/api/v1/fraud/investigation/case/${caseId}/evidence-package`, {
+    method: 'POST',
+  })
+}
+
+export function fetchPS3Readiness(): Promise<PS3ReadinessResponse> {
+  return fetchJson('/api/v1/readiness/ps3')
+}
+
+// -- Pre-Fraud Intelligence endpoints --
+
+export function fetchIntelSources(): Promise<IntelSourcesResponse> {
+  return fetchJson('/api/v1/intel/sources')
+}
+
+export function refreshIntel(seed?: number): Promise<IntelRefreshResponse> {
+  return fetchJson('/api/v1/intel/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(seed == null ? {} : { seed }),
+  })
+}
+
+export function fetchIntelSignals(params?: {
+  typology?: string
+  region?: string
+  source_tier?: string
+  min_trust?: number
+  since?: number
+}): Promise<IntelSignalsResponse> {
+  const qs = new URLSearchParams()
+  if (params?.typology) qs.set('typology', params.typology)
+  if (params?.region) qs.set('region', params.region)
+  if (params?.source_tier) qs.set('source_tier', params.source_tier)
+  if (params?.min_trust != null) qs.set('min_trust', String(params.min_trust))
+  if (params?.since != null) qs.set('since', String(params.since))
+  const suffix = qs.toString() ? `?${qs.toString()}` : ''
+  return fetchJson(`/api/v1/intel/signals${suffix}`)
+}
+
+export function fetchIntelTrends(): Promise<IntelTrendsResponse> {
+  return fetchJson('/api/v1/intel/trends')
+}
+
+export function fetchIntelPlaybooks(): Promise<IntelPlaybooksResponse> {
+  return fetchJson('/api/v1/intel/playbooks')
+}
+
+export function fetchIntelCockpit(): Promise<IntelCockpitResponse> {
+  return fetchJson('/api/v1/intel/cockpit')
+}
+
+export function fetchIntelMedia(): Promise<IntelMediaResponse> {
+  return fetchJson('/api/v1/intel/media')
+}
+
+export function fetchIntelTuningStatus(): Promise<IntelTuningStatus> {
+  return fetchJson('/api/v1/intel/tuning/status')
+}
+
+export function simulateIntelSignal(scenario = 'digital_arrest_mule'): Promise<IntelSimulateResponse> {
+  return fetchJson('/api/v1/intel/simulate-signal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scenario }),
+  })
 }
 
 // Mule Detection

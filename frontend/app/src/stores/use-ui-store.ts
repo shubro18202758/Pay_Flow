@@ -4,7 +4,15 @@
 
 import { create } from 'zustand'
 
-export type TabId = 'overview' | 'threat-sim' | 'investigations' | 'intelligence' | 'analytics' | 'compliance' | 'system'
+export type TabId =
+  | 'overview'
+  | 'threat-sim'
+  | 'investigations'
+  | 'pre-fraud-intel'
+  | 'intelligence'
+  | 'analytics'
+  | 'compliance'
+  | 'system'
 
 interface UIState {
   activeTab: TabId
@@ -13,6 +21,7 @@ interface UIState {
   connected: boolean
   selectedNodeId: string | null
   selectedEventId: string | null
+  activeCaseId: string | null
 
   // Actions
   setActiveTab: (tab: TabId) => void
@@ -21,15 +30,17 @@ interface UIState {
   setConnected: (connected: boolean) => void
   setSelectedNode: (nodeId: string | null) => void
   setSelectedEvent: (eventId: string | null) => void
+  setActiveCaseId: (caseId: string | null) => void
 }
 
 export const useUIStore = create<UIState>((set) => ({
-  activeTab: 'overview',
+  activeTab: 'pre-fraud-intel',
   sidebarCollapsed: false,
   expandedDrawers: new Set<string>(),
   connected: false,
   selectedNodeId: null,
   selectedEventId: null,
+  activeCaseId: null,
 
   setActiveTab: (tab) => set({ activeTab: tab }),
 
@@ -62,4 +73,6 @@ export const useUIStore = create<UIState>((set) => ({
       }
       return { selectedEventId: eventId, expandedDrawers: next }
     }),
+
+  setActiveCaseId: (caseId) => set({ activeCaseId: caseId }),
 }))

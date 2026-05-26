@@ -14,11 +14,11 @@ interface Props {
 
 export function RootLayout({ children }: Props) {
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-bg-deep">
+    <div className="ubi-app-shell flex h-screen flex-col overflow-hidden bg-bg-deep">
       <TopBar />
       <TabNav />
       <RuntimeBanner />
-      <main className="flex-1 min-h-0 overflow-hidden relative">
+      <main className="ubi-main-surface flex-1 min-h-0 overflow-hidden relative">
         {children}
       </main>
       <BottomDrawer />

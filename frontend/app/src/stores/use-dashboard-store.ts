@@ -18,14 +18,22 @@ import type {
   VerdictBlock,
 } from '@/lib/types'
 
-const MAX_EDGES = 2000
+const MAX_EDGES = 900
 const MAX_COT_ENTRIES = 500
 const RELAYOUT_NODE_THRESHOLD = 300
+
+interface GraphSummary {
+  fraudEdges: number
+  suspiciousNodes: number
+  edgeCount: number
+  nodeCount: number
+}
 
 interface DashboardState {
   // Graph
   graphNodes: CytoNode[]
   graphEdges: CytoEdge[]
+  graphSummary: GraphSummary
   shouldRelayout: boolean
 
   // System telemetry
@@ -63,6 +71,26 @@ interface DashboardState {
 
 let _cotCounter = 0
 
+function summarizeGraph(nodes: CytoNode[], edges: CytoEdge[]): GraphSummary {
+  let fraudEdges = 0
+  let suspiciousNodes = 0
+
+  for (const edge of edges) {
+    if ((edge.data.fraud_label ?? 0) > 0) fraudEdges += 1
+  }
+
+  for (const node of nodes) {
+    if (node.data.status === 'suspicious') suspiciousNodes += 1
+  }
+
+  return {
+    fraudEdges,
+    suspiciousNodes,
+    edgeCount: edges.length,
+    nodeCount: nodes.length,
+  }
+}
+
 function buildAgentEntryId(data: SSEAgentData, timestamp: number, suffix = ''): string {
   if (data.type === 'thinking_step') {
     return `thinking:${data.txn_id}:${data.iteration}:${suffix || timestamp}`
@@ -77,6 +105,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   // -- Initial state --
   graphNodes: [],
   graphEdges: [],
+  graphSummary: { fraudEdges: 0, suspiciousNodes: 0, edgeCount: 0, nodeCount: 0 },
   shouldRelayout: false,
   orchestrator: null,
   hardware: null,
@@ -93,12 +122,15 @@ export const useDashboardStore = create<DashboardState>((set) => ({
 
   // -- Actions --
 
-  setInitialTopology: (nodes, edges) =>
-    set({
+  setInitialTopology: (nodes, edges) => {
+    const cappedEdges = edges.slice(-MAX_EDGES)
+    return set({
       graphNodes: nodes,
-      graphEdges: edges.slice(-MAX_EDGES),
+      graphEdges: cappedEdges,
+      graphSummary: summarizeGraph(nodes, cappedEdges),
       shouldRelayout: nodes.length <= RELAYOUT_NODE_THRESHOLD,
-    }),
+    })
+  },
 
   addGraphElements: (batch) =>
     set((state) => {
@@ -126,18 +158,23 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       return {
         graphNodes: newNodes,
         graphEdges: newEdges,
+        graphSummary: summarizeGraph(newNodes, newEdges),
         shouldRelayout: newNodes.length <= RELAYOUT_NODE_THRESHOLD,
       }
     }),
 
   updateNodeStatus: (nodeId, status) =>
-    set((state) => ({
-      graphNodes: state.graphNodes.map((n) =>
+    set((state) => {
+      const graphNodes = state.graphNodes.map((n) =>
         n.data.id === nodeId
           ? { data: { ...n.data, status: status as CytoNode['data']['status'] } }
           : n,
-      ),
-    })),
+      )
+      return {
+        graphNodes,
+        graphSummary: summarizeGraph(graphNodes, state.graphEdges),
+      }
+    }),
 
   setSystemTelemetry: (data) =>
     set({

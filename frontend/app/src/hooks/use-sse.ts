@@ -50,6 +50,8 @@ export function useSSE() {
   const onRiskScoreActivity = useActivityStore((s) => s.onRiskScoreActivity)
   const onPipelineStage = useActivityStore((s) => s.onPipelineStage)
   const onPipelineStageComplete = useActivityStore((s) => s.onPipelineStageComplete)
+  const onEventLabActivity = useActivityStore((s) => s.onEventLabActivity)
+  const onCountermeasureActivity = useActivityStore((s) => s.onCountermeasureActivity)
 
   // Flush accumulated graph batches to the store in one shot
   const flushGraphBatch = useCallback(() => {
@@ -143,6 +145,12 @@ export function useSSE() {
           }
           break
         }
+        case 'event_lab':
+          onEventLabActivity(data as Record<string, unknown>)
+          break
+        case 'countermeasure':
+          onCountermeasureActivity(data as Record<string, unknown>)
+          break
       }
     }
 
@@ -176,6 +184,8 @@ export function useSSE() {
     onRiskScoreActivity,
     onPipelineStage,
     onPipelineStageComplete,
+    onEventLabActivity,
+    onCountermeasureActivity,
     flushGraphBatch,
   ])
 }

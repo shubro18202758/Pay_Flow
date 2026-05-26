@@ -14,14 +14,24 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import json
 import logging
 import platform
 import struct
 import sys
+import urllib.request
 from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_print(text: str) -> None:
+    """Print diagnostics even when the Windows console is not UTF-8."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode("ascii", errors="replace").decode("ascii"))
 
 # ── NVML Constants ────────────────────────────────────────────────────────────
 
@@ -189,15 +199,41 @@ def query_gpu(device_index: int = 0) -> Optional[GPUDeviceInfo]:
 
 # ── Health Gate ──────────────────────────────────────────────────────────────
 
-# VRAM requirements for Qwen-3.5-9B at Q4_K_M + q8_0 KV cache + 16K context
-LLM_MODEL_WEIGHT_MB = 5200.0
-LLM_KV_CACHE_16K_Q8_MB = 1475.0
+# VRAM requirements for Qwen-3.5-4B at Q4_K_M + q8_0 KV cache + 16K context
+LLM_MODEL_WEIGHT_MB = 3400.0
+LLM_KV_CACHE_16K_Q8_MB = 768.0
 CUDA_OVERHEAD_MB = 400.0
-SAFETY_MARGIN_MB = 200.0
+SAFETY_MARGIN_MB = 300.0
+# Once the 4B model is already resident, Ollama only needs incremental
+# generation headroom. Keep this below the load-shed resume band so the
+# dashboard NL route remains available after the warmed demo pipeline.
+LLM_RESIDENT_HEADROOM_MB = 256.0
+OLLAMA_MODEL_ALIASES = ("payflow-qwen", "qwen3.5:4b-q4_K_M", "qwen3.5:4b")
 
 LLM_TOTAL_REQUIRED_MB = (
     LLM_MODEL_WEIGHT_MB + LLM_KV_CACHE_16K_Q8_MB + CUDA_OVERHEAD_MB + SAFETY_MARGIN_MB
-)  # ~7,275 MB
+)  # ~4,868 MB
+
+
+def _target_ollama_model_loaded() -> bool:
+    """
+    Return True when the PayFlow 4B model is already resident in Ollama.
+
+    If the model is already loaded, the health check should require only
+    incremental headroom for generation buffers instead of the full cold-load
+    model budget. This avoids false failures on the second and later LLM calls.
+    """
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/ps", timeout=1.5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return False
+
+    for row in payload.get("models", []):
+        name = str(row.get("model") or row.get("name") or "")
+        if any(name == alias or name.startswith(f"{alias}:") for alias in OLLAMA_MODEL_ALIASES):
+            return True
+    return False
 
 
 def check_vram_for_llm(
@@ -213,13 +249,17 @@ def check_vram_for_llm(
     saturated GPU (which causes hard driver crashes on Windows, not just
     Python exceptions).
     """
+    model_loaded = _target_ollama_model_loaded()
+    effective_required_mb = (
+        min(required_mb, LLM_RESIDENT_HEADROOM_MB) if model_loaded else required_mb
+    )
     gpu = query_gpu(device_index)
 
     if gpu is None:
         return HealthCheckResult(
             passed=False,
             gpu=None,
-            required_mb=required_mb,
+            required_mb=effective_required_mb,
             available_mb=0.0,
             message=(
                 "NVML query failed. Cannot verify GPU memory state. "
@@ -227,28 +267,31 @@ def check_vram_for_llm(
             ),
         )
 
-    if gpu.free_mb >= required_mb:
+    if gpu.free_mb >= effective_required_mb:
+        state = "resident" if model_loaded else "cold-load"
         return HealthCheckResult(
             passed=True,
             gpu=gpu,
-            required_mb=required_mb,
+            required_mb=effective_required_mb,
             available_mb=gpu.free_mb,
             message=(
-                f"GPU health OK. {gpu.name}: {gpu.free_mb:.0f} MB free "
-                f"(need {required_mb:.0f} MB). Headroom: {gpu.free_mb - required_mb:.0f} MB."
+                f"GPU health OK ({state}). {gpu.name}: {gpu.free_mb:.0f} MB free "
+                f"(need {effective_required_mb:.0f} MB). "
+                f"Headroom: {gpu.free_mb - effective_required_mb:.0f} MB."
             ),
         )
 
     # Insufficient VRAM — identify what's consuming it
-    deficit = required_mb - gpu.free_mb
+    deficit = effective_required_mb - gpu.free_mb
+    state = "resident" if model_loaded else "cold-load"
     return HealthCheckResult(
         passed=False,
         gpu=gpu,
-        required_mb=required_mb,
+        required_mb=effective_required_mb,
         available_mb=gpu.free_mb,
         message=(
-            f"INSUFFICIENT VRAM. {gpu.name}: {gpu.free_mb:.0f} MB free, "
-            f"need {required_mb:.0f} MB (deficit: {deficit:.0f} MB). "
+            f"INSUFFICIENT VRAM ({state}). {gpu.name}: {gpu.free_mb:.0f} MB free, "
+            f"need {effective_required_mb:.0f} MB (deficit: {deficit:.0f} MB). "
             f"Currently {gpu.used_mb:.0f} MB in use ({gpu.used_pct}%). "
             f"Actions: (1) flush PyTorch cache, (2) unload other models, "
             f"(3) close GPU-using applications."
@@ -302,7 +345,9 @@ def print_gpu_diagnostic(device_index: int = 0) -> None:
     used_bars = int((gpu.used_mb / gpu.total_mb) * bar_len)
     free_bars = bar_len - used_bars
 
-    print(f"""
+    llm_result = check_vram_for_llm(device_index=device_index)
+
+    _safe_print(f"""
 ┌─────────────────────────────────────────────────────────┐
 │  PayFlow GPU Diagnostic (NVML native)                   │
 ├─────────────────────────────────────────────────────────┤
@@ -317,7 +362,7 @@ def print_gpu_diagnostic(device_index: int = 0) -> None:
 │  [{"█" * used_bars}{"░" * free_bars}]  │
 │   {"^used":>{used_bars + 5}s}  {"^free":>{free_bars}s}                  │
 ├─────────────────────────────────────────────────────────┤
-│  LLM budget:   {LLM_TOTAL_REQUIRED_MB:>8.0f} MB  {"✓ FITS" if gpu.free_mb >= LLM_TOTAL_REQUIRED_MB else "✗ OOM":>27s}  │
+│  LLM budget:   {llm_result.required_mb:>8.0f} MB  {"✓ FITS" if llm_result.passed else "✗ OOM":>27s}  │
 │  Analysis:     {3584:>8.0f} MB  {"✓ FITS" if gpu.free_mb >= 3584 else "✗ OOM":>27s}  │
 └─────────────────────────────────────────────────────────┘""")
 
@@ -329,9 +374,9 @@ if __name__ == "__main__":
     print_gpu_diagnostic()
 
     result = check_vram_for_llm()
-    print(f"\nLLM Health Check: {'PASS' if result.passed else 'FAIL'}")
-    print(f"  {result.message}")
+    _safe_print(f"\nLLM Health Check: {'PASS' if result.passed else 'FAIL'}")
+    _safe_print(f"  {result.message}")
 
     result_analysis = check_vram_for_analysis()
-    print(f"\nAnalysis Health Check: {'PASS' if result_analysis.passed else 'FAIL'}")
-    print(f"  {result_analysis.message}")
+    _safe_print(f"\nAnalysis Health Check: {'PASS' if result_analysis.passed else 'FAIL'}")
+    _safe_print(f"  {result_analysis.message}")

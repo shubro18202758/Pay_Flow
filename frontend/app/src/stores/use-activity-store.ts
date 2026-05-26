@@ -52,13 +52,50 @@ export interface EventLifecycle {
   pipelineConsumers?: Array<{ consumer: string; success: boolean; duration_ms: number; error?: string }>
 }
 
+export interface EventLabStageActivity {
+  stage: string
+  timestamp: number
+  status?: string
+  duration_ms?: number | null
+  event_ids?: string[]
+  meta?: Record<string, unknown>
+}
+
+export interface EventLabRunActivity {
+  runId: string
+  correlationId: string
+  templateTitle: string
+  status: string
+  eventIds: string[]
+  stages: EventLabStageActivity[]
+  qwenExplanation?: string
+  decisionAuthority?: string
+  auditHash?: string
+}
+
+export interface CountermeasureActivity {
+  proposalId: string
+  runId: string
+  action: string
+  status: string
+  title: string
+  targets: string[]
+  executionAllowed: boolean
+  auditHash?: string
+  updatedAt: number
+}
+
 interface ActivityState {
   events: Map<string, EventLifecycle>
   orderedIds: string[] // most-recent-first
   trackedEventId: string | null
+  eventLabRuns: Record<string, EventLabRunActivity>
+  activeEventLabRunId: string | null
+  countermeasures: CountermeasureActivity[]
 
   // Actions
   setTrackedEventId: (id: string | null) => void
+  setActiveEventLabRunId: (id: string | null) => void
   onGraphBatchUpdate: (edges: Array<{
     data: {
       id: string
@@ -118,6 +155,8 @@ interface ActivityState {
     duration_ms?: number
     [key: string]: unknown
   }) => void
+  onEventLabActivity: (data: Record<string, unknown>) => void
+  onCountermeasureActivity: (data: Record<string, unknown>) => void
 }
 
 function addStage(lifecycle: EventLifecycle, stage: PipelineStage, meta?: Record<string, unknown>, durationMs?: number) {
@@ -136,8 +175,12 @@ export const useActivityStore = create<ActivityState>((set) => ({
   events: new Map(),
   orderedIds: [],
   trackedEventId: null,
+  eventLabRuns: {},
+  activeEventLabRunId: null,
+  countermeasures: [],
 
   setTrackedEventId: (id) => set({ trackedEventId: id }),
+  setActiveEventLabRunId: (id) => set({ activeEventLabRunId: id }),
 
   onGraphBatchUpdate: (edges) =>
     set((state) => {
@@ -146,10 +189,11 @@ export const useActivityStore = create<ActivityState>((set) => ({
       let changed = false
 
       for (const edge of edges) {
-        const { id: txnId, source, target, amount_paisa, fraud_label, timestamp } = edge.data
+        const { id: txnId, source, target, amount_paisa, fraud_label } = edge.data
         if (!txnId) continue
 
         if (!events.has(txnId)) {
+          const observedAt = Date.now() / 1000
           events.set(txnId, {
             txnId,
             sender: source,
@@ -158,8 +202,8 @@ export const useActivityStore = create<ActivityState>((set) => ({
             fraudLabel: fraud_label ?? 0,
             attackLabel: '',
             scenarioId: '',
-            firstSeen: timestamp || Date.now() / 1000,
-            stages: [{ stage: 'ingested', timestamp: timestamp || Date.now() / 1000 }],
+            firstSeen: observedAt,
+            stages: [{ stage: 'ingested', timestamp: observedAt }],
           })
           orderedIds.unshift(txnId)
           changed = true
@@ -308,7 +352,12 @@ export const useActivityStore = create<ActivityState>((set) => ({
       if (data.txn_id) {
         const lifecycle = events.get(data.txn_id)
         if (lifecycle) {
-          const { type: _t, stage, txn_id: _tid, duration_ms, ...meta } = data
+          const { stage, duration_ms } = data
+          const meta = { ...data } as Record<string, unknown>
+          delete meta.type
+          delete meta.stage
+          delete meta.txn_id
+          delete meta.duration_ms
           addStage(lifecycle, stage, meta as Record<string, unknown>, duration_ms)
           changed = true
         }
@@ -319,7 +368,12 @@ export const useActivityStore = create<ActivityState>((set) => ({
         for (const txnId of data.txn_ids as string[]) {
           const lifecycle = events.get(txnId)
           if (lifecycle) {
-            const { type: _t, stage, txn_ids: _tids, duration_ms, ...meta } = data
+            const { stage, duration_ms } = data
+            const meta = { ...data } as Record<string, unknown>
+            delete meta.type
+            delete meta.stage
+            delete meta.txn_ids
+            delete meta.duration_ms
             addStage(lifecycle, stage, meta as Record<string, unknown>, duration_ms)
             changed = true
           }
@@ -327,5 +381,75 @@ export const useActivityStore = create<ActivityState>((set) => ({
       }
 
       return changed ? { events } : {}
+    }),
+
+  onEventLabActivity: (data) =>
+    set((state) => {
+      const runs = { ...state.eventLabRuns }
+      let activeEventLabRunId = state.activeEventLabRunId
+
+      const type = String(data.type ?? '')
+      if (type === 'run_launched' && data.run && typeof data.run === 'object') {
+        const run = data.run as Record<string, unknown>
+        const runId = String(run.run_id ?? '')
+        if (!runId) return {}
+        runs[runId] = {
+          runId,
+          correlationId: String(run.correlation_id ?? ''),
+          templateTitle: String(run.template_title ?? 'Adaptive event run'),
+          status: String(run.status ?? 'injected'),
+          eventIds: Array.isArray(run.event_ids) ? run.event_ids.map(String) : [],
+          stages: Array.isArray(run.stages) ? (run.stages as EventLabStageActivity[]) : [],
+          qwenExplanation: String(run.qwen_explanation ?? ''),
+          decisionAuthority: String(run.decision_authority ?? ''),
+          auditHash: String(run.audit_hash ?? ''),
+        }
+        activeEventLabRunId = runId
+        return { eventLabRuns: runs, activeEventLabRunId }
+      }
+
+      if (type === 'stage') {
+        const runId = String(data.run_id ?? '')
+        const stage = data.stage as EventLabStageActivity | undefined
+        if (!runId || !stage) return {}
+        const current = runs[runId] ?? {
+          runId,
+          correlationId: String(data.correlation_id ?? ''),
+          templateTitle: 'Adaptive event run',
+          status: String(data.run_status ?? 'running'),
+          eventIds: [],
+          stages: [],
+        }
+        runs[runId] = {
+          ...current,
+          status: String(data.run_status ?? current.status),
+          stages: [...current.stages, stage].slice(-80),
+        }
+        activeEventLabRunId = runId
+        return { eventLabRuns: runs, activeEventLabRunId }
+      }
+
+      return {}
+    }),
+
+  onCountermeasureActivity: (data) =>
+    set((state) => {
+      if (!data.proposal || typeof data.proposal !== 'object') return {}
+      const proposal = data.proposal as Record<string, unknown>
+      const proposalId = String(proposal.proposal_id ?? '')
+      if (!proposalId) return {}
+      const next: CountermeasureActivity = {
+        proposalId,
+        runId: String(proposal.run_id ?? ''),
+        action: String(proposal.action ?? ''),
+        status: String(proposal.status ?? ''),
+        title: String(proposal.title ?? proposal.action ?? ''),
+        targets: Array.isArray(proposal.targets) ? proposal.targets.map(String) : [],
+        executionAllowed: Boolean(proposal.execution_allowed),
+        auditHash: String(proposal.audit_hash ?? ''),
+        updatedAt: Number(proposal.updated_at ?? Date.now() / 1000),
+      }
+      const rest = state.countermeasures.filter((item) => item.proposalId !== proposalId)
+      return { countermeasures: [next, ...rest].slice(0, 80) }
     }),
 }))

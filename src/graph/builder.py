@@ -80,8 +80,9 @@ class GraphConfig:
     prune_interval_batches: int = 100         # run pruning every N batches
     scan_interval_batches: int = 50           # run full pattern scan every N batches
     min_distinct_senders_mule: int = 5        # mule detection convergence threshold
-    k_hop_investigation: int = 3              # subgraph extraction radius
-    max_cycle_results: int = 100              # cap on cycle detection results
+    k_hop_investigation: int = 2              # subgraph extraction radius
+    max_cycle_results: int = 36               # cap on cycle detection results
+    max_investigation_nodes: int = 420        # keep localhost investigations bounded
 
 
 # ── Investigation Result ────────────────────────────────────────────────────────
@@ -424,6 +425,7 @@ class TransactionGraph:
         cycles = self._cycle_detector.detect_around_nodes(
             subgraph, center_nodes, payload.timestamp,
             k_hops=self._cfg.k_hop_investigation,
+            max_results=self._cfg.max_cycle_results,
         )
 
         # Centrality check on sender and receiver (from cached full-graph data)
@@ -570,15 +572,39 @@ class TransactionGraph:
         execution is safe from concurrent graph mutation.
         """
         neighbourhood: set[str] = set()
+        distances: dict[str, int] = {}
         for node in center_nodes:
             if not self._graph.has_node(node):
                 continue
             # Forward k-hop (outgoing edges)
             fwd = nx.ego_graph(self._graph, node, radius=k)
             neighbourhood.update(fwd.nodes())
+            for nid, dist in nx.single_source_shortest_path_length(self._graph, node, cutoff=k).items():
+                distances[nid] = min(distances.get(nid, k + 1), dist)
             # Backward k-hop (incoming edges)
             rev = nx.ego_graph(self._graph.reverse(copy=False), node, radius=k)
             neighbourhood.update(rev.nodes())
+            for nid, dist in nx.single_source_shortest_path_length(self._graph.reverse(copy=False), node, cutoff=k).items():
+                distances[nid] = min(distances.get(nid, k + 1), dist)
+
+        cap = max(len(center_nodes), self._cfg.max_investigation_nodes)
+        if len(neighbourhood) > cap:
+            centers = set(center_nodes)
+            ranked = sorted(
+                neighbourhood,
+                key=lambda nid: (
+                    0 if nid in centers else 1,
+                    distances.get(nid, k + 1),
+                    -int(self._graph.degree(nid)),
+                    str(nid),
+                ),
+            )
+            logger.debug(
+                "Capping investigation neighbourhood from %d to %d nodes",
+                len(neighbourhood),
+                cap,
+            )
+            neighbourhood = set(ranked[:cap])
 
         return self._graph.subgraph(neighbourhood).copy()
 

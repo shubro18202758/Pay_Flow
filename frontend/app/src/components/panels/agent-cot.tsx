@@ -213,7 +213,7 @@ export function AgentCoT() {
                       <span className="text-text-muted">Duration: {d.duration_ms.toFixed(1)}ms</span>
                       <span className={d.success ? 'text-alert-low' : 'text-alert-critical'}>{d.success ? 'SUCCESS' : 'FAILED'}</span>
                     </div>
-                    {d.tool_args && (
+                    {d.tool_args !== undefined && d.tool_args !== null && (
                       <pre className="text-[8px] font-mono text-text-muted/80 bg-bg-deep/50 rounded p-1.5 overflow-x-auto max-h-20">
                         {typeof d.tool_args === 'string' ? d.tool_args : JSON.stringify(d.tool_args, null, 2)}
                       </pre>

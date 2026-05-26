@@ -26,7 +26,7 @@
 [![React 19](https://img.shields.io/badge/React-19.2-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![XGBoost](https://img.shields.io/badge/XGBoost-CUDA-FF6600?style=for-the-badge)](https://xgboost.readthedocs.io)
-[![Qwen 3.5](https://img.shields.io/badge/Qwen_3.5-9B_Local-7C3AED?style=for-the-badge)](https://ollama.com)
+[![Qwen 3.5](https://img.shields.io/badge/Qwen_3.5-4B_Local-7C3AED?style=for-the-badge)](https://ollama.com)
 [![License MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 <br/>
@@ -152,7 +152,7 @@ PayFlow is a **6-stage real-time fraud detection pipeline** that processes every
 1. **🔍 Ingestion & Validation** — Schema-checked with CRC32 integrity, timestamp-normalized, amount-to-paisa converted
 2. **🧠 ML Feature Scoring** — 36-dimensional behavioral feature extraction → GPU-accelerated XGBoost classification → 3-tier dynamic risk routing
 3. **🕸️ Graph Intelligence** — Transaction graph investigation using mule detection, cycle analysis, centrality scoring, and a 3-layer Graph Attention Network (GAT)
-4. **🤖 AI Forensic Agent** — Qwen 3.5 (9B, locally hosted) runs a multi-step LangGraph investigation with tool-calling, chain-of-thought reasoning, and evidence synthesis
+4. **🤖 AI Forensic Agent** — Qwen 3.5 (4B, locally hosted) runs a multi-step LangGraph investigation with tool-calling, chain-of-thought reasoning, and evidence synthesis
 5. **⚡ Circuit Breaker** — Weighted multi-model consensus (ML + GNN + Graph) triggers node freezes at ≥80% confidence
 6. **🔐 Blockchain Verdict** — Every decision signed with Ed25519, hash-chained to an immutable ledger with Merkle checkpoints and Zero-Knowledge Proofs
 
@@ -197,7 +197,7 @@ Unlike Hyperledger/Tendermint solutions requiring JVM/Go runtimes and 500MB+ RAM
 
 **3. Local-First AI — No Cloud API Dependency**
 
-Qwen 3.5 (9B) runs entirely on-premises via Ollama. 4-bit Q4_K_M quantization fits in 5.5 GB VRAM. This means:
+Qwen 3.5 (4B) runs entirely on-premises via Ollama. 4-bit Q4_K_M quantization fits comfortably inside an 8 GB laptop GPU budget. This means:
 - **Zero data exfiltration** — no customer data leaves the bank
 - **No API costs** — no per-token billing
 - **Regulatory compliant** — satisfies RBI data localization norms
@@ -254,7 +254,7 @@ Built-in threat simulator generates **4 attack typologies** (UPI mule networks, 
     ┌─────────▼──────────┐    ┌──────────▼───────────┐    ┌────────────▼──────────┐
     │   ML PIPELINE       │    │   GRAPH ENGINE        │    │   AI AGENT             │
     │                     │    │                       │    │                        │
-    │ • Velocity (11 feat)│    │ • NetworkX MultiDiGr  │    │ • Ollama (Qwen 3.5 9B)│
+    │ • Velocity (11 feat)│    │ • NetworkX MultiDiGr  │    │ • Ollama (Qwen 3.5 4B)│
     │ • Behavioral (10)   │    │ • Mule star-pattern   │    │ • LangGraph ReAct loop │
     │ • Text Anomaly (9)  │    │ • Johnson's cycles    │    │ • 5 investigator tools │
     │ • XGBoost GPU       │    │ • Betweenness Z>2.0   │    │ • CoT reasoning trace  │
@@ -386,7 +386,7 @@ TransactionGraph (NetworkX MultiDiGraph)
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**AI Model**: Qwen 3.5 9B (Q4_K_M quantized, 5.5 GB VRAM, 16K context, `temperature=0.3`)
+**AI Model**: Qwen 3.5 4B (Q4_K_M quantized, 16K context, `temperature=0.3`)
 
 ### Stage 5: Circuit Breaker (Multi-Model Consensus)
 
@@ -437,7 +437,7 @@ Block N-1 ────hash──── Block N ────hash──── Bloc
 | **GNN** | PyTorch Geometric 2.6+ | 3-layer GAT with NeighborLoader sampling, 278K params |
 | **Deep Learning** | PyTorch 2.x | Tensor operations, CUDA kernel dispatch, `torch.compile` |
 | **Graph Analytics** | NetworkX 3.4+ | MultiDiGraph, Johnson's cycles, betweenness centrality |
-| **LLM Runtime** | Ollama + Qwen 3.5 9B | Local-only inference, Q4_K_M quantization, 5.5 GB VRAM |
+| **LLM Runtime** | Ollama + Qwen 3.5 4B | Local-only inference, Q4_K_M quantization, 16K context |
 | **Agent Framework** | LangGraph 0.2+ | Stateful multi-step ReAct agent with tool-calling |
 | **Fine-Tuning** | PEFT 0.13+ / TRL 0.12+ | QLoRA (LoRA rank=16), GRPO reward optimization |
 | **Quantization** | bitsandbytes 0.44+ | 4-bit NF4 CUDA kernels, 18 GB → 2.2 GB model footprint |
@@ -473,7 +473,7 @@ Block N-1 ────hash──── Block N ────hash──── Bloc
 |-----------|-----------|---------|
 | **GPU** | NVIDIA RTX 4070 (8 GB VRAM) | XGBoost + GNN + LLM concurrent execution |
 | **VRAM Manager** | Custom priority queue | Dynamic KV-cache scaling, CPU fallback, hysteresis |
-| **LLM Server** | Ollama (local daemon) | Serves Qwen 3.5 9B, custom Modelfile |
+| **LLM Server** | Ollama (local daemon) | Serves Qwen 3.5 4B, custom Modelfile |
 | **Testing** | pytest 8.3+ / pytest-asyncio | 33 tests across 16 phases |
 | **Linting** | Ruff 0.8+ / ESLint 9 | Python + TypeScript code quality |
 
@@ -662,28 +662,25 @@ python -m venv .venv
 # 3. Install Python dependencies
 pip install -e ".[dev]"
 
-# 4. Deploy Ollama + Qwen 3.5 model
+# 4. Deploy Ollama + Qwen 3.5 4B model
 ollama create payflow-qwen -f scripts/Modelfile
 
 # 5. Install frontend dependencies
 cd frontend/app
 npm install
+npm run build
 cd ../..
 
-# 6. Launch PayFlow
-python main.py --serve --events 5000 --fraud-ratio 0.08
-
-# 7. Start frontend dev server (separate terminal)
-cd frontend/app
-npx vite --port 3006
+# 6. Launch PayFlow as a single-port production prototype
+python main.py --serve --events 5000 --fraud-ratio 0.08 --dashboard-port 8010
 ```
 
 ### Access
 
 | Service | URL |
 |---------|-----|
-| 🎨 **Dashboard** | [http://localhost:3006](http://localhost:3006) |
-| 🔌 **API Docs** | [http://localhost:8000/docs](http://localhost:8000/docs) |
+| 🎨 **Dashboard** | [http://localhost:8010/app](http://localhost:8010/app) |
+| 🔌 **API Docs** | [http://localhost:8010/docs](http://localhost:8010/docs) |
 | 🤖 **Ollama** | [http://localhost:11434](http://localhost:11434) |
 
 ---

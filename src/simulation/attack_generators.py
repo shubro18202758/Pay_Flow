@@ -696,6 +696,460 @@ def generate_swift_heist(
 
 
 # ==========================================================================
+# iDEA 2.0 PS3: Fund Flow Tracking Scenarios
+# ==========================================================================
+
+PS3_SCENARIO_DETAILS: dict[str, dict[str, object]] = {
+    "rapid_layering": {
+        "label": "Rapid Layering Through Multiple Accounts",
+        "typologies": ["LAYERING"],
+        "expected_indicators": [
+            "Funds move through 5+ accounts within a compressed time window",
+            "Amounts decay slightly at each hop, consistent with fee skimming",
+            "Mixed channels obscure a single end-to-end fund journey",
+        ],
+        "recommended_actions": [
+            "Trace downstream beneficiaries and freeze terminal accounts",
+            "Escalate as STR candidate with graph path evidence",
+        ],
+    },
+    "round_tripping": {
+        "label": "Circular Transactions / Round-Tripping",
+        "typologies": ["ROUND_TRIPPING"],
+        "expected_indicators": [
+            "Originating account receives funds back after a closed loop",
+            "Shell-like current accounts form a directed cycle",
+            "Transaction purpose is inconsistent with circular movement",
+        ],
+        "recommended_actions": [
+            "Escalate cycle participants for enhanced due diligence",
+            "Attach circular graph evidence to FIU package",
+        ],
+    },
+    "structuring": {
+        "label": "Structuring Below Reporting Thresholds",
+        "typologies": ["STRUCTURING"],
+        "expected_indicators": [
+            "Repeated transfers remain just below INR 10 lakh threshold",
+            "Multiple originators converge on a single collector",
+            "Activity clusters in a short window across channels",
+        ],
+        "recommended_actions": [
+            "Aggregate linked transfers before regulatory assessment",
+            "Flag collector and repeated originators for review",
+        ],
+    },
+    "dormant_activation": {
+        "label": "Dormant Account Activation for High-Value Transfer",
+        "typologies": ["DORMANT_ACTIVATION"],
+        "expected_indicators": [
+            "Dormant account logs in after long inactivity",
+            "OTP verification precedes a high-value outward transfer",
+            "New device fingerprint appears immediately before transfer",
+        ],
+        "recommended_actions": [
+            "Place account under hold pending branch verification",
+            "Preserve auth trail and transaction evidence",
+        ],
+    },
+    "profile_mismatch": {
+        "label": "Declared Profile vs Actual Fund Movement Mismatch",
+        "typologies": ["PROFILE_MISMATCH"],
+        "expected_indicators": [
+            "Savings-style account behaves like high-volume business account",
+            "Large outward transfers go to current/internal accounts",
+            "Observed behavior deviates from declared low-risk profile",
+        ],
+        "recommended_actions": [
+            "Trigger customer profile refresh and relationship manager review",
+            "Attach behavior mismatch narrative to case package",
+        ],
+    },
+}
+
+
+def _ps3_hex_id(prefix: str, rng: random.Random, marker: str) -> str:
+    """Deterministic hex ID for PS3 replay scenarios."""
+    raw = f"{prefix}-{marker}-{rng.random():.12f}-{rng.randint(0, 1_000_000)}"
+    return f"{prefix}{hashlib.sha256(raw.encode()).hexdigest()[:12].upper()}"
+
+
+def _ps3_device(rng: random.Random, marker: str) -> str:
+    raw = f"ps3-device-{marker}-{rng.random():.12f}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _ps3_ip(rng: random.Random, marker: str) -> str:
+    first_octet = rng.choice([49, 59, 103, 106, 117, 122, 157, 182, 203])
+    suffix = int(hashlib.sha256(marker.encode()).hexdigest()[:6], 16)
+    return f"{first_octet}.{suffix % 250}.{rng.randint(1, 250)}.{rng.randint(1, 254)}"
+
+
+def _pick_ps3_accounts(
+    world: WorldState,
+    rng: random.Random,
+    count: int,
+    prefer: tuple[AccountType, ...] | None = None,
+    exclude_ids: set[str] | None = None,
+) -> list:
+    exclude_ids = exclude_ids or set()
+    candidates = [
+        acct for acct in world.accounts
+        if acct.account_id not in exclude_ids
+        and (prefer is None or acct.account_type in prefer)
+    ]
+    if len(candidates) < count:
+        candidates = [
+            acct for acct in world.accounts
+            if acct.account_id not in exclude_ids
+        ]
+    if len(candidates) < count:
+        raise ValueError("World state does not have enough accounts for PS3 scenario")
+    return rng.sample(candidates, count)
+
+
+def _ps3_txn(
+    rng: random.Random,
+    marker: str,
+    timestamp: int,
+    sender,
+    receiver,
+    amount_inr: int,
+    channel: Channel,
+    pattern: FraudPattern,
+    device_fingerprint: str | None = None,
+) -> Transaction:
+    txn_id = _ps3_hex_id("TXN", rng, marker)
+    amount_paisa = amount_inr * 100
+    s_lat, s_lon = _sim_get_coords(sender.branch_code, rng)
+    r_lat, r_lon = _sim_get_coords(receiver.branch_code, rng)
+    checksum = compute_transaction_checksum(
+        txn_id,
+        timestamp,
+        sender.account_id,
+        receiver.account_id,
+        amount_paisa,
+        int(channel),
+    )
+    return Transaction(
+        txn_id=txn_id,
+        timestamp=timestamp,
+        sender_id=sender.account_id,
+        receiver_id=receiver.account_id,
+        amount_paisa=amount_paisa,
+        channel=channel,
+        sender_branch=sender.branch_code[:4],
+        receiver_branch=receiver.branch_code[:4],
+        sender_geo_lat=s_lat,
+        sender_geo_lon=s_lon,
+        receiver_geo_lat=r_lat,
+        receiver_geo_lon=r_lon,
+        device_fingerprint=device_fingerprint or _ps3_device(rng, marker),
+        sender_account_type=sender.account_type,
+        receiver_account_type=receiver.account_type,
+        checksum=checksum,
+        fraud_label=pattern,
+    )
+
+
+def _ps3_auth(
+    rng: random.Random,
+    marker: str,
+    timestamp: int,
+    account,
+    action: AuthAction,
+    success: bool = True,
+    device_fingerprint: str | None = None,
+) -> AuthEvent:
+    event_id = _ps3_hex_id("AUTH", rng, marker)
+    ip = _ps3_ip(rng, marker)
+    lat, lon = _sim_get_coords(account.branch_code, rng)
+    checksum = compute_auth_checksum(
+        event_id,
+        timestamp,
+        account.account_id,
+        int(action),
+        ip,
+    )
+    return AuthEvent(
+        event_id=event_id,
+        timestamp=timestamp,
+        account_id=account.account_id,
+        action=action,
+        ip_address=ip,
+        geo_lat=lat,
+        geo_lon=lon,
+        device_fingerprint=device_fingerprint or _ps3_device(rng, marker),
+        user_agent_hash=hashlib.sha256(marker.encode()).hexdigest()[:16],
+        success=success,
+        checksum=checksum,
+    )
+
+
+def generate_ps3_rapid_layering(
+    world: WorldState,
+    rng: random.Random,
+    base_timestamp: int | None = None,
+    hop_count: int = 5,
+    total_amount_inr: int = 18_50_000,
+) -> list[Event]:
+    """PS3 rapid layering: a compressed multi-hop fund trail."""
+    if base_timestamp is None:
+        base_timestamp = int(time.time())
+
+    accounts = _pick_ps3_accounts(world, rng, hop_count + 2)
+    origin = accounts[0]
+    path = accounts[1:]
+    events: list[Event] = []
+    device = _ps3_device(rng, "rapid-layering")
+    amount_inr = total_amount_inr
+    timestamp = base_timestamp
+    channels = [Channel.UPI, Channel.IMPS, Channel.NEFT, Channel.NETBANKING, Channel.IMPS, Channel.NEFT]
+
+    current = origin
+    for idx, receiver in enumerate(path):
+        timestamp += rng.randint(60, 240)
+        events.append(_ps3_txn(
+            rng,
+            f"rapid-layering-{idx}",
+            timestamp,
+            current,
+            receiver,
+            amount_inr,
+            channels[idx % len(channels)],
+            FraudPattern.LAYERING,
+            device,
+        ))
+        current = receiver
+        amount_inr = max(50_000, int(amount_inr * rng.uniform(0.86, 0.94)))
+
+    return events
+
+
+def generate_ps3_round_tripping(
+    world: WorldState,
+    rng: random.Random,
+    base_timestamp: int | None = None,
+    ring_size: int = 5,
+    hop_amount_inr: int = 42_00_000,
+) -> list[Event]:
+    """PS3 round-tripping: a closed loop returning funds to origin."""
+    if base_timestamp is None:
+        base_timestamp = int(time.time())
+
+    shells = _pick_ps3_accounts(
+        world,
+        rng,
+        ring_size,
+        prefer=(AccountType.CURRENT, AccountType.INTERNAL),
+    )
+    events: list[Event] = []
+    timestamp = base_timestamp
+    amount_inr = hop_amount_inr
+    channels = [Channel.RTGS, Channel.NEFT, Channel.IMPS, Channel.NETBANKING]
+
+    for idx, sender in enumerate(shells):
+        receiver = shells[(idx + 1) % len(shells)]
+        timestamp += rng.randint(900, 3600)
+        events.append(_ps3_txn(
+            rng,
+            f"round-trip-{idx}",
+            timestamp,
+            sender,
+            receiver,
+            amount_inr,
+            channels[idx % len(channels)],
+            FraudPattern.ROUND_TRIPPING,
+        ))
+        amount_inr = max(2_00_000, int(amount_inr * rng.uniform(0.97, 0.995)))
+
+    return events
+
+
+def generate_ps3_structuring(
+    world: WorldState,
+    rng: random.Random,
+    base_timestamp: int | None = None,
+    originator_count: int = 4,
+    transfers_per_originator: int = 2,
+) -> list[Event]:
+    """PS3 structuring: repeated sub-threshold transfers to a collector."""
+    if base_timestamp is None:
+        base_timestamp = int(time.time())
+
+    accounts = _pick_ps3_accounts(world, rng, originator_count + 1)
+    originators = accounts[:originator_count]
+    collector = accounts[-1]
+    events: list[Event] = []
+    timestamp = base_timestamp
+    channels = [Channel.UPI, Channel.IMPS, Channel.NETBANKING]
+
+    for i, originator in enumerate(originators):
+        for j in range(transfers_per_originator):
+            timestamp += rng.randint(120, 900)
+            amount_inr = rng.randint(9_40_000, 9_95_000)
+            events.append(_ps3_txn(
+                rng,
+                f"structuring-{i}-{j}",
+                timestamp,
+                originator,
+                collector,
+                amount_inr,
+                channels[(i + j) % len(channels)],
+                FraudPattern.STRUCTURING,
+            ))
+
+    return events
+
+
+def generate_ps3_dormant_activation(
+    world: WorldState,
+    rng: random.Random,
+    base_timestamp: int | None = None,
+    transfer_amount_inr: int = 38_00_000,
+) -> list[Event]:
+    """PS3 dormant activation: auth trail followed by high-value transfer."""
+    if base_timestamp is None:
+        base_timestamp = int(time.time())
+
+    dormant, beneficiary = _pick_ps3_accounts(world, rng, 2)
+    timestamp = base_timestamp
+    device = _ps3_device(rng, "dormant-activation-new-device")
+    events: list[Event] = []
+
+    timestamp += 30
+    events.append(_ps3_auth(
+        rng,
+        "dormant-login-after-180-days",
+        timestamp,
+        dormant,
+        AuthAction.LOGIN,
+        True,
+        device,
+    ))
+    timestamp += 45
+    events.append(_ps3_auth(
+        rng,
+        "dormant-otp-verify-new-device",
+        timestamp,
+        dormant,
+        AuthAction.OTP_VERIFY,
+        True,
+        device,
+    ))
+    timestamp += 90
+    events.append(_ps3_txn(
+        rng,
+        "dormant-high-value-transfer",
+        timestamp,
+        dormant,
+        beneficiary,
+        transfer_amount_inr,
+        Channel.RTGS,
+        FraudPattern.DORMANT_ACTIVATION,
+        device,
+    ))
+
+    return events
+
+
+def generate_ps3_profile_mismatch(
+    world: WorldState,
+    rng: random.Random,
+    base_timestamp: int | None = None,
+    transfer_count: int = 6,
+) -> list[Event]:
+    """PS3 profile mismatch: savings profile behaves like business routing."""
+    if base_timestamp is None:
+        base_timestamp = int(time.time())
+
+    origin = _pick_ps3_accounts(
+        world,
+        rng,
+        1,
+        prefer=(AccountType.SAVINGS, AccountType.RECURRING_DEPOSIT),
+    )[0]
+    receivers = _pick_ps3_accounts(
+        world,
+        rng,
+        transfer_count,
+        prefer=(AccountType.CURRENT, AccountType.INTERNAL),
+        exclude_ids={origin.account_id},
+    )
+    events: list[Event] = []
+    timestamp = base_timestamp
+    channels = [Channel.NEFT, Channel.RTGS, Channel.NETBANKING, Channel.IMPS]
+
+    for idx, receiver in enumerate(receivers):
+        timestamp += rng.randint(600, 2400)
+        amount_inr = rng.randint(1_75_000, 7_50_000)
+        events.append(_ps3_txn(
+            rng,
+            f"profile-mismatch-{idx}",
+            timestamp,
+            origin,
+            receiver,
+            amount_inr,
+            channels[idx % len(channels)],
+            FraudPattern.PROFILE_MISMATCH,
+        ))
+
+    return events
+
+
+def generate_ps3_scenario(
+    scenario: str,
+    world: WorldState,
+    rng: random.Random,
+    base_timestamp: int | None = None,
+    intensity: str = "demo",
+) -> list[Event]:
+    """Dispatch a named PS3 scenario to its deterministic generator."""
+    scale = intensity == "scale"
+    if scenario == "rapid_layering":
+        return generate_ps3_rapid_layering(
+            world,
+            rng,
+            base_timestamp,
+            hop_count=10 if scale else 5,
+            total_amount_inr=45_00_000 if scale else 18_50_000,
+        )
+    if scenario == "round_tripping":
+        return generate_ps3_round_tripping(
+            world,
+            rng,
+            base_timestamp,
+            ring_size=8 if scale else 5,
+            hop_amount_inr=75_00_000 if scale else 42_00_000,
+        )
+    if scenario == "structuring":
+        return generate_ps3_structuring(
+            world,
+            rng,
+            base_timestamp,
+            originator_count=12 if scale else 4,
+            transfers_per_originator=4 if scale else 2,
+        )
+    if scenario == "dormant_activation":
+        return generate_ps3_dormant_activation(
+            world,
+            rng,
+            base_timestamp,
+            transfer_amount_inr=95_00_000 if scale else 38_00_000,
+        )
+    if scenario == "profile_mismatch":
+        return generate_ps3_profile_mismatch(
+            world,
+            rng,
+            base_timestamp,
+            transfer_count=18 if scale else 6,
+        )
+    raise ValueError(
+        f"Unknown PS3 scenario '{scenario}'. Available: {list(PS3_SCENARIO_DETAILS)}"
+    )
+
+
+# ==========================================================================
 # Helpers
 # ==========================================================================
 

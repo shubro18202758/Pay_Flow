@@ -28,8 +28,10 @@ from fastapi.templating import Jinja2Templates
 
 from src.api.routes.analyst import router as analyst_router
 from src.api.routes.analytics import router as analytics_router
+from src.api.routes.countermeasures import router as countermeasures_router
 from src.api.routes.dashboard import router as dashboard_router
 from src.api.routes.fraud import router as fraud_router
+from src.api.routes.intel import router as pre_fraud_intel_router
 from src.api.routes.intelligence import router as intelligence_router
 from src.api.routes.simulation import router as simulation_router
 
@@ -76,6 +78,13 @@ def create_app(orchestrator=None) -> FastAPI:
 
     # Store orchestrator reference for route handlers
     app.state.orchestrator = orchestrator
+    try:
+        from src.intel import get_pre_fraud_intel_service
+
+        get_pre_fraud_intel_service().refresh(seed=2026)
+        logger.info("Pre-fraud intelligence baseline seeded for judge demo")
+    except Exception as exc:
+        logger.debug("Pre-fraud intelligence baseline unavailable: %s", exc)
 
     # CORS middleware for development (Vite dev server on :3006 / :5173)
     app.add_middleware(
@@ -98,8 +107,10 @@ def create_app(orchestrator=None) -> FastAPI:
     # Register routers
     app.include_router(analyst_router)
     app.include_router(analytics_router)
+    app.include_router(countermeasures_router)
     app.include_router(dashboard_router)
     app.include_router(fraud_router)
+    app.include_router(pre_fraud_intel_router)
     app.include_router(intelligence_router)
     app.include_router(simulation_router)
 
@@ -124,9 +135,13 @@ def create_app(orchestrator=None) -> FastAPI:
                 name="frontend-assets",
             )
 
+        @app.get("/app", response_class=HTMLResponse)
+        async def serve_spa_root():
+            return (FRONTEND_DIST / "index.html").read_text(encoding="utf-8")
+
         @app.get("/app/{full_path:path}", response_class=HTMLResponse)
         async def serve_spa(full_path: str):
-            return (FRONTEND_DIST / "index.html").read_text()
+            return (FRONTEND_DIST / "index.html").read_text(encoding="utf-8")
 
         logger.info("Frontend SPA build mounted from %s", FRONTEND_DIST)
 

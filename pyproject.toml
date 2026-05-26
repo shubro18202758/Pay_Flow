@@ -61,8 +61,8 @@ dependencies = [
     # LLM ORCHESTRATION — Ollama SDK + LangGraph
     # ─────────────────────────────────────────────────────────────────────
     # Rationale: `ollama` Python SDK is a thin zero-dependency client to
-    # the local Ollama daemon running Qwen-3.5-9B (Q4_K_M quantized,
-    # ~5.5 GB VRAM). LangGraph provides stateful multi-step agent graphs
+    # the local Ollama daemon running Qwen-3.5-4B (Q4_K_M quantized).
+    # LangGraph provides stateful multi-step agent graphs
     # with checkpointing — needed for investigator query chains that span
     # retrieval → graph traversal → evidence synthesis. Lighter than
     # full LangChain; pulls only the orchestration primitives.
@@ -128,7 +128,10 @@ dev = [
 
 [build-system]
 requires = ["hatchling"]
-build-backend = "hatchling.backends"
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src", "config"]
 
 [tool.ruff]
 target-version = "py311"

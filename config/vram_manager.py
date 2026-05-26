@@ -38,12 +38,12 @@ def _flush_torch_cache() -> None:
         pass
 
 
-def _unload_ollama_model(model: str = "qwen3.5:9b") -> None:
+def _unload_ollama_model(model: str = "payflow-qwen") -> None:
     """No-op — LLM stays permanently resident in cooperative mode (Phase 15)."""
     logger.debug("_unload_ollama_model() called but skipped (cooperative mode).")
 
 
-def _unload_ollama_model_forced(model: str = "qwen3.5:9b") -> None:
+def _unload_ollama_model_forced(model: str = "payflow-qwen") -> None:
     """Force-unload Ollama model from VRAM.  Used only by finetuning_mode()."""
     try:
         import httpx
@@ -95,7 +95,7 @@ def assistant_mode() -> Generator[None, None, None]:
 
     Usage:
         with assistant_mode():
-            response = ollama.chat(model="qwen3.5:9b", ...)
+            response = ollama.chat(model="payflow-qwen", ...)
     """
     global _current_mode
 

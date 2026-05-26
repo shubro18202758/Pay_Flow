@@ -3,7 +3,7 @@ PayFlow — GPU Priority Queue & Concurrency Manager
 ====================================================
 Replaces the binary exclusive-mode VRAM model with cooperative coexistence.
 
-The LLM (Qwen 3.5 9B) stays permanently resident in VRAM.  GNN and
+The LLM (Qwen 3.5 4B) stays permanently resident in VRAM.  GNN and
 XGBoost workloads share the ~1.1 GB headroom under priority-based
 arbitration with dynamic KV-cache scaling and automatic CPU fallback.
 

@@ -3,7 +3,7 @@
 // Features: 15+ chart types, live streaming data, dark SOC theme
 // ============================================================================
 
-import { useEffect, useRef, useMemo, useCallback, useState } from 'react'
+import { useEffect, useRef, useMemo, useCallback, useState, type ReactNode } from 'react'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line, ComposedChart,
   PieChart, Pie, Cell, RadarChart, Radar, PolarGrid, PolarAngleAxis,
@@ -70,7 +70,7 @@ const GRID_STYLE = { stroke: 'rgba(148, 163, 184, 0.06)', strokeDasharray: '3 3'
 function StatCard({ icon: Icon, label, value, unit, trend, trendLabel, color, pulse }: {
   icon: typeof Activity
   label: string
-  value: string | number
+  value: ReactNode
   unit?: string
   trend?: number
   trendLabel?: string
@@ -360,7 +360,7 @@ export function AnalyticsPage() {
   }, [store.modelPerformance])
 
   return (
-    <div className="h-full overflow-y-auto custom-scrollbar bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900">
+    <div className="ubi-analytics-page h-full overflow-y-auto custom-scrollbar bg-transparent">
       <div className="p-4 space-y-4">
 
         {/* ====== HEADER ====== */}

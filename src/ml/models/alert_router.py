@@ -95,6 +95,8 @@ class RouterMetrics:
     high_alerts: int = 0
     medium_alerts: int = 0
     dropped_backpressure: int = 0
+    agent_enqueued: int = 0
+    agent_skipped_budget: int = 0
     _start: float = field(default_factory=time.monotonic)
 
     def snapshot(self) -> dict:
@@ -107,6 +109,8 @@ class RouterMetrics:
             "high": self.high_alerts,
             "medium": self.medium_alerts,
             "dropped": self.dropped_backpressure,
+            "agent_enqueued": self.agent_enqueued,
+            "agent_skipped_budget": self.agent_skipped_budget,
             "uptime_sec": round(time.monotonic() - self._start, 1),
         }
 
@@ -143,13 +147,14 @@ class AlertRouter:
         await router.route_batch(payloads)
     """
 
-    def __init__(self, max_queue: int = 10_000) -> None:
+    def __init__(self, max_queue: int = 10_000, max_agent_tasks: int = 2) -> None:
         self._graph_consumer: GraphConsumer | None = None
         self._llm_consumer: LLMConsumer | None = None
         self._ledger_consumer: LedgerConsumer | None = None
         self._circuit_breaker_consumer: CircuitBreakerConsumer | None = None
         self._agent_consumer: AgentConsumer | None = None
         self._queue: asyncio.Queue[AlertPayload] = asyncio.Queue(maxsize=max_queue)
+        self._max_agent_tasks = max_agent_tasks
         self.metrics = RouterMetrics()
         self._worker_task: asyncio.Task | None = None
         self._agent_tasks: set[asyncio.Task] = set()  # fire-and-forget agent investigations
@@ -216,6 +221,21 @@ class AlertRouter:
                 "tier": payload.tier,
                 "top_features": top_features_list,
             })
+            try:
+                from src.simulation import get_event_lab_service
+
+                await get_event_lab_service().record_stage_for_ids(
+                    [payload.txn_id],
+                    "ml_scored",
+                    {
+                        "risk_score": round(payload.risk_score, 4),
+                        "tier": payload.tier,
+                        "top_features": top_features_list,
+                        "threshold": round(payload.threshold_at_eval, 4),
+                    },
+                )
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -247,12 +267,22 @@ class AlertRouter:
 
         # Feed investigator agent for HIGH-tier alerts (true fire-and-forget)
         if payload.tier == RiskTier.HIGH and self._agent_consumer is not None:
+            if self.metrics.agent_enqueued >= self._max_agent_tasks:
+                self.metrics.agent_skipped_budget += 1
+                if self.metrics.agent_skipped_budget == 1:
+                    logger.info(
+                        "Agent investigation budget reached (%d). "
+                        "Further HIGH alerts remain routed to graph, ledger, and circuit breaker.",
+                        self._max_agent_tasks,
+                    )
+                return
             try:
                 task = asyncio.create_task(
                     self._throttled_agent(payload),
                     name=f"agent-{payload.txn_id}",
                 )
                 self._agent_tasks.add(task)
+                self.metrics.agent_enqueued += 1
                 task.add_done_callback(self._agent_tasks.discard)
             except Exception as exc:
                 logger.warning("Agent feed failed for %s: %s", payload.txn_id, exc)

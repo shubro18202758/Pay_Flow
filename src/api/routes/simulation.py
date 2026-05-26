@@ -19,7 +19,7 @@ Routes:
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -83,6 +83,32 @@ class InjectEventRequest(BaseModel):
     geo_lon: Optional[float] = None
 
 
+class PS3LaunchRequest(BaseModel):
+    scenario: str
+    intensity: Literal["demo", "scale"] = "demo"
+    seed: int | None = None
+
+
+class PS3LaunchResponse(BaseModel):
+    scenario_id: str
+    primary_case_id: str
+    focus_account_id: str
+    focus_txn_id: str
+    expected_indicators: list[str]
+
+
+class EventLabPreviewRequest(BaseModel):
+    template_id: str
+    playbook_id: str | None = None
+    mode: Literal["single", "burst", "chain"] | None = None
+    intensity: Literal["demo", "scale"] = "demo"
+    seed: int | None = None
+
+
+class EventLabRunRequest(EventLabPreviewRequest):
+    analyst_required: bool = True
+
+
 # -- Helpers ---------------------------------------------------------------
 
 def _get_engine(request: Request):
@@ -103,6 +129,42 @@ async def list_attacks(request: Request):
     """List available attack typologies with full parameter schemas."""
     engine = _get_engine(request)
     return {"attacks": engine.available_attacks_detailed()}
+
+
+@router.get("/ps3/scenarios")
+async def list_ps3_scenarios():
+    """List deterministic iDEA 2.0 PS3 scenarios for judge demo mode."""
+    from src.simulation.attack_generators import PS3_SCENARIO_DETAILS
+    return {
+        "scenarios": [
+            {"id": key, **value}
+            for key, value in PS3_SCENARIO_DETAILS.items()
+        ]
+    }
+
+
+@router.post("/ps3/launch", response_model=PS3LaunchResponse)
+async def launch_ps3_scenario(request: Request, body: PS3LaunchRequest):
+    """Launch a deterministic PS3 fund-flow case replay."""
+    engine = _get_engine(request)
+    try:
+        metadata = await engine.launch_ps3_scenario(
+            scenario=body.scenario,
+            intensity=body.intensity,
+            seed=body.seed,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc))
+
+    return PS3LaunchResponse(
+        scenario_id=str(metadata["scenario_id"]),
+        primary_case_id=str(metadata["primary_case_id"]),
+        focus_account_id=str(metadata["focus_account_id"]),
+        focus_txn_id=str(metadata["focus_txn_id"]),
+        expected_indicators=list(metadata["expected_indicators"]),
+    )
 
 
 @router.post("/launch", response_model=LaunchResponse)
@@ -192,6 +254,74 @@ async def list_enums():
         "fraud_patterns": enum_to_list(FraudPattern),
         "message_types": ["MT103", "MT202", "N01", "N02", "N06"],
     }
+
+
+@router.get("/event-lab/templates")
+async def event_lab_templates():
+    """Return intel-linked adaptive event templates."""
+    from src.simulation import get_event_lab_service
+
+    return get_event_lab_service().templates()
+
+
+@router.post("/event-lab/preview")
+async def event_lab_preview(body: EventLabPreviewRequest):
+    """Generate a deterministic adaptive event chain without injecting it."""
+    from src.simulation import get_event_lab_service
+
+    try:
+        return get_event_lab_service().preview(
+            template_id=body.template_id,
+            playbook_id=body.playbook_id,
+            mode=body.mode,
+            intensity=body.intensity,
+            seed=body.seed,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, f"Unknown event-lab template or playbook: {exc}") from exc
+
+
+@router.post("/event-lab/runs")
+async def event_lab_launch(request: Request, body: EventLabRunRequest):
+    """Create and inject an intel-linked adaptive event chain."""
+    from src.simulation import get_event_lab_service
+
+    try:
+        return await get_event_lab_service().launch_run(
+            orchestrator=request.app.state.orchestrator,
+            template_id=body.template_id,
+            playbook_id=body.playbook_id,
+            mode=body.mode,
+            intensity=body.intensity,
+            seed=body.seed,
+            analyst_required=body.analyst_required,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, f"Unknown event-lab template or playbook: {exc}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.get("/event-lab/runs/{run_id}")
+async def event_lab_run(run_id: str):
+    """Return a run timeline, generated events, and linked countermeasures."""
+    from src.simulation import get_event_lab_service
+
+    try:
+        return get_event_lab_service().run_response(run_id)
+    except KeyError as exc:
+        raise HTTPException(404, f"Unknown event-lab run: {run_id}") from exc
+
+
+@router.get("/event-lab/runs/{run_id}/explainability")
+async def event_lab_run_explainability(run_id: str):
+    """Return grouped backend visibility for event-lab countermeasure decisions."""
+    from src.simulation import get_event_lab_service
+
+    try:
+        return get_event_lab_service().explainability_response(run_id)
+    except KeyError as exc:
+        raise HTTPException(404, f"Unknown event-lab run: {run_id}") from exc
 
 
 @router.post("/inject-event")

@@ -5,7 +5,7 @@ System prompts, analysis templates, and structured output schemas for the
 NLU sub-agent that processes raw textual data (email metadata, user-agent
 strings, device fingerprints, SWIFT/NEFT interbank messages).
 
-Designed for Qwen 3.5 9B at temperature 0.2 (lower than the main agent's
+Designed for Qwen 3.5 4B at temperature 0.2 (lower than the main agent's
 0.3 thinking temperature) to produce deterministic, evidence-grounded
 semantic analysis rather than creative speculation.
 

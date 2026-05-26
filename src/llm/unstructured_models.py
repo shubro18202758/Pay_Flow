@@ -168,7 +168,7 @@ class UnstructuredAnalysisResult:
     linguistic_anomaly_score: float            # 0.0 - 1.0
     device_anomaly_score: float                # 0.0 - 1.0
     analysis_duration_ms: float
-    model_used: str = "qwen3.5:9b"
+    model_used: str = "qwen3.5:4b-q4_K_M"
 
     def to_dict(self) -> dict:
         return {

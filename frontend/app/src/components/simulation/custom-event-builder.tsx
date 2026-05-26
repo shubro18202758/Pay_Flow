@@ -28,6 +28,7 @@ import {
   Clock,
   Dices,
   Zap,
+  Tag,
 } from 'lucide-react'
 import type { InjectEventRequest } from '@/lib/types'
 
@@ -452,8 +453,31 @@ export function CustomEventBuilder() {
 
     try {
       const res = await inject.mutateAsync(body)
-      const evt = res.event ?? {}
-      const evtId = evt.txn_id ?? evt.event_id ?? evt.msg_id ?? 'unknown'
+      const evt = (res.event ?? {}) as Record<string, unknown>
+      const evtId = String(evt.txn_id ?? evt.event_id ?? evt.msg_id ?? 'unknown')
+      const details: Record<string, unknown> = {
+        type: String(evt.type ?? tab),
+        pipeline: 'Processing...',
+      }
+      const addDetail = (key: string, value: unknown) => {
+        if (value !== undefined && value !== null && value !== '') {
+          details[key] = value
+        }
+      }
+      addDetail('sender', evt.sender)
+      addDetail('receiver', evt.receiver)
+      addDetail('account', evt.account)
+      if (evt.amount_paisa !== undefined && evt.amount_paisa !== null) {
+        const amountPaisa = Number(evt.amount_paisa)
+        if (Number.isFinite(amountPaisa)) {
+          details.amount = `₹${(amountPaisa / 100).toLocaleString()}`
+        }
+      }
+      addDetail('channel', evt.channel)
+      addDetail('action', evt.action)
+      addDetail('success', evt.success)
+      addDetail('sender_ifsc', evt.sender_ifsc)
+      addDetail('receiver_ifsc', evt.receiver_ifsc)
       setTrackedEventId(evtId)
       setResult({
         success: true,
@@ -461,19 +485,7 @@ export function CustomEventBuilder() {
         eventId: evtId,
         eventType: tab,
         timestamp: res.timestamp,
-        details: {
-          type: evt.type ?? tab,
-          ...(evt.sender && { sender: evt.sender }),
-          ...(evt.receiver && { receiver: evt.receiver }),
-          ...(evt.account && { account: evt.account }),
-          ...(evt.amount_paisa && { amount: `₹${(evt.amount_paisa / 100).toLocaleString()}` }),
-          ...(evt.channel && { channel: evt.channel }),
-          ...(evt.action && { action: evt.action }),
-          ...(evt.success !== undefined && { success: evt.success }),
-          ...(evt.sender_ifsc && { sender_ifsc: evt.sender_ifsc }),
-          ...(evt.receiver_ifsc && { receiver_ifsc: evt.receiver_ifsc }),
-          pipeline: 'Processing...',
-        },
+        details,
       })
     } catch (err) {
       setResult({ success: false, message: String(err) })

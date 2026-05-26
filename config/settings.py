@@ -28,15 +28,16 @@ class VRAMBudget:
     """
     Static VRAM partitioning strategy.
 
-    The Qwen-3.5-9B model at Q4_K_M quantization consumes ~5.5 GB when loaded
-    by Ollama. Remaining ~2.5 GB is shared across ML training / GNN inference.
+    The Qwen-3.5-4B model at Q4_K_M quantization consumes ~3.4 GB for model
+    weights when loaded by Ollama. The remaining VRAM is shared across ML
+    training / GNN inference and KV-cache headroom.
 
     Key insight: Ollama lazily loads models and can be configured to unload
     after idle timeout (`OLLAMA_KEEP_ALIVE`). We exploit this by defining two
     mutually exclusive execution modes:
 
         MODE A — "Analysis"  : LLM unloaded, full 8 GB for ML + GNN
-        MODE B — "Assistant" : ML/GNN tensors freed, LLM occupies ~5.5 GB
+        MODE B — "Assistant" : ML/GNN tensors freed, LLM occupies ~4.9 GB
 
     The orchestrator switches between modes by managing Ollama keepalive and
     calling `torch.cuda.empty_cache()` at transition boundaries.
@@ -51,10 +52,10 @@ class VRAMBudget:
     analysis_reserve_mb: int = 4608  # sum of above: safety margin to 8 GB
 
     # Mode B: Assistant (LLM loaded)
-    llm_model_mb: int = 5200        # Qwen-3.5-9B Q4_K_M measured footprint
-    llm_kv_cache_mb: int = 1475     # KV cache at q8_0 quant, 16K context
+    llm_model_mb: int = 3400        # Qwen-3.5-4B Q4_K_M local model footprint
+    llm_kv_cache_mb: int = 768      # KV cache at q8_0 quant, 16K context
     llm_cuda_overhead_mb: int = 400 # CUDA context + compute buffers
-    assistant_reserve_mb: int = 7075
+    assistant_reserve_mb: int = 4868 # includes safety headroom for prompt spikes
 
     def validate(self) -> None:
         assert self.analysis_reserve_mb <= self.total_mb, (
@@ -98,7 +99,7 @@ class GNNConfig:
 
 @dataclass(frozen=True)
 class OllamaConfig:
-    model: str = "qwen3.5:9b-q4_K_M"
+    model: str = "qwen3.5:4b-q4_K_M"
     custom_model: str = "payflow-qwen"  # built via scripts/deploy_ollama.sh
     base_url: str = "http://localhost:11434"
     keep_alive: str = "-1"        # permanent residency — never unload from VRAM
@@ -106,7 +107,7 @@ class OllamaConfig:
     num_ctx: int = 16384          # context window (tokens) — capped for 8 GB VRAM
     top_p: float = 0.9
     num_batch: int = 256          # smaller prefill batches to limit VRAM spikes
-    kv_cache_type: str = "q8_0"   # halves KV cache memory (~2,950 → ~1,475 MB)
+    kv_cache_type: str = "q8_0"   # halves KV cache memory for the 16K context
 
 
 # ── Fraud Detection Thresholds ────────────────────────────────────────────────
@@ -175,11 +176,11 @@ CIRCUIT_BREAKER_CFG = CircuitBreakerConfig()
 @dataclass(frozen=True)
 class InvestigatorAgentConfig:
     """LangGraph investigator agent configuration."""
-    max_iterations: int = 5              # max think-act-observe loops
+    max_iterations: int = 1              # max think-act-observe loops
     thinking_temperature: float = 0.3    # low temp for deterministic CoT reasoning
     verdict_temperature: float = 0.1     # even lower for final verdict
-    max_thinking_tokens: int = 4096      # token budget per thinking step
-    max_verdict_tokens: int = 2048       # token budget for final verdict
+    max_thinking_tokens: int = 256       # token budget per thinking step
+    max_verdict_tokens: int = 256        # token budget for final verdict
     tool_timeout_seconds: int = 30       # per-tool execution timeout
     enable_cot_trace: bool = True        # log full CoT trace for audit
 

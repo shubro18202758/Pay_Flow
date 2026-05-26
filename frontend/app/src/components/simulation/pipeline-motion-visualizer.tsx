@@ -79,7 +79,7 @@ const PIPELINE_STAGES: StageConfig[] = [
     label: 'Qwen AI Agent',
     shortLabel: 'AI',
     icon: Bot,
-    description: 'LangGraph forensic investigation with Qwen 3.5 (Ollama)',
+    description: 'Bounded LangGraph forensic explanation with qwen3.5:4b-q4_K_M',
     color: 'oklch(0.65 0.18 25)',
     glowColor: 'rgba(251, 113, 133, 0.4)',
   },

@@ -55,6 +55,9 @@ def test(name: str):
     return decorator
 
 
+test.__test__ = False
+
+
 def async_test(name: str):
     """Decorator for async test functions."""
     def decorator(fn):

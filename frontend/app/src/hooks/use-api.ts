@@ -9,6 +9,8 @@ import {
   fetchCircuitBreakerStatus,
   fetchVerdicts,
   fetchAttackTypes,
+  fetchPS3Scenarios,
+  launchPS3Scenario,
   launchAttack,
   stopAttack,
   stopAllAttacks,
@@ -18,6 +20,14 @@ import {
   fetchRecentBlocks,
   fetchEnums,
   injectEvent,
+  fetchEventLabTemplates,
+  previewEventLabRun,
+  createEventLabRun,
+  fetchEventLabRun,
+  fetchEventLabExplainability,
+  fetchCountermeasureProposals,
+  approveCountermeasure,
+  rejectCountermeasure,
   fetchInvestigation,
   fetchRiskDistribution,
   fetchFraudTypology,
@@ -31,8 +41,20 @@ import {
   fetchConsortiumAlerts,
   publishConsortiumAlert,
   checkConsortiumAccount,
+  fetchCaseTrace,
+  createEvidencePackage,
+  fetchPS3Readiness,
+  fetchIntelSources,
+  fetchIntelSignals,
+  fetchIntelTrends,
+  fetchIntelPlaybooks,
+  fetchIntelCockpit,
+  fetchIntelMedia,
+  fetchIntelTuningStatus,
+  refreshIntel,
+  simulateIntelSignal,
 } from '@/lib/api-client'
-import type { LaunchRequest, InjectEventRequest } from '@/lib/types'
+import type { LaunchRequest, InjectEventRequest, PS3LaunchRequest, EventLabRequest, EventLabRunRequest } from '@/lib/types'
 
 // -- Dashboard hydration --
 
@@ -46,7 +68,7 @@ export function useSnapshot() {
   })
 }
 
-export function useTopology(limit = 500) {
+export function useTopology(limit = 300) {
   return useQuery({
     queryKey: ['topology', limit],
     queryFn: () => fetchTopology(limit),
@@ -80,6 +102,27 @@ export function useAttackTypes() {
     queryKey: ['attack-types'],
     queryFn: fetchAttackTypes,
     staleTime: 60_000,
+  })
+}
+
+export function usePS3Scenarios() {
+  return useQuery({
+    queryKey: ['ps3-scenarios'],
+    queryFn: fetchPS3Scenarios,
+    staleTime: 300_000,
+  })
+}
+
+export function useLaunchPS3Scenario() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: PS3LaunchRequest) => launchPS3Scenario(body),
+    onSuccess: (data) => {
+      void qc.invalidateQueries({ queryKey: ['active-scenarios'] })
+      void qc.invalidateQueries({ queryKey: ['scenario-history'] })
+      void qc.invalidateQueries({ queryKey: ['case-trace', data.primary_case_id] })
+      void qc.invalidateQueries({ queryKey: ['ps3-readiness'] })
+    },
   })
 }
 
@@ -171,6 +214,94 @@ export function useInjectEvent() {
   })
 }
 
+export function useEventLabTemplates() {
+  return useQuery({
+    queryKey: ['event-lab-templates'],
+    queryFn: fetchEventLabTemplates,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function usePreviewEventLabRun() {
+  return useMutation({
+    mutationFn: (body: EventLabRequest) => previewEventLabRun(body),
+  })
+}
+
+export function useCreateEventLabRun() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: EventLabRunRequest) => createEventLabRun(body),
+    onSuccess: (run) => {
+      void qc.invalidateQueries({ queryKey: ['event-lab-run', run.run_id] })
+      void qc.invalidateQueries({ queryKey: ['event-lab-explainability', run.run_id] })
+      void qc.invalidateQueries({ queryKey: ['countermeasure-proposals'] })
+      void qc.invalidateQueries({ queryKey: ['active-scenarios'] })
+      void qc.invalidateQueries({ queryKey: ['scenario-history'] })
+    },
+  })
+}
+
+export function useEventLabRun(runId: string | null) {
+  return useQuery({
+    queryKey: ['event-lab-run', runId],
+    queryFn: () => fetchEventLabRun(runId!),
+    enabled: !!runId,
+    staleTime: 1_000,
+    refetchInterval: runId ? 2_000 : false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useEventLabExplainability(runId: string | null) {
+  return useQuery({
+    queryKey: ['event-lab-explainability', runId],
+    queryFn: () => fetchEventLabExplainability(runId!),
+    enabled: !!runId,
+    staleTime: 1_000,
+    refetchInterval: runId ? 2_000 : false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useCountermeasureProposals(runId?: string | null) {
+  return useQuery({
+    queryKey: ['countermeasure-proposals', runId ?? 'all'],
+    queryFn: () => fetchCountermeasureProposals(runId ?? undefined),
+    staleTime: 1_000,
+    refetchInterval: 3_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useApproveCountermeasure() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (proposalId: string) => approveCountermeasure(proposalId),
+    onSuccess: (proposal) => {
+      void qc.invalidateQueries({ queryKey: ['countermeasure-proposals'] })
+      void qc.invalidateQueries({ queryKey: ['event-lab-run', proposal.run_id] })
+      void qc.invalidateQueries({ queryKey: ['event-lab-explainability', proposal.run_id] })
+      void qc.invalidateQueries({ queryKey: ['circuit-breaker'] })
+      void qc.invalidateQueries({ queryKey: ['snapshot'] })
+    },
+  })
+}
+
+export function useRejectCountermeasure() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (proposalId: string) => rejectCountermeasure(proposalId),
+    onSuccess: (proposal) => {
+      void qc.invalidateQueries({ queryKey: ['countermeasure-proposals'] })
+      void qc.invalidateQueries({ queryKey: ['event-lab-run', proposal.run_id] })
+      void qc.invalidateQueries({ queryKey: ['event-lab-explainability', proposal.run_id] })
+    },
+  })
+}
+
 // -- Investigation --
 
 export function useInvestigation(txnId: string | null) {
@@ -179,6 +310,138 @@ export function useInvestigation(txnId: string | null) {
     queryFn: () => fetchInvestigation(txnId!),
     enabled: !!txnId,
     staleTime: 30_000,
+  })
+}
+
+export function useCaseTrace(caseId: string | null) {
+  return useQuery({
+    queryKey: ['case-trace', caseId],
+    queryFn: () => fetchCaseTrace(caseId!),
+    enabled: !!caseId,
+    staleTime: 2_000,
+    refetchInterval: caseId ? 2_500 : false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useCreateEvidencePackage() {
+  return useMutation({
+    mutationFn: (caseId: string) => createEvidencePackage(caseId),
+  })
+}
+
+export function usePS3Readiness() {
+  return useQuery({
+    queryKey: ['ps3-readiness'],
+    queryFn: fetchPS3Readiness,
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+// -- Pre-Fraud Intelligence --
+
+export function useIntelSources() {
+  return useQuery({
+    queryKey: ['intel-sources'],
+    queryFn: fetchIntelSources,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useIntelSignals() {
+  return useQuery({
+    queryKey: ['intel-signals'],
+    queryFn: () => fetchIntelSignals({ min_trust: 0.0 }),
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useIntelTrends() {
+  return useQuery({
+    queryKey: ['intel-trends'],
+    queryFn: fetchIntelTrends,
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useIntelPlaybooks() {
+  return useQuery({
+    queryKey: ['intel-playbooks'],
+    queryFn: fetchIntelPlaybooks,
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useIntelCockpit() {
+  return useQuery({
+    queryKey: ['intel-cockpit'],
+    queryFn: fetchIntelCockpit,
+    staleTime: 2_000,
+    refetchInterval: 5_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useIntelMedia() {
+  return useQuery({
+    queryKey: ['intel-media'],
+    queryFn: fetchIntelMedia,
+    staleTime: 5_000,
+    refetchInterval: 12_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useIntelTuningStatus() {
+  return useQuery({
+    queryKey: ['intel-tuning-status'],
+    queryFn: fetchIntelTuningStatus,
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useRefreshIntel() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (seed?: number) => refreshIntel(seed),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['intel-sources'] })
+      void qc.invalidateQueries({ queryKey: ['intel-signals'] })
+      void qc.invalidateQueries({ queryKey: ['intel-trends'] })
+      void qc.invalidateQueries({ queryKey: ['intel-playbooks'] })
+      void qc.invalidateQueries({ queryKey: ['intel-cockpit'] })
+      void qc.invalidateQueries({ queryKey: ['intel-media'] })
+      void qc.invalidateQueries({ queryKey: ['intel-tuning-status'] })
+      void qc.invalidateQueries({ queryKey: ['ps3-readiness'] })
+    },
+  })
+}
+
+export function useSimulateIntelSignal() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (scenario?: string) => simulateIntelSignal(scenario ?? 'digital_arrest_mule'),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['intel-sources'] })
+      void qc.invalidateQueries({ queryKey: ['intel-signals'] })
+      void qc.invalidateQueries({ queryKey: ['intel-trends'] })
+      void qc.invalidateQueries({ queryKey: ['intel-playbooks'] })
+      void qc.invalidateQueries({ queryKey: ['intel-cockpit'] })
+      void qc.invalidateQueries({ queryKey: ['intel-media'] })
+      void qc.invalidateQueries({ queryKey: ['intel-tuning-status'] })
+      void qc.invalidateQueries({ queryKey: ['ps3-readiness'] })
+    },
   })
 }
 

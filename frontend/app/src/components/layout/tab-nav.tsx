@@ -6,6 +6,7 @@
 import { useEffect, useCallback } from 'react'
 import { useUIStore, type TabId } from '@/stores/use-ui-store'
 import { useDashboardStore } from '@/stores/use-dashboard-store'
+import { useIntelTuningStatus } from '@/hooks/use-api'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard,
@@ -15,17 +16,19 @@ import {
   BarChart3,
   Cpu,
   ShieldCheck,
+  Radar,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 const TABS: { id: TabId; label: string; shortLabel: string; icon: LucideIcon; key: string }[] = [
-  { id: 'overview', label: 'Overview', shortLabel: 'Overview', icon: LayoutDashboard, key: '1' },
-  { id: 'threat-sim', label: 'Threat Simulation', shortLabel: 'Threats', icon: Crosshair, key: '2' },
-  { id: 'investigations', label: 'Investigations', shortLabel: 'Investigate', icon: Scale, key: '3' },
-  { id: 'intelligence', label: 'Intelligence & Integrity', shortLabel: 'Intel', icon: BrainCircuit, key: '4' },
-  { id: 'analytics', label: 'Analytics', shortLabel: 'Analytics', icon: BarChart3, key: '5' },
-  { id: 'compliance', label: 'Compliance & Regulatory', shortLabel: 'Comply', icon: ShieldCheck, key: '6' },
-  { id: 'system', label: 'System', shortLabel: 'System', icon: Cpu, key: '7' },
+  { id: 'pre-fraud-intel', label: 'Pre-Fraud Intel', shortLabel: 'Pre-Fraud', icon: Radar, key: '1' },
+  { id: 'overview', label: 'Fund-Flow Overview', shortLabel: 'Overview', icon: LayoutDashboard, key: '2' },
+  { id: 'threat-sim', label: 'Adaptive Event Lab', shortLabel: 'Event Lab', icon: Crosshair, key: '3' },
+  { id: 'investigations', label: 'Investigations', shortLabel: 'Investigate', icon: Scale, key: '4' },
+  { id: 'intelligence', label: 'Intelligence & Integrity', shortLabel: 'Intel', icon: BrainCircuit, key: '5' },
+  { id: 'analytics', label: 'Analytics', shortLabel: 'Analytics', icon: BarChart3, key: '6' },
+  { id: 'compliance', label: 'Compliance & Regulatory', shortLabel: 'Comply', icon: ShieldCheck, key: '7' },
+  { id: 'system', label: 'System', shortLabel: 'System', icon: Cpu, key: '8' },
 ]
 
 export function TabNav() {
@@ -34,6 +37,7 @@ export function TabNav() {
   const frozenCount = useDashboardStore((s) => s.frozenCount)
   const pendingAlerts = useDashboardStore((s) => s.pendingAlerts)
   const agentLogLen = useDashboardStore((s) => s.agentLog.length)
+  const { data: intelStatus } = useIntelTuningStatus()
 
   // Keyboard shortcut: Alt+1..5
   const handleKeyDown = useCallback(
@@ -58,9 +62,10 @@ export function TabNav() {
   const badgeCounts: Partial<Record<TabId, number>> = {}
   if (frozenCount > 0 || pendingAlerts > 0) badgeCounts['overview'] = frozenCount + pendingAlerts
   if (agentLogLen > 0) badgeCounts['investigations'] = agentLogLen
+  if ((intelStatus?.active_playbooks ?? 0) > 0) badgeCounts['pre-fraud-intel'] = intelStatus?.active_playbooks ?? 0
 
   return (
-    <nav className="flex items-center bg-bg-surface border-b border-border-default shrink-0">
+    <nav className="flex shrink-0 items-center overflow-x-auto border-b border-border-default bg-bg-surface px-2 py-1.5 shadow-sm">
       {TABS.map((tab) => {
         const Icon = tab.icon
         const isActive = activeTab === tab.id
@@ -69,37 +74,40 @@ export function TabNav() {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
+            aria-label={tab.label}
+            aria-current={isActive ? 'page' : undefined}
             title={`${tab.label} (Alt+${tab.key})`}
             className={cn(
-              'group flex items-center gap-2 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] transition-all duration-150',
-              'border-b-2 -mb-px relative',
+              'group relative flex shrink-0 items-center gap-2 px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.1em] transition-all duration-150',
+              'relative rounded-full border',
               isActive
-                ? 'text-text-primary border-accent-primary bg-bg-elevated/60'
-                : 'text-text-muted border-transparent hover:text-text-secondary hover:bg-bg-elevated/30 hover:border-border-subtle',
+                ? 'border-accent-primary bg-accent-primary text-white shadow-sm'
+                : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-bg-elevated/70 hover:text-accent-primary',
             )}
           >
             <Icon className={cn(
               'w-3.5 h-3.5 transition-colors',
-              isActive ? 'text-accent-primary' : 'text-text-muted group-hover:text-text-secondary',
+              isActive ? 'text-white' : 'text-text-muted group-hover:text-accent-primary',
             )} />
-            {tab.label}
+            <span className="hidden 2xl:inline">{tab.label}</span>
+            <span className="2xl:hidden">{tab.shortLabel}</span>
             {/* Keyboard hint */}
             <span className={cn(
               'text-[7px] font-mono px-1 py-0.5 rounded border leading-none ml-0.5 transition-colors',
               isActive
-                ? 'border-accent-primary/30 text-accent-primary/60'
+                ? 'border-white/40 bg-white/15 text-white/80'
                 : 'border-border-subtle text-text-muted/40 group-hover:border-border-default group-hover:text-text-muted/60',
             )}>
               {tab.key}
             </span>
             {/* Alert badge */}
             {badge != null && badge > 0 && (
-              <span className="flex items-center justify-center min-w-[14px] h-[14px] text-[7px] font-bold font-mono rounded-full bg-alert-critical text-white px-1 animate-data-pulse">
+              <span className="flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-alert-critical px-1 font-mono text-[7px] font-bold text-white animate-data-pulse">
                 {badge > 99 ? '99+' : badge}
               </span>
             )}
             {isActive && (
-              <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-px bg-accent-primary blur-sm" />
+              <span className="absolute -bottom-1 left-1/2 h-0.5 w-8 -translate-x-1/2 rounded-full bg-alert-critical" />
             )}
           </button>
         )

@@ -7,15 +7,25 @@ import { AgentCoT } from '@/components/panels/agent-cot'
 import { CircuitBreakerPanel } from '@/components/panels/circuit-breaker'
 import { SystemMetrics } from '@/components/panels/system-metrics'
 import { EventDetailDrawer } from '@/components/panels/event-detail-drawer'
+import { PreFraudIntelBrief } from '@/components/panels/pre-fraud-intel-brief'
 import { cn } from '@/lib/utils'
-import { BrainCircuit, Zap, Activity, Fingerprint, ChevronDown, ChevronRight } from 'lucide-react'
+import { BrainCircuit, Zap, Activity, Fingerprint, ChevronDown, ChevronRight, Radar } from 'lucide-react'
 
 const DRAWERS = [
   { id: 'agent', label: 'Agent Investigation', icon: BrainCircuit, component: AgentCoT },
+  { id: 'pre-fraud-intel', label: 'Pre-Fraud Intel', icon: Radar, component: PreFraudDrawerPanel },
   { id: 'circuit-breaker', label: 'Circuit Breaker', icon: Zap, component: CircuitBreakerPanel },
   { id: 'system-metrics', label: 'System Metrics', icon: Activity, component: SystemMetrics },
   { id: 'event-inspector', label: 'Event Inspector', icon: Fingerprint, component: EventDetailDrawer },
 ] as const
+
+function PreFraudDrawerPanel() {
+  return (
+    <div className="h-full overflow-auto p-3">
+      <PreFraudIntelBrief variant="drawer" />
+    </div>
+  )
+}
 
 export function BottomDrawer() {
   const expanded = useUIStore((s) => s.expandedDrawers)

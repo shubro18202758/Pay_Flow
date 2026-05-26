@@ -2,7 +2,7 @@
 // Live Activity Feed -- Real-time event pipeline transparency
 // ============================================================================
 
-import { useState, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useActivityStore } from '@/stores/use-activity-store'
 import { useUIStore } from '@/stores/use-ui-store'
 import { PipelineStageBar } from '@/components/panels/pipeline-stage-bar'
@@ -22,6 +22,14 @@ export function LiveActivityFeed() {
   const [riskFilter, setRiskFilter] = useState<RiskFilter>('all')
   const [verdictFilter, setVerdictFilter] = useState<VerdictFilter>('all')
   const [showFilters, setShowFilters] = useState(false)
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowSec(Math.floor(Date.now() / 1000))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const filteredIds = useMemo(() => {
     return orderedIds.filter((id) => {
@@ -33,7 +41,7 @@ export function LiveActivityFeed() {
         if (!v || !v.includes(verdictFilter)) return false
       }
       return true
-    }).slice(0, 50)
+    }).slice(0, 28)
   }, [orderedIds, events, riskFilter, verdictFilter])
 
   const RISK_OPTIONS: RiskFilter[] = ['all', 'critical', 'high', 'medium', 'low']
@@ -118,6 +126,7 @@ export function LiveActivityFeed() {
               <EventCard
                 key={id}
                 lifecycle={lifecycle}
+                nowSec={nowSec}
                 onClick={() => setSelectedEvent(id)}
               />
             )
@@ -130,12 +139,14 @@ export function LiveActivityFeed() {
 
 function EventCard({
   lifecycle,
+  nowSec,
   onClick,
 }: {
   lifecycle: EventLifecycle
+  nowSec: number
   onClick: () => void
 }) {
-  const elapsed = Math.round(Date.now() / 1000 - lifecycle.firstSeen)
+  const elapsed = Math.max(0, Math.round(nowSec - lifecycle.firstSeen))
   const hasVerdict = !!lifecycle.verdict
   const isFraud = (lifecycle.fraudLabel ?? 0) > 0
   const stageKeys = lifecycle.stages.map((s) => s.stage)
