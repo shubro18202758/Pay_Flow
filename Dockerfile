@@ -35,7 +35,7 @@ RUN python -m pip install --upgrade pip \
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3).read(1)"
+HEALTHCHECK --interval=30s --timeout=30s --start-period=180s --retries=6 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=20).read(1)"
 
 CMD ["sh", "-c", "python main.py --serve --cpu-only ${PAYFLOW_SKIP_LLM:+--skip-llm} --events ${PAYFLOW_EVENTS:-1500} --accounts ${PAYFLOW_ACCOUNTS:-600} --fraud-ratio ${PAYFLOW_FRAUD_RATIO:-0.08} --dashboard-host ${PAYFLOW_HOST:-0.0.0.0} --dashboard-port ${PORT:-8000}"]
