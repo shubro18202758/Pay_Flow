@@ -136,12 +136,13 @@ def create_app(orchestrator=None) -> FastAPI:
                 f"{ollama_url}/api/generate",
                 json={
                     "model": model,
-                    "prompt": "Say hello in one sentence.",
+                    "prompt": "Reply with exactly one short sentence: Hello from PayFlow.",
                     "stream": False,
+                    "think": False,
                     "keep_alive": "30m",
                     "options": {
                         "num_ctx": 2048,
-                        "num_predict": 32,
+                        "num_predict": 96,
                         "temperature": 0.1,
                     },
                 },
