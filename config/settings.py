@@ -99,9 +99,19 @@ class GNNConfig:
 
 @dataclass(frozen=True)
 class OllamaConfig:
-    model: str = "qwen3.5:4b-q4_K_M"
-    custom_model: str = "payflow-qwen"  # built via scripts/deploy_ollama.sh
-    base_url: str = "http://localhost:11434"
+    model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3.5:4b"))
+    custom_model: str = field(
+        default_factory=lambda: os.getenv(
+            "PAYFLOW_OLLAMA_MODEL",
+            os.getenv("OLLAMA_MODEL", "payflow-qwen"),
+        )
+    )  # built via scripts/deploy_ollama.sh unless overridden by deployment env
+    base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "OLLAMA_URL",
+            os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        )
+    )
     keep_alive: str = "-1"        # permanent residency — never unload from VRAM
     temperature: float = 0.3      # low temp for deterministic fraud analysis
     num_ctx: int = 16384          # context window (tokens) — capped for 8 GB VRAM

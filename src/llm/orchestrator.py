@@ -21,8 +21,8 @@ from src.llm.health_check import check_vram_for_llm
 
 logger = logging.getLogger(__name__)
 
-# Custom model tag built by deploy_ollama.sh
-PAYFLOW_MODEL = "payflow-qwen"
+# Custom model tag built by deploy_ollama.sh, or the deployment-provided model.
+PAYFLOW_MODEL = OLLAMA_CFG.custom_model
 
 
 class VRAMInsufficientError(RuntimeError):

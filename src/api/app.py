@@ -130,7 +130,7 @@ def create_app(orchestrator=None) -> FastAPI:
     @app.get("/ask")
     async def ask_ollama():
         ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-        model = os.getenv("OLLAMA_MODEL", "qwen2.5:0.5b")
+        model = os.getenv("OLLAMA_MODEL", "qwen3.5:4b")
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 f"{ollama_url}/api/generate",

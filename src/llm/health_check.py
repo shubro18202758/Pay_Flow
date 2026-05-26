@@ -16,6 +16,7 @@ import ctypes
 import ctypes.util
 import json
 import logging
+import os
 import platform
 import struct
 import sys
@@ -208,7 +209,17 @@ SAFETY_MARGIN_MB = 300.0
 # generation headroom. Keep this below the load-shed resume band so the
 # dashboard NL route remains available after the warmed demo pipeline.
 LLM_RESIDENT_HEADROOM_MB = 256.0
-OLLAMA_MODEL_ALIASES = ("payflow-qwen", "qwen3.5:4b-q4_K_M", "qwen3.5:4b")
+OLLAMA_MODEL_ALIASES = tuple(
+    dict.fromkeys(
+        (
+            os.getenv("PAYFLOW_OLLAMA_MODEL", ""),
+            os.getenv("OLLAMA_MODEL", ""),
+            "payflow-qwen",
+            "qwen3.5:4b-q4_K_M",
+            "qwen3.5:4b",
+        )
+    )
+)
 
 LLM_TOTAL_REQUIRED_MB = (
     LLM_MODEL_WEIGHT_MB + LLM_KV_CACHE_16K_Q8_MB + CUDA_OVERHEAD_MB + SAFETY_MARGIN_MB
@@ -224,7 +235,8 @@ def _target_ollama_model_loaded() -> bool:
     model budget. This avoids false failures on the second and later LLM calls.
     """
     try:
-        with urllib.request.urlopen("http://localhost:11434/api/ps", timeout=1.5) as resp:
+        ollama_url = os.getenv("OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/")
+        with urllib.request.urlopen(f"{ollama_url}/api/ps", timeout=1.5) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception:
         return False
