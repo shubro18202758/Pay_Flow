@@ -17,9 +17,11 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -124,6 +126,22 @@ def create_app(orchestrator=None) -> FastAPI:
     @app.get("/landing", response_class=HTMLResponse)
     async def serve_landing_alt():
         return landing_file.read_text(encoding="utf-8")
+
+    @app.get("/ask")
+    async def ask_ollama():
+        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+        model = os.getenv("OLLAMA_MODEL", "qwen2.5:0.5b")
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{ollama_url}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": "Say hello in one sentence.",
+                    "stream": False,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
 
     # Serve production frontend build if available
     if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():
