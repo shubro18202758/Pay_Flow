@@ -15,18 +15,6 @@ ENV PYTHONUNBUFFERED=1 \
     PAYFLOW_HOST=0.0.0.0 \
     PORT=8000
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        curl \
-        libgomp1 \
-        libglib2.0-0 \
-        libcairo2 \
-        libpango-1.0-0 \
-        libpangoft2-1.0-0 \
-        libgdk-pixbuf-2.0-0 \
-        shared-mime-info \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 COPY pyproject.toml requirements.deploy.txt README.md LICENSE ./
