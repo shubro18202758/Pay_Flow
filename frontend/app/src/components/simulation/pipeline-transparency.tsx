@@ -1,677 +1,716 @@
-// ============================================================================
-// Pipeline Transparency Panel — Full "X-ray" of every pipeline stage
-// No black box: Shows ML features, Graph analysis, CB consensus, LLM reasoning
-// ============================================================================
-
-import { useMemo, useState } from 'react'
-import { useActivityStore, type EventLifecycle, type PipelineStage } from '@/stores/use-activity-store'
-import { cn } from '@/lib/utils'
+import { useMemo } from 'react'
+import { useActivityStore, type EventLabRunActivity, type EventLifecycle, type PipelineStage, type StageDetail } from '@/stores/use-activity-store'
+import { cn, fmtOptionalTimestamp } from '@/lib/utils'
+import { useLLMStatus } from '@/hooks/use-api'
+import { resolveLLMRuntime, type LLMRuntimeSummary } from '@/lib/llm-runtime'
 import {
-  Eye,
-  Database,
-  BrainCircuit,
-  Network,
-  ShieldCheck,
-  Bot,
-  Scale,
-  ChevronDown,
-  ChevronRight,
   Activity,
-  BarChart3,
-  GitBranch,
-  Shield,
-  Cpu,
-  MessageSquare,
-  FileText,
   AlertTriangle,
+  Bot,
+  BrainCircuit,
   CheckCircle2,
-  Zap,
+  Clock3,
+  Cpu,
+  Database,
+  Eye,
+  FileText,
+  GitBranch,
+  MessageSquare,
+  Network,
+  Radio,
+  Scale,
+  Shield,
+  ShieldCheck,
   TrendingUp,
-  Layers,
-  Wrench,
-  Brain,
-  Target,
   type LucideIcon,
 } from 'lucide-react'
 
-// ── Stage transparency configs ───────────────────────────────────────────
-
-interface TransparencyStageConfig {
+interface StageConfig {
   key: PipelineStage
   label: string
+  owner: string
   icon: LucideIcon
-  color: string
-  algorithmName: string
-  algorithmDetail: string
-  techStack: string[]
+  accent: string
 }
 
-const TRANSPARENCY_STAGES: TransparencyStageConfig[] = [
-  {
-    key: 'ingested',
-    label: 'Event Ingestion & Validation',
-    icon: Database,
-    color: 'oklch(0.65 0.18 200)',
-    algorithmName: 'Schema Validator + CRC32',
-    algorithmDetail: 'Pydantic schema validation with strict field typing, CRC32 checksum integrity verification, timestamp normalization, and amount-to-paisa conversion.',
-    techStack: ['Pydantic V2', 'CRC32 Checksum', 'Field Normalizer'],
-  },
-  {
-    key: 'ml_scored',
-    label: 'ML Feature Engine + XGBoost',
-    icon: BrainCircuit,
-    color: 'oklch(0.65 0.18 280)',
-    algorithmName: '36-Dim Feature Extraction → XGBoost Classifier',
-    algorithmDetail: 'Extracts 36 behavioral & transactional features: velocity (1h/24h/7d), amount z-score, time-of-day encoding, sender/receiver historical patterns, device entropy, geo-distance anomaly, channel frequency deviation. Scored by XGBoost gradient-boosted trees trained on synthetic fraud corpus.',
-    techStack: ['XGBoost', '36-Feature Vector', 'Velocity Engine', 'Z-Score Normalization'],
-  },
-  {
-    key: 'graph_investigated',
-    label: 'Graph Neural Analysis',
-    icon: Network,
-    color: 'oklch(0.65 0.18 150)',
-    algorithmName: 'NetworkX Structural Pattern Scanner',
-    algorithmDetail: 'Builds directed transaction graph. Detects mule chains (DFS path analysis), circular laundering (cycle detection), hub anomalies (betweenness/closeness centrality), community outliers (Louvain), and star pattern detection for collector nodes.',
-    techStack: ['NetworkX', 'Cycle Detection', 'Betweenness Centrality', 'Louvain Communities', 'DFS Mule Chains'],
-  },
-  {
-    key: 'cb_evaluated',
-    label: 'Circuit Breaker — Multi-Model Consensus',
-    icon: ShieldCheck,
-    color: 'oklch(0.65 0.18 50)',
-    algorithmName: 'Weighted Consensus Scoring (ML + GNN + Graph)',
-    algorithmDetail: 'Combines ML risk score (XGBoost), GNN embedding similarity score, and structural graph evidence into a weighted consensus. If consensus exceeds threshold, issues a freeze order on the node and escalates to AI investigation. Implements exponential back-off to prevent alert fatigue.',
-    techStack: ['Weighted Ensemble', 'Freeze Orders', 'Alert Dedup', 'Threshold Calibration'],
-  },
-  {
-    key: 'llm_started',
-    label: 'Qwen 3.5 AI Forensic Agent',
-    icon: Bot,
-    color: 'oklch(0.65 0.18 25)',
-    algorithmName: 'LangGraph ReAct Agent (Qwen 3.5 via Ollama)',
-    algorithmDetail: 'Runs a bounded LangGraph ReAct loop: (1) Analyze transaction context, (2) Query graph neighbors, (3) Check historical patterns, (4) Cross-reference velocity data, (5) Generate forensic explanation. Uses Ollama-hosted qwen3.5:4b-q4_K_M with a custom Indian banking fraud prompt, while PayFlow rules, ML, graph, circuit breaker, and ledger remain authoritative.',
-    techStack: ['qwen3.5:4b-q4_K_M', 'LangGraph ReAct', 'Ollama', 'Tool-Calling Agent', 'Bounded Copilot'],
-  },
-  {
-    key: 'verdict',
-    label: 'Final Verdict + Blockchain Anchor',
-    icon: Scale,
-    color: 'oklch(0.55 0.18 250)',
-    algorithmName: 'Classification → HITL Decision → Immutable Ledger',
-    algorithmDetail: 'Aggregates all evidence into final verdict (legitimate / suspicious / fraudulent). High-confidence fraud triggers automatic freeze; borderline cases escalate to Human-in-the-Loop (HITL). Verdict + evidence hash anchored to append-only blockchain ledger with Ed25519 signatures.',
-    techStack: ['Ed25519 Signatures', 'Append-Only Ledger', 'HITL Escalation', 'ZKP Anchoring'],
-  },
+const STAGES: StageConfig[] = [
+  { key: 'ingested', label: 'Ingestion', owner: 'Schema + event normalizer', icon: Database, accent: '#00579C' },
+  { key: 'ml_scored', label: 'ML scoring', owner: 'Feature engine + risk model', icon: BrainCircuit, accent: '#00579C' },
+  { key: 'graph_investigated', label: 'Graph scan', owner: 'Fund-flow structure', icon: Network, accent: '#2f79b5' },
+  { key: 'cb_evaluated', label: 'Control gate', owner: 'Circuit breaker evidence', icon: ShieldCheck, accent: '#f5b400' },
+  { key: 'llm_started', label: 'AI explanation', owner: 'Bounded forensic narrative', icon: Bot, accent: '#DA251C' },
+  { key: 'verdict', label: 'Verdict', owner: 'Final evidence state', icon: Scale, accent: '#B51A13' },
 ]
 
-// ── Helper: format duration ──────────────────────────────────────────────
+const STAGE_KEYS = new Set<PipelineStage>(STAGES.map((stage) => stage.key))
 
-function fmtDuration(ms?: number): string {
-  if (ms == null) return '—'
-  return ms < 1000 ? `${ms.toFixed(0)}ms` : `${(ms / 1000).toFixed(1)}s`
+function short(value?: string | null, left = 12): string {
+  if (!value) return 'n/a'
+  return value.length > left + 4 ? `${value.slice(0, left)}...` : value
 }
 
-function fmtScore(score?: number): string {
-  if (score == null) return '—'
-  return `${(score * 100).toFixed(1)}%`
+function fmtDuration(ms?: number | null): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return 'n/a'
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`
 }
 
-// ── Risk Score Gauge ─────────────────────────────────────────────────────
+function fmtScore(score?: number | null): string {
+  if (typeof score !== 'number' || !Number.isFinite(score)) return 'pending'
+  return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`
+}
 
-function RiskGauge({ score, tier }: { score: number; tier?: string }) {
-  const pct = Math.min(score * 100, 100)
-  const color = score > 0.7 ? '#ef4444' : score > 0.4 ? '#f59e0b' : '#22c55e'
+function fmtInr(paisa?: number | null): string {
+  const rupees = Number(paisa ?? 0) / 100
+  if (!Number.isFinite(rupees) || rupees <= 0) return 'pending'
+  return `INR ${rupees.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+}
 
+function stageElapsedMs(lifecycle: EventLifecycle | undefined, stageKey: PipelineStage): number | undefined {
+  if (!lifecycle) return undefined
+  const detail = lifecycle.stages.find((stage) => stage.stage === stageKey)
+  if (!detail) return undefined
+  if (typeof detail.durationMs === 'number' && Number.isFinite(detail.durationMs) && detail.durationMs >= 0) {
+    return detail.durationMs
+  }
+  const index = lifecycle.stages.findIndex((stage) => stage.stage === stageKey)
+  if (index <= 0) return undefined
+  const current = Number(lifecycle.stages[index].timestamp)
+  const previous = Number(lifecycle.stages[index - 1].timestamp)
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || current < previous) return undefined
+  return (current - previous) * 1000
+}
+
+function reachedStages(lifecycle: EventLifecycle | undefined): Set<PipelineStage> {
+  const reached = new Set<PipelineStage>()
+  lifecycle?.stages.forEach((stage) => {
+    if (STAGE_KEYS.has(stage.stage)) reached.add(stage.stage)
+  })
+  return reached
+}
+
+function activeStageKey(lifecycle: EventLifecycle | undefined, reached: Set<PipelineStage>): PipelineStage | null {
+  if (!lifecycle) return null
+  let lastIndex = -1
+  STAGES.forEach((stage, index) => {
+    if (reached.has(stage.key)) lastIndex = index
+  })
+  return lastIndex < STAGES.length - 1 ? STAGES[lastIndex + 1].key : null
+}
+
+function compactMetaValue(value: unknown): string {
+  if (value == null || value === '') return ''
+  if (Array.isArray(value)) return value.map(compactMetaValue).filter(Boolean).slice(0, 4).join(', ')
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const useful = ['risk_score', 'risk_tier', 'tier', 'route', 'count', 'event_count', 'proposal_count', 'audit_hash']
+      .filter((key) => record[key] != null)
+      .map((key) => `${key}=${compactMetaValue(record[key])}`)
+    return useful.length > 0 ? useful.join(', ') : JSON.stringify(record).slice(0, 90)
+  }
+  return String(value)
+}
+
+function metaChips(meta?: Record<string, unknown>, max = 8): Array<[string, string]> {
+  if (!meta) return []
+  return Object.entries(meta)
+    .map(([key, value]): [string, string] => [key, compactMetaValue(value)])
+    .filter(([, value]) => Boolean(value))
+    .slice(0, max)
+}
+
+function isFallbackLifecycle(lifecycle: EventLifecycle): boolean {
   return (
-    <div className="flex items-center gap-3">
-      <div className="relative w-20 h-2 bg-bg-deep rounded-full overflow-hidden">
-        <div
-          className="absolute inset-y-0 left-0 rounded-full transition-all duration-700"
-          style={{ width: `${pct}%`, background: color, boxShadow: `0 0 8px ${color}66` }}
-        />
-      </div>
-      <span className="text-[10px] font-mono font-bold" style={{ color }}>{pct.toFixed(1)}%</span>
-      {tier && (
-        <span className="text-[8px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider" style={{
-          color,
-          background: `${color}15`,
-          border: `1px solid ${color}30`,
-        }}>{tier}</span>
+    lifecycle.confidenceSource === 'deterministic_evidence_fallback' ||
+    Boolean(lifecycle.llmParseStatus?.includes('fallback')) ||
+    (lifecycle.confidence === 0.5 &&
+      (lifecycle.evidenceCited?.length ?? 0) === 0 &&
+      Boolean(lifecycle.reasoningSummary?.includes('Unable to reach definitive conclusion')))
+  )
+}
+
+function eventLabStageLabel(stage: string): string {
+  return stage.replace(/_/g, ' ')
+}
+
+function StatusPill({ status }: { status: 'complete' | 'active' | 'waiting' }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[8px] font-bold uppercase tracking-[0.1em]',
+        status === 'complete' && 'border-[#00579C]/25 bg-[#00579C]/10 text-[#00579C]',
+        status === 'active' && 'border-[#DA251C]/25 bg-[#DA251C]/10 text-[#DA251C]',
+        status === 'waiting' && 'border-border-subtle bg-bg-elevated text-text-muted',
       )}
-    </div>
+    >
+      {status === 'complete' ? <CheckCircle2 className="h-3 w-3" /> : status === 'active' ? <Activity className="h-3 w-3 animate-pulse" /> : <Clock3 className="h-3 w-3" />}
+      {status}
+    </span>
   )
 }
 
-// ── Consensus Score Bars ─────────────────────────────────────────────────
-
-function ConsensusBar({ label, score, icon: Icon }: { label: string; score: number; icon: LucideIcon }) {
-  const color = score > 0.7 ? '#ef4444' : score > 0.4 ? '#f59e0b' : '#22c55e'
+function KV({ label, value, mono = false, tone = 'default' }: { label: string; value: string; mono?: boolean; tone?: 'default' | 'red' | 'green' | 'blue' }) {
+  const toneClass = {
+    default: 'text-text-primary',
+    red: 'text-[#DA251C]',
+    green: 'text-alert-low',
+    blue: 'text-[#00579C]',
+  }[tone]
   return (
-    <div className="flex items-center gap-2">
-      <Icon className="w-3 h-3 text-text-muted shrink-0" />
-      <span className="text-[8px] font-semibold text-text-muted uppercase tracking-wider w-10">{label}</span>
-      <div className="flex-1 h-1.5 bg-bg-deep rounded-full overflow-hidden">
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${score * 100}%`, background: color }}
-        />
-      </div>
-      <span className="text-[9px] font-mono font-bold w-10 text-right" style={{ color }}>
-        {(score * 100).toFixed(0)}%
-      </span>
+    <div className="rounded-md border border-border-subtle bg-white px-2 py-1.5">
+      <div className="text-[7px] font-bold uppercase tracking-[0.12em] text-text-muted">{label}</div>
+      <div className={cn('mt-0.5 truncate text-[9px] font-bold', mono && 'font-mono', toneClass)}>{value}</div>
     </div>
   )
 }
 
-// ── Stage Transparency Card ──────────────────────────────────────────────
+function ProgressBar({ value, tone = 'blue' }: { value: number; tone?: 'blue' | 'red' | 'amber' | 'green' }) {
+  const clamped = Math.max(0, Math.min(100, value))
+  const fill = {
+    blue: 'bg-[#00579C]',
+    red: 'bg-[#DA251C]',
+    amber: 'bg-[#f5b400]',
+    green: 'bg-alert-low',
+  }[tone]
+  return (
+    <div className="h-2 overflow-hidden rounded-full bg-bg-elevated">
+      <div className={cn('h-full rounded-full transition-all duration-700', fill)} style={{ width: `${clamped}%` }} />
+    </div>
+  )
+}
 
-function StageTransparencyCard({
+function RunStageLedger({ run, llmRuntime }: { run: EventLabRunActivity; llmRuntime: LLMRuntimeSummary }) {
+  const latest = run.stages.at(-1)
+  const finalReached = run.stages.some((stage) => stage.stage === 'evaluation_complete' || stage.stage === 'evidence_ready')
+
+  return (
+    <section className="rounded-lg border border-[#00579C]/25 bg-white shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border-subtle p-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-[#00579C]">
+            <Radio className="h-4 w-4 text-[#DA251C]" />
+            Event Lab backend stage ledger
+          </div>
+          <p className="mt-1 max-w-4xl text-[10px] leading-relaxed text-text-secondary">
+            {run.templateTitle} is tracked from live Event Lab run events. The report unlocks only after the run reports
+            evaluation completion and evidence readiness.
+          </p>
+        </div>
+        <div className="grid min-w-[300px] grid-cols-3 gap-2">
+          <KV label="Run" value={short(run.runId, 10)} mono />
+          <KV label="Latest" value={latest ? eventLabStageLabel(latest.stage) : 'waiting'} />
+          <KV label="Report" value={finalReached ? 'ready' : 'locked'} tone={finalReached ? 'green' : 'red'} />
+        </div>
+      </div>
+
+      <div className="grid gap-2 p-3 md:grid-cols-4 xl:grid-cols-6">
+        {run.stages.length === 0 ? (
+          <div className="md:col-span-4 xl:col-span-6 rounded-md border border-dashed border-[#00579C]/25 bg-[#00579C]/5 p-3 text-[10px] text-text-secondary">
+            Waiting for the first backend stage from SSE.
+          </div>
+        ) : run.stages.slice(-18).map((stage, index) => {
+          const isFinal = stage.stage === 'evaluation_complete' || stage.stage === 'evidence_ready'
+          return (
+            <div key={`${stage.stage}-${stage.timestamp}-${index}`} className={cn(
+              'rounded-md border p-2',
+              isFinal ? 'border-alert-low/25 bg-alert-low/10' : 'border-border-subtle bg-bg-elevated/50',
+            )}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-[8px] font-bold uppercase tracking-[0.12em] text-text-primary">{eventLabStageLabel(stage.stage)}</span>
+                {isFinal ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-alert-low" /> : <Activity className="h-3.5 w-3.5 shrink-0 text-[#00579C]" />}
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-2 font-mono text-[8px] text-text-muted">
+                <span>{stage.event_ids?.length ?? 0} ids</span>
+                <span>{stage.duration_ms != null ? fmtDuration(stage.duration_ms) : fmtOptionalTimestamp(stage.timestamp)}</span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="grid gap-2 border-t border-border-subtle bg-[#f4f8fc] p-3 md:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="grid gap-2 md:grid-cols-4">
+          <KV label="Correlation" value={short(run.correlationId, 14)} mono />
+          <KV label="Generated events" value={String(run.eventIds.length)} />
+          <KV label="Status" value={run.status.replace(/_/g, ' ')} />
+          <KV label="Audit hash" value={short(run.auditHash, 14)} mono />
+        </div>
+        <div className="rounded-md border border-[#00579C]/20 bg-white p-2">
+          <div className="flex items-center gap-2 text-[8px] font-bold uppercase tracking-[0.12em] text-[#00579C]">
+            <Bot className="h-3.5 w-3.5 text-[#DA251C]" />
+            {llmRuntime.model} bounded explanation
+          </div>
+          <p className="mt-1 line-clamp-3 text-[9px] leading-relaxed text-text-secondary">
+            {run.qwenExplanation || `${llmRuntime.model} explanation metadata will appear when the backend reports the AI context stage.`}
+          </p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function EvidenceSyncPanel({
+  run,
+  lifecycle,
+  hydratedCount,
+  verdictCount,
+  stagesReached,
+  totalStages,
+}: {
+  run?: EventLabRunActivity
+  lifecycle?: EventLifecycle
+  hydratedCount: number
+  verdictCount: number
+  stagesReached: number
+  totalStages: number
+}) {
+  const progress = totalStages > 0 ? Math.round((stagesReached / totalStages) * 100) : 0
+  const totalEvents = run?.eventIds.length ?? (lifecycle ? 1 : 0)
+  const verdictPct = totalEvents > 0 ? Math.round((verdictCount / totalEvents) * 100) : 0
+
+  return (
+    <section className="rounded-lg border border-[#00579C]/25 bg-white shadow-sm">
+      <div className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-[#00579C]">
+              <Eye className="h-4 w-4" />
+              Live evidence sync
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <StatusPill status={progress >= 100 ? 'complete' : lifecycle ? 'active' : 'waiting'} />
+              <span className="rounded-full border border-border-subtle bg-bg-elevated px-2 py-0.5 font-mono text-[8px] font-bold text-text-secondary">
+                hydrated {hydratedCount}/{Math.max(totalEvents, hydratedCount)}
+              </span>
+              <span className="rounded-full border border-[#DA251C]/20 bg-[#DA251C]/10 px-2 py-0.5 font-mono text-[8px] font-bold text-[#DA251C]">
+                verdicts {verdictCount}
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-4">
+            <KV label="Selected event" value={short(lifecycle?.txnId, 16)} mono />
+            <KV label="Risk" value={lifecycle?.riskScore != null ? `${fmtScore(lifecycle.riskScore)} ${lifecycle.riskTier ?? ''}` : 'pending'} tone={lifecycle?.riskScore && lifecycle.riskScore > 0.7 ? 'red' : 'blue'} />
+            <KV label="Verdict" value={lifecycle?.verdict ?? 'pending'} />
+            <KV label="Amount" value={fmtInr(lifecycle?.amountPaisa)} />
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            <div>
+              <div className="mb-1 flex items-center justify-between text-[8px] font-bold uppercase tracking-[0.12em] text-text-muted">
+                <span>Operator stages</span>
+                <span>{stagesReached}/{totalStages}</span>
+              </div>
+              <ProgressBar value={progress} tone={progress >= 100 ? 'green' : 'blue'} />
+            </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between text-[8px] font-bold uppercase tracking-[0.12em] text-text-muted">
+                <span>Run verdict hydration</span>
+                <span>{verdictPct}%</span>
+              </div>
+              <ProgressBar value={verdictPct} tone={verdictPct >= 100 ? 'green' : 'red'} />
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-md border border-border-subtle bg-[#f4f8fc] p-3">
+          <div className="text-[8px] font-bold uppercase tracking-[0.12em] text-text-muted">Selected event route</div>
+          <div className="mt-2 grid grid-cols-[minmax(0,1fr)_24px_minmax(0,1fr)] items-center gap-2">
+            <div className="truncate rounded-md border border-border-subtle bg-white px-2 py-2 font-mono text-[8px] font-bold text-text-primary">
+              {lifecycle?.sender || 'sender pending'}
+            </div>
+            <span className="text-center text-[10px] font-bold text-[#00579C]">to</span>
+            <div className="truncate rounded-md border border-border-subtle bg-white px-2 py-2 font-mono text-[8px] font-bold text-text-primary">
+              {lifecycle?.receiver || 'receiver pending'}
+            </div>
+          </div>
+          {lifecycle?.topFeatures && lifecycle.topFeatures.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {lifecycle.topFeatures.slice(0, 5).map((feature) => (
+                <span key={feature} className="rounded border border-[#00579C]/20 bg-[#00579C]/10 px-1.5 py-0.5 text-[7px] font-bold uppercase tracking-wide text-[#00579C]">
+                  {feature}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function StageProgressStrip({
+  reached,
+  active,
+}: {
+  reached: Set<PipelineStage>
+  active: PipelineStage | null
+}) {
+  return (
+    <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+      {STAGES.map((stage, index) => {
+        const Icon = stage.icon
+        const status: 'complete' | 'active' | 'waiting' = reached.has(stage.key) ? 'complete' : active === stage.key ? 'active' : 'waiting'
+        return (
+          <div key={stage.key} className={cn(
+            'rounded-lg border bg-white p-2 transition-colors',
+            status === 'complete' && 'border-[#00579C]/35',
+            status === 'active' && 'border-[#DA251C]/35 bg-[#DA251C]/5',
+            status === 'waiting' && 'border-border-subtle bg-bg-elevated/40',
+          )}>
+            <div className="flex items-center justify-between gap-2">
+              <div className={cn(
+                'flex h-7 w-7 items-center justify-center rounded-md',
+                status === 'waiting' ? 'bg-bg-elevated text-text-muted' : 'text-white',
+              )} style={status === 'waiting' ? undefined : { background: stage.accent }}>
+                <Icon className="h-3.5 w-3.5" />
+              </div>
+              <span className="font-mono text-[8px] font-bold text-text-muted">{String(index + 1).padStart(2, '0')}</span>
+            </div>
+            <div className="mt-2 truncate text-[9px] font-bold uppercase tracking-[0.1em] text-text-primary">{stage.label}</div>
+            <div className="mt-0.5 truncate text-[8px] text-text-muted">{stage.owner}</div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function StageCard({
   config,
   lifecycle,
-  isReached,
-  isActive,
+  reached,
+  active,
+  llmRuntime,
 }: {
-  config: TransparencyStageConfig
-  lifecycle: EventLifecycle | undefined
-  isReached: boolean
-  isActive: boolean
+  config: StageConfig
+  lifecycle?: EventLifecycle
+  reached: boolean
+  active: boolean
+  llmRuntime: LLMRuntimeSummary
 }) {
-  const [expanded, setExpanded] = useState(isActive)
   const Icon = config.icon
-  const stageDetail = lifecycle?.stages.find((s) => s.stage === config.key)
-  const duration = stageDetail?.durationMs
-    ?? (stageDetail && lifecycle ? (() => {
-        const idx = lifecycle.stages.findIndex(s => s.stage === config.key)
-        if (idx > 0) return (lifecycle.stages[idx].timestamp - lifecycle.stages[idx - 1].timestamp) * 1000
-        return undefined
-      })() : undefined)
+  const stageDetail = lifecycle?.stages.find((stage) => stage.stage === config.key)
+  const status: 'complete' | 'active' | 'waiting' = reached ? 'complete' : active ? 'active' : 'waiting'
+  const chips = metaChips(stageDetail?.meta)
 
   return (
-    <div
-      className={cn(
-        'border rounded-lg overflow-hidden transition-all duration-300',
-        isActive && 'ring-1 ring-offset-0',
-        isReached ? 'bg-bg-elevated/95 border-border-default' : 'bg-bg-overlay/40 border-border-subtle/50 opacity-50',
-      )}
-      style={isActive ? { outlineColor: `${config.color}60`, outlineWidth: '1px', outlineStyle: 'solid' } : undefined}
-    >
-      {/* Header — always visible */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-bg-overlay/30 transition-colors"
-      >
-        {/* Stage icon */}
-        <div
-          className={cn(
-            'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-all',
-            isReached ? 'text-white' : 'bg-bg-deep/80 text-text-muted/50',
-          )}
-          style={isReached ? { background: config.color, boxShadow: `0 0 12px ${config.color}40` } : undefined}
-        >
-          <Icon className="w-4 h-4" />
-        </div>
-
-        {/* Label + algorithm */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className={cn(
-              'text-[10px] font-bold uppercase tracking-wider',
-              isReached ? 'text-text-primary' : 'text-text-muted/60',
-            )}>
-              {config.label}
-            </span>
-            {isActive && (
-              <span className="flex items-center gap-1 text-[7px] px-1.5 py-0.5 rounded-full bg-accent-primary/15 text-accent-primary font-bold uppercase animate-pulse">
-                <Activity className="w-2.5 h-2.5" /> Processing
-              </span>
-            )}
-            {isReached && !isActive && (
-              <CheckCircle2 className="w-3 h-3 text-green-400 shrink-0" />
-            )}
+    <section className={cn(
+      'rounded-lg border bg-white shadow-sm',
+      status === 'complete' && 'border-[#00579C]/30',
+      status === 'active' && 'border-[#DA251C]/35 shadow-[0_10px_28px_rgba(218,37,28,0.12)]',
+      status === 'waiting' && 'border-border-subtle opacity-75',
+    )}>
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border-subtle p-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className={cn('flex h-9 w-9 items-center justify-center rounded-lg text-white', status === 'waiting' && 'bg-bg-elevated text-text-muted')} style={status === 'waiting' ? undefined : { background: config.accent }}>
+            <Icon className="h-4 w-4" />
           </div>
-          <div className="text-[8px] text-text-muted mt-0.5 flex items-center gap-2">
-            <Cpu className="w-2.5 h-2.5 shrink-0" />
-            <span className="truncate">{config.algorithmName}</span>
-            {duration != null && (
-              <span className="flex items-center gap-0.5 shrink-0" style={{ color: config.color }}>
-                <Zap className="w-2.5 h-2.5" />{fmtDuration(duration)}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Expand arrow */}
-        {expanded ? (
-          <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
-        ) : (
-          <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
-        )}
-      </button>
-
-      {/* Expanded detail */}
-      {expanded && (
-        <div className="px-4 pb-4 space-y-3 border-t border-border-subtle/50 pt-3 animate-fade-in">
-          {/* Algorithm explanation */}
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-1.5 text-[8px] font-semibold text-text-muted uppercase tracking-wider">
-              <Brain className="w-3 h-3" /> How it works
+          <div className="min-w-0">
+            <div className="truncate text-[10px] font-bold uppercase tracking-[0.12em] text-text-primary">{config.label}</div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[8px] text-text-muted">
+              <Cpu className="h-3 w-3" />
+              <span>{config.owner}</span>
+              {stageDetail && <span className="font-mono">{fmtDuration(stageElapsedMs(lifecycle, config.key))}</span>}
             </div>
-            <p className="text-[9px] text-text-secondary leading-relaxed">{config.algorithmDetail}</p>
           </div>
+        </div>
+        <StatusPill status={status} />
+      </div>
 
-          {/* Tech stack pills */}
+      <div className="space-y-3 p-3">
+        <div className="grid gap-2 md:grid-cols-4">
+          <KV label="Event" value={short(lifecycle?.txnId, 16)} mono />
+          <KV label="Stage time" value={stageDetail ? fmtOptionalTimestamp(stageDetail.timestamp) : 'pending'} />
+          <KV label="Duration" value={stageDetail ? fmtDuration(stageElapsedMs(lifecycle, config.key)) : 'pending'} />
+          <KV label="Evidence" value={stageDetail ? `${chips.length} metadata fields` : 'waiting'} />
+        </div>
+
+        {renderStageEvidence(config.key, lifecycle, stageDetail, llmRuntime)}
+
+        {chips.length > 0 && (
           <div className="flex flex-wrap gap-1">
-            {config.techStack.map((tech) => (
-              <span
-                key={tech}
-                className="px-1.5 py-0.5 rounded text-[7px] font-bold uppercase tracking-wider border"
-                style={{
-                  color: config.color,
-                  borderColor: `${config.color}30`,
-                  background: `${config.color}08`,
-                }}
-              >
-                {tech}
+            {chips.map(([key, value]) => (
+              <span key={`${config.key}-${key}`} className="rounded border border-[#00579C]/15 bg-[#00579C]/5 px-1.5 py-0.5 font-mono text-[7px] text-text-secondary">
+                {key.replace(/_/g, ' ')}={value.slice(0, 60)}
               </span>
             ))}
           </div>
+        )}
+      </div>
+    </section>
+  )
+}
 
-          {/* Stage-specific live data */}
-          {config.key === 'ingested' && lifecycle && (
-            <StageDataIngestion lifecycle={lifecycle} />
-          )}
-          {config.key === 'ml_scored' && lifecycle && (
-            <StageDataML lifecycle={lifecycle} />
-          )}
-          {config.key === 'graph_investigated' && lifecycle && (
-            <StageDataGraph stageDetail={stageDetail} />
-          )}
-          {config.key === 'cb_evaluated' && lifecycle && (
-            <StageDataCircuitBreaker lifecycle={lifecycle} />
-          )}
-          {config.key === 'llm_started' && lifecycle && (
-            <StageDataLLM lifecycle={lifecycle} />
-          )}
-          {config.key === 'verdict' && lifecycle && (
-            <StageDataVerdict lifecycle={lifecycle} />
-          )}
+function renderStageEvidence(
+  stage: PipelineStage,
+  lifecycle: EventLifecycle | undefined,
+  detail: StageDetail | undefined,
+  llmRuntime: LLMRuntimeSummary,
+) {
+  if (!lifecycle) {
+    return (
+      <div className="rounded-md border border-dashed border-border-subtle bg-bg-elevated/50 p-3 text-[10px] text-text-secondary">
+        Waiting for a selected event lifecycle to hydrate from SSE.
+      </div>
+    )
+  }
 
-          {/* Raw meta dump */}
-          {stageDetail?.meta && Object.keys(stageDetail.meta).length > 0 && (
-            <details className="group">
-              <summary className="flex items-center gap-1.5 text-[7px] font-semibold text-text-muted/60 uppercase tracking-wider cursor-pointer hover:text-text-muted transition-colors select-none list-none">
-                <svg className="w-2.5 h-2.5 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-                Raw Stage Metadata
-              </summary>
-              <div className="mt-1.5 p-2 rounded bg-bg-deep/80 border border-border-subtle/30 space-y-0.5">
-                {Object.entries(stageDetail.meta).map(([k, v]) => (
-                  <div key={k} className="flex justify-between text-[7px] font-mono">
-                    <span className="text-text-muted">{k}</span>
-                    <span className="text-text-secondary truncate max-w-[200px] ml-4">{JSON.stringify(v)}</span>
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
+  if (stage === 'ingested') {
+    return (
+      <div className="grid gap-2 md:grid-cols-3">
+        <KV label="Sender" value={lifecycle.sender || 'pending'} mono />
+        <KV label="Receiver" value={lifecycle.receiver || 'pending'} mono />
+        <KV label="Amount" value={fmtInr(lifecycle.amountPaisa)} tone={lifecycle.fraudLabel > 0 ? 'red' : 'blue'} />
+      </div>
+    )
+  }
+
+  if (stage === 'ml_scored') {
+    return (
+      <div className="rounded-md border border-border-subtle bg-[#f4f8fc] p-3">
+        <div className="flex items-center justify-between gap-2 text-[9px] font-bold uppercase tracking-[0.12em] text-text-primary">
+          <span>Risk score</span>
+          <span className={cn('font-mono', lifecycle.riskScore && lifecycle.riskScore > 0.7 ? 'text-[#DA251C]' : 'text-[#00579C]')}>
+            {fmtScore(lifecycle.riskScore)}
+          </span>
         </div>
-      )}
-    </div>
-  )
-}
-
-// ── Stage-specific data renderers ────────────────────────────────────────
-
-function StageDataIngestion({ lifecycle }: { lifecycle: EventLifecycle }) {
-  return (
-    <div className="p-2.5 rounded-md bg-bg-deep/60 border border-border-subtle/30 space-y-2">
-      <div className="text-[8px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
-        <Database className="w-3 h-3" /> Ingested Event Summary
-      </div>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-        <KV label="Transaction ID" value={lifecycle.txnId} mono />
-        <KV label="Sender" value={lifecycle.sender || '—'} mono />
-        <KV label="Receiver" value={lifecycle.receiver || '—'} mono />
-        <KV label="Amount" value={lifecycle.amountPaisa ? `₹${(lifecycle.amountPaisa / 100).toLocaleString()}` : '—'} />
-        <KV label="Fraud Label" value={lifecycle.fraudLabel > 0 ? `⚠ ${lifecycle.fraudLabel}` : '✓ Clean'} />
-        <KV label="First Seen" value={new Date(lifecycle.firstSeen * 1000).toLocaleTimeString()} />
-      </div>
-    </div>
-  )
-}
-
-function StageDataML({ lifecycle }: { lifecycle: EventLifecycle }) {
-  return (
-    <div className="p-2.5 rounded-md bg-bg-deep/60 border border-border-subtle/30 space-y-2.5">
-      <div className="text-[8px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
-        <BarChart3 className="w-3 h-3" /> ML Scoring Output
-      </div>
-      {lifecycle.riskScore != null ? (
-        <>
-          <RiskGauge score={lifecycle.riskScore} tier={lifecycle.riskTier} />
-          {lifecycle.topFeatures && lifecycle.topFeatures.length > 0 && (
-            <div className="space-y-1">
-              <div className="text-[7px] font-semibold text-text-muted uppercase tracking-wider">Top Contributing Features</div>
-              <div className="flex flex-wrap gap-1">
-                {lifecycle.topFeatures.map((f, i) => (
-                  <span key={i} className="px-1.5 py-0.5 rounded text-[7px] font-mono bg-purple-500/10 text-purple-300 border border-purple-500/20">
-                    {f}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </>
-      ) : (
-        <WaitingIndicator label="Awaiting XGBoost scoring..." />
-      )}
-    </div>
-  )
-}
-
-function StageDataGraph({ stageDetail }: { stageDetail?: { meta?: Record<string, unknown> } }) {
-  const meta = stageDetail?.meta ?? {}
-  return (
-    <div className="p-2.5 rounded-md bg-bg-deep/60 border border-border-subtle/30 space-y-2">
-      <div className="text-[8px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
-        <GitBranch className="w-3 h-3" /> Graph Analysis Results
-      </div>
-      {Object.keys(meta).length > 0 ? (
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-          {meta.mule_detected != null && <KV label="Mule Detected" value={meta.mule_detected ? '⚠ YES' : '✓ No'} />}
-          {meta.cycle_found != null && <KV label="Cycles Found" value={meta.cycle_found ? '⚠ YES' : '✓ No'} />}
-          {meta.centrality_score != null && <KV label="Centrality Score" value={fmtScore(meta.centrality_score as number)} />}
-          {meta.community_id != null && <KV label="Community ID" value={String(meta.community_id)} />}
-          {meta.degree != null && <KV label="Node Degree" value={String(meta.degree)} />}
-          {meta.connected_fraud_nodes != null && <KV label="Connected Fraud Nodes" value={String(meta.connected_fraud_nodes)} />}
+        <div className="mt-2">
+          <ProgressBar value={(lifecycle.riskScore ?? 0) * 100} tone={lifecycle.riskScore && lifecycle.riskScore > 0.7 ? 'red' : 'blue'} />
         </div>
-      ) : (
-        <div className="text-[8px] text-text-muted/50 italic">
-          Graph structural analysis active — detecting mule chains, cycles, and centrality anomalies in the transaction network
-        </div>
-      )}
-    </div>
-  )
-}
-
-function StageDataCircuitBreaker({ lifecycle }: { lifecycle: EventLifecycle }) {
-  return (
-    <div className="p-2.5 rounded-md bg-bg-deep/60 border border-border-subtle/30 space-y-2.5">
-      <div className="text-[8px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
-        <Shield className="w-3 h-3" /> Multi-Model Consensus
-      </div>
-      {lifecycle.consensusScores ? (
-        <div className="space-y-1.5">
-          <ConsensusBar label="ML" score={lifecycle.consensusScores.ml} icon={BrainCircuit} />
-          <ConsensusBar label="GNN" score={lifecycle.consensusScores.gnn} icon={Layers} />
-          <ConsensusBar label="Graph" score={lifecycle.consensusScores.graph} icon={Network} />
-          <div className="pt-1.5 border-t border-border-subtle/30">
-            <div className="flex items-center justify-between text-[8px]">
-              <span className="text-text-muted font-semibold uppercase tracking-wider">Weighted Consensus</span>
-              <span className="font-mono font-bold" style={{
-                color: ((lifecycle.consensusScores.ml + lifecycle.consensusScores.gnn + lifecycle.consensusScores.graph) / 3) > 0.5
-                  ? '#ef4444' : '#22c55e',
-              }}>
-                {(((lifecycle.consensusScores.ml + lifecycle.consensusScores.gnn + lifecycle.consensusScores.graph) / 3) * 100).toFixed(1)}%
-              </span>
-            </div>
+        {lifecycle.topFeatures && lifecycle.topFeatures.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {lifecycle.topFeatures.map((feature) => (
+              <span key={feature} className="rounded border border-[#00579C]/20 bg-white px-1.5 py-0.5 text-[7px] font-bold uppercase tracking-wide text-[#00579C]">{feature}</span>
+            ))}
           </div>
-        </div>
-      ) : (
-        <WaitingIndicator label="Awaiting multi-model consensus evaluation..." />
-      )}
-    </div>
-  )
-}
-
-function StageDataLLM({ lifecycle }: { lifecycle: EventLifecycle }) {
-  return (
-    <div className="p-2.5 rounded-md bg-bg-deep/60 border border-border-subtle/30 space-y-2.5">
-      <div className="text-[8px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
-        <MessageSquare className="w-3 h-3" /> Qwen 3.5 AI Investigation
+        ) : (
+          <p className="mt-2 text-[9px] text-text-muted">Top feature names will appear when the risk scoring payload arrives.</p>
+        )}
       </div>
-      {lifecycle.thinkingSteps != null || lifecycle.toolsUsed ? (
-        <div className="space-y-2">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-            <KV label="Thinking Steps" value={String(lifecycle.thinkingSteps ?? '—')} />
-            <KV label="Investigation Time" value={fmtDuration(lifecycle.totalDurationMs)} />
-            <KV label="NLU Findings" value={String(lifecycle.nluFindingsCount ?? '—')} />
-            <KV label="Escalated" value={lifecycle.nluEscalated ? '⚠ YES' : '✓ No'} />
+    )
+  }
+
+  if (stage === 'graph_investigated') {
+    const graphChips = metaChips(detail?.meta, 10)
+    return (
+      <div className="rounded-md border border-border-subtle bg-[#f4f8fc] p-3">
+        <div className="mb-2 flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.12em] text-text-primary">
+          <GitBranch className="h-3.5 w-3.5 text-[#00579C]" />
+          Observed graph evidence
+        </div>
+        {graphChips.length > 0 ? (
+          <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+            {graphChips.map(([key, value]) => <KV key={key} label={key.replace(/_/g, ' ')} value={value} />)}
           </div>
-          {lifecycle.toolsUsed && lifecycle.toolsUsed.length > 0 && (
-            <div className="space-y-1">
-              <div className="text-[7px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
-                <Wrench className="w-2.5 h-2.5" /> Tools Called by Agent
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {lifecycle.toolsUsed.map((tool, i) => (
-                  <span key={i} className="px-1.5 py-0.5 rounded text-[7px] font-mono bg-rose-500/10 text-rose-300 border border-rose-500/20">
-                    {tool}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-          {lifecycle.reasoningSummary && (
-            <div className="space-y-1">
-              <div className="text-[7px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
-                <Brain className="w-2.5 h-2.5" /> AI Reasoning Chain
-              </div>
-              <p className="text-[8px] text-text-secondary leading-relaxed bg-bg-overlay/40 rounded p-2 border border-border-subtle/30 italic">
-                "{lifecycle.reasoningSummary}"
-              </p>
-            </div>
-          )}
-        </div>
-      ) : (
-        <WaitingIndicator label="Qwen 3.5 agent active — running ReAct investigation loop..." />
-      )}
-    </div>
-  )
-}
+        ) : (
+          <p className="text-[9px] leading-relaxed text-text-muted">
+            Graph metrics are not invented here. This section fills only when backend graph metadata is attached to the selected event stage.
+          </p>
+        )}
+      </div>
+    )
+  }
 
-function StageDataVerdict({ lifecycle }: { lifecycle: EventLifecycle }) {
-  const verdictColor =
-    lifecycle.verdict === 'fraudulent' ? '#ef4444'
-    : lifecycle.verdict === 'suspicious' ? '#f59e0b'
-    : lifecycle.verdict === 'legitimate' ? '#22c55e'
-    : '#6b7280'
+  if (stage === 'cb_evaluated') {
+    const scores = lifecycle.consensusScores
+    const rows: Array<[string, number | null | undefined]> = [
+      ['ML', scores?.ml],
+      ['Graph', scores?.graph],
+      ['GNN', scores?.gnn],
+      ['Consensus', scores?.consensus],
+    ]
+    return (
+      <div className="space-y-2 rounded-md border border-border-subtle bg-[#f4f8fc] p-3">
+        {rows.map(([label, score]) => (
+          <div key={label} className="grid grid-cols-[76px_minmax(0,1fr)_48px] items-center gap-2">
+            <span className="text-[8px] font-bold uppercase tracking-[0.12em] text-text-muted">{label}</span>
+            <ProgressBar value={(score ?? 0) * 100} tone={score && score > 0.7 ? 'red' : 'blue'} />
+            <span className="text-right font-mono text-[8px] font-bold text-text-primary">{fmtScore(score)}</span>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  if (stage === 'llm_started') {
+    return (
+      <div className="rounded-md border border-[#DA251C]/15 bg-[#DA251C]/5 p-3">
+        <div className="grid gap-2 md:grid-cols-4">
+          <KV label="Runtime" value={`${llmRuntime.model} (${llmRuntime.statusLabel})`} />
+          <KV label="Steps" value={String(lifecycle.thinkingSteps ?? 'pending')} />
+          <KV label="Tools" value={String(lifecycle.toolsUsed?.length ?? 0)} />
+          <KV label="Duration" value={fmtDuration(lifecycle.totalDurationMs)} />
+        </div>
+        {lifecycle.reasoningSummary ? (
+          <p className="mt-2 rounded-md border border-white bg-white/75 p-2 text-[9px] leading-relaxed text-text-secondary">
+            {lifecycle.reasoningSummary}
+          </p>
+        ) : (
+          <p className="mt-2 text-[9px] text-text-muted">Awaiting model-derived explanation payload for the selected event.</p>
+        )}
+      </div>
+    )
+  }
 
   return (
-    <div className="p-2.5 rounded-md bg-bg-deep/60 border border-border-subtle/30 space-y-2.5">
-      <div className="text-[8px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
-        <Target className="w-3 h-3" /> Final Verdict
-      </div>
+    <div className="rounded-md border border-border-subtle bg-[#f4f8fc] p-3">
       {lifecycle.verdict ? (
         <div className="space-y-2">
-          {/* Verdict badge */}
-          <div className="flex items-center gap-3">
-            <span
-              className="px-3 py-1.5 rounded-md text-[11px] font-black uppercase tracking-wider"
-              style={{
-                color: verdictColor,
-                background: `${verdictColor}15`,
-                border: `1px solid ${verdictColor}40`,
-                boxShadow: `0 0 12px ${verdictColor}20`,
-              }}
-            >
-              {lifecycle.verdict}
-            </span>
-            {lifecycle.confidence != null && (
-              <div className="flex items-center gap-1.5">
-                <span className="text-[8px] text-text-muted">Confidence:</span>
-                <span className="text-[10px] font-mono font-bold" style={{ color: verdictColor }}>
-                  {(lifecycle.confidence * 100).toFixed(1)}%
-                </span>
-              </div>
-            )}
+          <div className="grid gap-2 md:grid-cols-4">
+            <KV label="Verdict" value={lifecycle.verdict} tone={lifecycle.verdict === 'fraudulent' ? 'red' : 'blue'} />
+            <KV label="Confidence" value={isFallbackLifecycle(lifecycle) ? 'n/a' : fmtScore(lifecycle.confidence)} />
+            <KV label="Typology" value={lifecycle.fraudTypology ?? 'pending'} />
+            <KV label="Action" value={lifecycle.recommendedAction ?? 'pending'} />
           </div>
-
-          {lifecycle.fraudTypology && (
-            <div className="flex items-center gap-2 text-[8px]">
-              <AlertTriangle className="w-3 h-3 text-amber-400" />
-              <span className="text-text-muted">Typology:</span>
-              <span className="font-semibold text-text-primary">{lifecycle.fraudTypology}</span>
-            </div>
-          )}
-
-          {lifecycle.recommendedAction && (
-            <div className="flex items-center gap-2 text-[8px]">
-              <Shield className="w-3 h-3 text-accent-primary" />
-              <span className="text-text-muted">Action:</span>
-              <span className="font-semibold text-text-primary">{lifecycle.recommendedAction}</span>
-            </div>
-          )}
-
           {lifecycle.evidenceCited && lifecycle.evidenceCited.length > 0 && (
-            <div className="space-y-1">
-              <div className="text-[7px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
-                <FileText className="w-2.5 h-2.5" /> Evidence Cited
-              </div>
-              <ul className="space-y-0.5">
-                {lifecycle.evidenceCited.map((ev, i) => (
-                  <li key={i} className="flex items-start gap-1.5 text-[8px] text-text-secondary">
-                    <span className="text-accent-primary mt-0.5">•</span>
-                    <span>{ev}</span>
-                  </li>
-                ))}
-              </ul>
+            <div className="grid gap-1.5 md:grid-cols-2">
+              {lifecycle.evidenceCited.slice(0, 4).map((item, index) => (
+                <div key={`${item}-${index}`} className="rounded-md border border-white bg-white px-2 py-1.5 text-[9px] text-text-secondary">
+                  <span className="mr-1 font-mono font-bold text-[#00579C]">{String(index + 1).padStart(2, '0')}</span>
+                  {item}
+                </div>
+              ))}
             </div>
           )}
         </div>
       ) : (
-        <WaitingIndicator label="Awaiting final classification verdict..." />
+        <div className="flex items-center gap-2 text-[9px] text-text-muted">
+          <AlertTriangle className="h-3.5 w-3.5 text-[#f5b400]" />
+          Awaiting final classification verdict from the selected event lifecycle.
+        </div>
       )}
     </div>
   )
 }
-
-// ── Shared small components ──────────────────────────────────────────────
-
-function KV({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex justify-between text-[8px]">
-      <span className="text-text-muted uppercase tracking-wider">{label}</span>
-      <span className={cn('text-text-secondary truncate max-w-[140px] ml-2', mono && 'font-mono')}>{value}</span>
-    </div>
-  )
-}
-
-function WaitingIndicator({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 py-1.5 text-[8px] text-text-muted/60 italic">
-      <div className="w-1.5 h-1.5 rounded-full bg-accent-primary/60 animate-pulse" />
-      {label}
-    </div>
-  )
-}
-
-// ── Main Component ──────────────────────────────────────────────────────────
 
 interface PipelineTransparencyProps {
   className?: string
 }
 
 export function PipelineTransparency({ className }: PipelineTransparencyProps) {
-  const events = useActivityStore((s) => s.events)
-  const orderedIds = useActivityStore((s) => s.orderedIds)
-  const trackedEventId = useActivityStore((s) => s.trackedEventId)
+  const events = useActivityStore((state) => state.events)
+  const orderedIds = useActivityStore((state) => state.orderedIds)
+  const trackedEventId = useActivityStore((state) => state.trackedEventId)
+  const eventLabRuns = useActivityStore((state) => state.eventLabRuns)
+  const activeEventLabRunId = useActivityStore((state) => state.activeEventLabRunId)
+  const { data: llmStatus, isLoading: llmStatusLoading, isError: llmStatusError } = useLLMStatus()
 
-  // Pick the event to display
-  const activeId = trackedEventId ?? orderedIds[0] ?? null
+  const activeRun = activeEventLabRunId ? eventLabRuns[activeEventLabRunId] : undefined
+  const activeRunEventIds = activeRun?.eventIds ?? []
+  const trackedLifecycleId = trackedEventId && events.has(trackedEventId) ? trackedEventId : null
+  const runTrackedLifecycleId = trackedLifecycleId && activeRunEventIds.includes(trackedLifecycleId) ? trackedLifecycleId : null
+  const runLifecycleId = activeRunEventIds.find((id) => events.has(id)) ?? null
+  const activeId = activeRun
+    ? runTrackedLifecycleId ?? runLifecycleId
+    : trackedLifecycleId ?? orderedIds.find((id) => events.has(id)) ?? null
   const lifecycle = activeId ? events.get(activeId) : undefined
 
-  const completedStages = useMemo(() => {
-    if (!lifecycle) return new Set<PipelineStage>()
-    return new Set(lifecycle.stages.map((s) => s.stage))
-  }, [lifecycle])
-
-  // Determine active stage (the next one after the last completed)
-  const activeStage = useMemo<PipelineStage | null>(() => {
-    if (!lifecycle) return null
-    let lastIdx = -1
-    for (let i = TRANSPARENCY_STAGES.length - 1; i >= 0; i--) {
-      if (completedStages.has(TRANSPARENCY_STAGES[i].key)) {
-        lastIdx = i
-        break
-      }
-    }
-    if (lastIdx < TRANSPARENCY_STAGES.length - 1) {
-      return TRANSPARENCY_STAGES[lastIdx + 1].key
-    }
-    return null
-  }, [lifecycle, completedStages])
-
-  // Overall progress
-  const stagesReached = lifecycle ? lifecycle.stages.filter(s =>
-    TRANSPARENCY_STAGES.some(ts => ts.key === s.stage)
-  ).length : 0
-  const totalStages = TRANSPARENCY_STAGES.length
+  const llmRuntime = useMemo(
+    () => resolveLLMRuntime(llmStatus, {
+      lifecycleModel: lifecycle?.modelUsed,
+      loading: llmStatusLoading,
+      error: llmStatusError,
+    }),
+    [llmStatus, lifecycle?.modelUsed, llmStatusLoading, llmStatusError],
+  )
+  const reached = useMemo(() => reachedStages(lifecycle), [lifecycle])
+  const active = useMemo(() => activeStageKey(lifecycle, reached), [lifecycle, reached])
+  const stagesReached = reached.size
+  const hydratedRunEventCount = activeRunEventIds.filter((id) => events.has(id)).length
+  const verdictRunEventCount = activeRunEventIds.filter((id) => events.get(id)?.stages.some((stage) => stage.stage === 'verdict')).length
 
   return (
-    <div className={cn('bg-bg-elevated/95 border border-border-default rounded-lg overflow-hidden backdrop-blur-sm', className)}>
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-border-subtle flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-amber-500/15 to-rose-500/15 border border-amber-500/25 flex items-center justify-center">
-            <Eye className="w-3.5 h-3.5 text-amber-400" />
+    <div className={cn('space-y-3 rounded-lg border border-[#00579C]/25 bg-[#eef5fb] p-3 shadow-sm', className)}>
+      <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-[#00579C]/20 bg-white p-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-[#00579C]">
+            <Activity className="h-4 w-4 text-[#DA251C]" />
+            Pipeline transparency - live evidence board
           </div>
-          <div>
-            <h3 className="text-[11px] font-bold text-text-primary uppercase tracking-[0.12em]">
-              Pipeline Transparency — Full X-Ray
-            </h3>
-            <p className="text-[8px] text-text-muted mt-0.5">
-              {lifecycle
-                ? `Tracking ${activeId?.slice(0, 16)} — ${stagesReached}/${totalStages} stages • Every algorithm, every decision, zero black boxes`
-                : 'Inject an event to see the full processing pipeline with complete transparency'
-              }
-            </p>
-          </div>
+          <p className="mt-1 max-w-4xl text-[10px] leading-relaxed text-text-secondary">
+            This view is rendered from SSE event lifecycle state and Event Lab run stages. Empty fields stay pending until the backend emits matching evidence.
+          </p>
         </div>
-        {lifecycle && (
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 text-[8px]">
-              <TrendingUp className="w-3 h-3 text-text-muted" />
-              <span className="text-text-muted">Progress:</span>
-              <span className="font-mono font-bold text-text-primary">{stagesReached}/{totalStages}</span>
-            </div>
-            <div className="w-16 h-1.5 bg-bg-deep rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all duration-700"
-                style={{
-                  width: `${(stagesReached / totalStages) * 100}%`,
-                  background: stagesReached === totalStages
-                    ? 'linear-gradient(90deg, #22c55e, #4ade80)'
-                    : 'linear-gradient(90deg, #f59e0b, #f97316)',
-                }}
-              />
-            </div>
-          </div>
-        )}
+        <div className="grid min-w-[330px] grid-cols-3 gap-2">
+          <KV label="Tracked run" value={activeRun ? short(activeRun.runId, 10) : 'none'} mono />
+          <KV label="Operator stage" value={`${stagesReached}/${STAGES.length}`} />
+          <KV label="LLM status" value={llmRuntime.statusLabel} tone={llmRuntime.running || llmRuntime.reachable ? 'green' : 'red'} />
+        </div>
       </div>
 
-      {/* Stage cards */}
-      <div className="p-4 space-y-2">
-        {!lifecycle ? (
-          <div className="flex flex-col items-center justify-center py-10 text-center">
-            <Eye className="w-8 h-8 text-text-muted/30 mb-3" />
-            <p className="text-[11px] font-semibold text-text-muted">No Active Event</p>
-            <p className="text-[9px] text-text-muted/60 mt-1 max-w-sm">
-              Use the <span className="text-amber-400 font-semibold">Random Attack</span> button or inject a custom event
-              to see the full pipeline processing with complete transparency
-            </p>
-          </div>
-        ) : (
-          TRANSPARENCY_STAGES.map((config) => (
-            <StageTransparencyCard
-              key={config.key}
-              config={config}
+      {activeRun && <RunStageLedger run={activeRun} llmRuntime={llmRuntime} />}
+
+      {(activeRun || lifecycle) && (
+        <EvidenceSyncPanel
+          run={activeRun}
+          lifecycle={lifecycle}
+          hydratedCount={hydratedRunEventCount || (lifecycle ? 1 : 0)}
+          verdictCount={verdictRunEventCount || (lifecycle?.stages.some((stage) => stage.stage === 'verdict') ? 1 : 0)}
+          stagesReached={stagesReached}
+          totalStages={STAGES.length}
+        />
+      )}
+
+      <StageProgressStrip reached={reached} active={active} />
+
+      {!lifecycle && !activeRun ? (
+        <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-[#00579C]/25 bg-white py-10 text-center">
+          <FileText className="mb-3 h-8 w-8 text-[#00579C]/35" />
+          <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-text-primary">No active run selected</p>
+          <p className="mt-1 max-w-sm text-[9px] leading-relaxed text-text-secondary">
+            Launch an Adaptive Event Lab run or inject a custom event to see backend stages, model outputs, and final verdict evidence here.
+          </p>
+        </div>
+      ) : !lifecycle ? (
+        <div className="rounded-lg border border-[#00579C]/25 bg-white p-4 text-[10px] leading-relaxed text-text-secondary">
+          The Event Lab run is streaming. Waiting for at least one generated event lifecycle to hydrate through ingestion,
+          scoring, graph, control, explanation, and verdict stages.
+        </div>
+      ) : (
+        <div className="grid gap-3 xl:grid-cols-2">
+          {STAGES.map((stage) => (
+            <StageCard
+              key={stage.key}
+              config={stage}
               lifecycle={lifecycle}
-              isReached={completedStages.has(config.key)}
-              isActive={activeStage === config.key}
+              reached={reached.has(stage.key)}
+              active={active === stage.key}
+              llmRuntime={llmRuntime}
             />
-          ))
-        )}
+          ))}
+        </div>
+      )}
+
+      <div className="grid gap-3 rounded-lg border border-[#00579C]/20 bg-white p-3 lg:grid-cols-3">
+        <div className="rounded-md border border-border-subtle bg-[#f4f8fc] p-3">
+          <div className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.12em] text-text-primary">
+            <TrendingUp className="h-3.5 w-3.5 text-[#00579C]" />
+            Live stage coverage
+          </div>
+          <p className="mt-1 text-[9px] leading-relaxed text-text-secondary">
+            {activeRun
+              ? `${activeRun.stages.length} backend run stages recorded; ${hydratedRunEventCount} generated events are hydrated in the frontend lifecycle store.`
+              : `${orderedIds.length} event lifecycles are currently retained in the frontend activity buffer.`}
+          </p>
+        </div>
+        <div className="rounded-md border border-border-subtle bg-[#f4f8fc] p-3">
+          <div className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.12em] text-text-primary">
+            <Shield className="h-3.5 w-3.5 text-[#DA251C]" />
+            Decision boundary
+          </div>
+          <p className="mt-1 text-[9px] leading-relaxed text-text-secondary">
+            AI explanation remains non-authoritative. The panel separates observed model narrative from ML score, graph evidence,
+            control gate, analyst status, and final verdict.
+          </p>
+        </div>
+        <div className="rounded-md border border-border-subtle bg-[#f4f8fc] p-3">
+          <div className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.12em] text-text-primary">
+            <MessageSquare className="h-3.5 w-3.5 text-[#00579C]" />
+            Current model
+          </div>
+          <p className="mt-1 text-[9px] leading-relaxed text-text-secondary">
+            {llmRuntime.model} is shown from the live LLM status endpoint or selected event lifecycle metadata. If no payload arrives,
+            the field stays pending instead of displaying invented output.
+          </p>
+        </div>
       </div>
     </div>
   )

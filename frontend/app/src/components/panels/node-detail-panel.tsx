@@ -7,10 +7,11 @@ import { useMemo } from 'react'
 import { useDashboardStore } from '@/stores/use-dashboard-store'
 import { useUIStore } from '@/stores/use-ui-store'
 import { MetricCard } from '@/components/shared/metric-card'
-import { SeverityBadge, verdictToSeverity } from '@/components/shared/severity-badge'
+import { SeverityBadge } from '@/components/shared/severity-badge'
+import { verdictToSeverity } from '@/lib/severity'
 import { FRAUD_PATTERN_LABELS } from '@/lib/types'
 import type { CytoEdge, SSEAgentVerdict } from '@/lib/types'
-import { cn, fmtPaisa, fmtNum, truncId, fmtTimestamp } from '@/lib/utils'
+import { cn, fmtOptionalMs, fmtOptionalTimestamp, fmtPaisa, fmtNum, truncId } from '@/lib/utils'
 import {
   X,
   BarChart3,
@@ -21,12 +22,9 @@ import {
   Building2,
   Network,
   Users,
-  TrendingUp,
   ShieldAlert,
   ArrowDownLeft,
   ArrowUpRight,
-  Clock,
-  Zap,
 } from 'lucide-react'
 
 // -- Status badge colors --
@@ -35,6 +33,17 @@ const STATUS_STYLES: Record<string, string> = {
   paused: 'bg-alert-high/15 text-alert-high border-alert-high/30',
   suspicious: 'bg-alert-medium/15 text-alert-medium border-alert-medium/30',
   normal: 'bg-bg-elevated text-text-secondary border-border-subtle',
+}
+
+function isFallbackVerdict(d: SSEAgentVerdict): boolean {
+  const evidenceCount = (d.evidence_cited?.length ?? d.evidence?.length ?? 0)
+  return (
+    d.confidence_source === 'deterministic_evidence_fallback' ||
+    d.llm_parse_status?.includes('fallback') ||
+    (d.confidence === 0.5 &&
+      evidenceCount === 0 &&
+      Boolean(d.reasoning_summary?.includes('Unable to reach definitive conclusion')))
+  )
 }
 
 /** Compact risk level gauge with SVG arc */
@@ -260,8 +269,8 @@ export function NodeDetailPanel() {
           </div>
           {(firstSeen || lastSeen) && (
             <div className="mt-2 flex gap-4 text-[8px] font-mono text-text-muted tabular-nums">
-              {firstSeen && <span>First: {fmtTimestamp(firstSeen)}</span>}
-              {lastSeen && <span>Last: {fmtTimestamp(lastSeen)}</span>}
+              {firstSeen && <span>First: {fmtOptionalTimestamp(firstSeen)}</span>}
+              {lastSeen && <span>Last: {fmtOptionalTimestamp(lastSeen)}</span>}
             </div>
           )}
         </div>
@@ -349,6 +358,7 @@ export function NodeDetailPanel() {
             <div className="space-y-2">
               {verdicts.slice(-5).map((entry) => {
                 const d = entry.data as SSEAgentVerdict
+                const fallback = isFallbackVerdict(d)
                 return (
                   <div
                     key={entry.id}
@@ -357,7 +367,7 @@ export function NodeDetailPanel() {
                     <div className="flex items-center justify-between mb-1.5">
                       <SeverityBadge severity={verdictToSeverity(d.verdict)} />
                       <span className="text-[9px] font-mono tabular-nums text-text-muted">
-                        {(d.confidence * 100).toFixed(0)}%
+                        {fallback ? 'n/a' : `${(d.confidence * 100).toFixed(0)}%`}
                       </span>
                     </div>
                     {d.fraud_typology && (
@@ -380,7 +390,7 @@ export function NodeDetailPanel() {
                     <div className="flex gap-3 mt-1.5 text-[8px] font-mono text-text-muted/60">
                       <span>{d.recommended_action}</span>
                       <span>{d.thinking_steps} steps</span>
-                      <span>{d.total_duration_ms?.toFixed(0)}ms</span>
+                      <span>{fmtOptionalMs(d.total_duration_ms)}</span>
                     </div>
                   </div>
                 )
@@ -432,7 +442,7 @@ export function NodeDetailPanel() {
                       {fmtPaisa(e.data.amount_paisa)}
                     </span>
                     <span className="text-[9px] tabular-nums text-text-muted shrink-0">
-                      {fmtTimestamp(e.data.timestamp)}
+                      {fmtOptionalTimestamp(e.data.timestamp)}
                     </span>
                     {e.data.fraud_label > 0 && (
                       <span className="w-1.5 h-1.5 rounded-full bg-alert-critical ring-2 ring-alert-critical/20 shrink-0" title={e.data.fraud_label_name ?? FRAUD_PATTERN_LABELS[e.data.fraud_label]} />

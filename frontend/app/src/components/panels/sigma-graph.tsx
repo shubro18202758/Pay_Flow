@@ -1,7 +1,6 @@
 // ============================================================================
 // 3D Force Graph -- Interactive real-time fraud network visualization
-// WebGL-powered Three.js 3D graph with full orbit controls
-// Left-drag: rotate | Right-drag: pan | Scroll: zoom
+// WebGL-powered Three.js graph for backend-synced transaction topology.
 // ============================================================================
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
@@ -25,33 +24,43 @@ import {
 // --- Constants ---
 const MAX_NODES = 78
 const MAX_GRAPH_EDGES = 150
-const GRAPH_SYNC_MS = 4_000
-const NODE_COLOR_SAFE = '#4a90d9'
+const GRAPH_SYNC_MS = 1_500
+const NODE_COLOR_SAFE = '#00579C'
+const GRAPH_DIMMED_COLOR = '#b8c7db'
+const RISK_COLORS: Record<string, string> = {
+  CRIT: '#DA251C',
+  CRITICAL: '#DA251C',
+  HIGH: '#B51A13',
+  MED: '#f5b400',
+  MEDIUM: '#f5b400',
+  ELEVATED: '#f5b400',
+  LOW: '#00579C',
+}
 
-// Degree-based color gradient for safe (non-fraud) nodes — visual hierarchy
+// Degree-based color gradient for safe nodes using Union Bank blues and neutrals.
 const SAFE_DEGREE_COLORS: Record<string, string> = {
-  hub:    '#38bdf8',  // sky-400 — high-degree hubs
-  active: '#60a5fa',  // blue-400 — mid-degree
-  normal: '#818cf8',  // indigo-400 — low-degree with connections
-  leaf:   '#a78bfa',  // violet-400 — leaf/isolated nodes
+  hub: '#00579C',
+  active: '#2f79b5',
+  normal: '#617189',
+  leaf: '#b8c7db',
 }
 
 const FRAUD_TYPE_COLORS: Record<number, string> = {
-  0: '#4a90d9', 1: '#ff6b6b', 2: '#a855f7', 3: '#2dd4bf',
-  4: '#818cf8', 5: '#f472b6', 6: '#fb923c', 7: '#ef4444', 8: '#22d3ee',
+  0: '#00579C', 1: '#DA251C', 2: '#B51A13', 3: '#00579C',
+  4: '#617189', 5: '#DA251C', 6: '#f5b400', 7: '#DA251C', 8: '#2f79b5',
 }
 
 // Status-based node color overrides
 const STATUS_NODE_COLORS: Record<string, string> = {
-  frozen: '#ef4444',
-  suspicious: '#f59e0b',
-  paused: '#fb923c',
+  frozen: '#DA251C',
+  suspicious: '#f5b400',
+  paused: '#00579C',
 }
 const STATUS_BORDER_COLORS: Record<string, string> = {
-  frozen: '#e05656', suspicious: '#d4ad2a', paused: '#d98044', normal: '#384858',
+  frozen: '#DA251C', suspicious: '#f5b400', paused: '#00579C', normal: '#617189',
 }
 const COMMUNITY_COLORS = [
-  '#ff6b6b','#4ecdc4','#45b7d1','#96ceb4','#feca57','#ff9ff3','#54a0ff','#5f27cd',
+  '#DA251C', '#00579C', '#B51A13', '#2f79b5', '#f5b400', '#617189', '#8a98aa', '#003f75',
 ]
 
 const CHANNEL_LABELS: Record<number, string> = {
@@ -59,8 +68,8 @@ const CHANNEL_LABELS: Record<number, string> = {
   5: 'RTGS', 6: 'NEFT', 7: 'IMPS', 8: 'SWIFT', 9: 'POS',
 }
 const CHANNEL_COLORS: Record<number, string> = {
-  0: '#94a3b8', 1: '#f59e0b', 2: '#3b82f6', 3: '#10b981', 4: '#8b5cf6',
-  5: '#ef4444', 6: '#ec4899', 7: '#06b6d4', 8: '#f97316', 9: '#6366f1',
+  0: '#617189', 1: '#f5b400', 2: '#00579C', 3: '#2f79b5', 4: '#DA251C',
+  5: '#B51A13', 6: '#003f75', 7: '#00579C', 8: '#DA251C', 9: '#617189',
 }
 
 // Pre-index edges by node for O(N+E) lookups instead of O(N*E)
@@ -164,7 +173,10 @@ function computeBetweenness(g: Graph): Map<string, number> {
   const nodes = g.nodes()
   const bc = new Map<string, number>()
   nodes.forEach(n => bc.set(n, 0))
-  const samples = nodes.length > 15 ? nodes.sort(() => Math.random() - 0.5).slice(0, 15) : nodes
+  const sampleStep = Math.max(1, Math.ceil(nodes.length / 15))
+  const samples = nodes.length > 15
+    ? nodes.filter((_, index) => index % sampleStep === 0).slice(0, 15)
+    : nodes
   for (const s of samples) {
     const stackArr: string[] = []
     const pred = new Map<string, string[]>()
@@ -328,7 +340,7 @@ function detectLayeringChains(edges: CytoEdge[]): Set<string> {
 // ============================================================================
 // Structuring Detection — amounts near ₹10L reporting threshold
 // ============================================================================
-const STRUCTURING_THRESHOLD = 1_000_000 // ₹10 Lakh in amount units
+const STRUCTURING_THRESHOLD = 100_000_000 // INR 10 Lakh in paisa
 const STRUCTURING_LOWER = STRUCTURING_THRESHOLD * 0.80
 
 function detectStructuringEdges(edges: CytoEdge[]): Set<string> {
@@ -523,7 +535,7 @@ function buildForceGraphData(nodes: CytoNode[], edges: CytoEdge[]): { fgNodes: F
       fraudRatio,
       dominantFraud: dom,
       degree: deg,
-      borderColor: STATUS_BORDER_COLORS[n.data.status] ?? '#384858',
+      borderColor: STATUS_BORDER_COLORS[n.data.status] ?? '#617189',
       channels: [...nodeChannels],
       rank,
       x: pos.x,
@@ -552,8 +564,8 @@ function buildForceGraphData(nodes: CytoNode[], edges: CytoEdge[]): { fgNodes: F
     // Structuring indicator — amounts near ₹10L threshold get warning treatment
     const isStructuring = amt >= STRUCTURING_LOWER && amt < STRUCTURING_THRESHOLD
     const linkColor = isStructuring
-      ? '#f59e0b'
-      : fl > 0 ? (FRAUD_TYPE_COLORS[fl] ?? '#ff4757') : (CHANNEL_COLORS[ch] ?? '#3b82f680')
+      ? '#f5b400'
+      : fl > 0 ? (FRAUD_TYPE_COLORS[fl] ?? '#DA251C') : (CHANNEL_COLORS[ch] ?? '#00579C80')
     fgLinks.push({
       source: e.data.source,
       target: e.data.target,
@@ -621,14 +633,14 @@ function ActivitySparkline() {
         if (i === 0) ctx.moveTo(x, y)
         else ctx.lineTo(x, y)
       })
-      ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.5; ctx.stroke()
+      ctx.strokeStyle = '#00579C'; ctx.lineWidth = 1.5; ctx.stroke()
       const last = _activityHistory.length - 1
       ctx.lineTo(last * step, H); ctx.lineTo(0, H); ctx.closePath()
       const grad = ctx.createLinearGradient(0, 0, 0, H)
-      grad.addColorStop(0, 'rgba(59,130,246,0.3)'); grad.addColorStop(1, 'rgba(59,130,246,0)')
+      grad.addColorStop(0, 'rgba(0,87,156,0.3)'); grad.addColorStop(1, 'rgba(0,87,156,0)')
       ctx.fillStyle = grad; ctx.fill()
       const lx = last * step, ly = H - (_activityHistory[last] / max) * (H - 2)
-      ctx.beginPath(); ctx.arc(lx, ly, 2, 0, Math.PI * 2); ctx.fillStyle = '#60a5fa'; ctx.fill()
+      ctx.beginPath(); ctx.arc(lx, ly, 2, 0, Math.PI * 2); ctx.fillStyle = '#00579C'; ctx.fill()
     }, 2000)
     return () => clearInterval(iv)
   }, [])
@@ -652,7 +664,7 @@ function InGraphNodeDetailPanel({
   const totalAmount = nodeEdges.reduce((s, e) => s + (e.data.amount_paisa ?? 0), 0)
   const fraudRatio = nodeEdges.length > 0 ? fraudEdges.length / nodeEdges.length : 0
   const riskLevel = fraudRatio > 0.6 ? 'CRITICAL' : fraudRatio > 0.3 ? 'HIGH' : fraudRatio > 0.1 ? 'MEDIUM' : 'LOW'
-  const riskColor = { CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#eab308', LOW: '#22c55e' }[riskLevel]
+  const riskColor = RISK_COLORS[riskLevel]
 
   const fraudBreakdown = new Map<number, number>()
   for (const e of fraudEdges) {
@@ -678,74 +690,74 @@ function InGraphNodeDetailPanel({
   const fmtVol = (v: number) => v >= 1e7 ? `₹${(v / 1e7).toFixed(1)}Cr` : v >= 1e5 ? `₹${(v / 1e5).toFixed(1)}L` : `₹${(v / 100).toLocaleString()}`
 
   return (
-    <div className="absolute top-3 right-3 z-30 w-72 bg-slate-900/95 border border-slate-700/50 rounded-xl shadow-2xl backdrop-blur-sm animate-[slide-in-right_0.3s_ease-out] overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-700/50 flex items-center justify-between">
+    <div className="absolute top-3 right-3 z-30 w-72 bg-white/95 border border-[#d7e3f1] rounded-xl shadow-2xl backdrop-blur-sm animate-[slide-in-right_0.3s_ease-out] overflow-hidden">
+      <div className="px-4 py-3 border-b border-[#d7e3f1] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full" style={{ background: attrs.color as string }} />
-          <span className="text-sm font-mono text-slate-200 font-semibold truncate max-w-[160px]">{nodeId}</span>
+          <span className="text-sm font-mono text-[#24364f] font-semibold truncate max-w-[160px]">{nodeId}</span>
         </div>
-        <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-lg leading-none">&times;</button>
+        <button onClick={onClose} className="text-[#617189] hover:text-[#24364f] text-lg leading-none">&times;</button>
       </div>
       <div className="px-4 py-3 space-y-3 max-h-[400px] overflow-y-auto text-[11px]">
         {/* Risk Level */}
         <div>
           <div className="flex items-center justify-between mb-1">
-            <span className="text-slate-400">Risk Level</span>
+            <span className="text-[#4b5d76]">Risk Level</span>
             <span className="font-bold px-2 py-0.5 rounded-full text-[10px]" style={{ background: riskColor + '22', color: riskColor, border: `1px solid ${riskColor}44` }}>{riskLevel}</span>
           </div>
-          <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
+          <div className="w-full h-2 bg-[#d7e3f1] rounded-full overflow-hidden">
             <div className="h-full rounded-full" style={{ width: `${fraudRatio * 100}%`, background: `linear-gradient(90deg, ${riskColor}88, ${riskColor})` }} />
           </div>
         </div>
         {/* Centrality */}
         <div className="grid grid-cols-2 gap-2">
-          <div className="bg-slate-800/60 rounded-lg px-2 py-1.5">
-            <div className="text-slate-500 text-[9px]">PageRank</div>
-            <div className="text-blue-400 font-mono font-semibold">{pr.toFixed(4)}</div>
+          <div className="bg-[#f4f8fc] rounded-lg px-2 py-1.5">
+            <div className="text-[#617189] text-[9px]">PageRank</div>
+            <div className="text-[#00579C] font-mono font-semibold">{pr.toFixed(4)}</div>
           </div>
-          <div className="bg-slate-800/60 rounded-lg px-2 py-1.5">
-            <div className="text-slate-500 text-[9px]">Betweenness</div>
-            <div className="text-purple-400 font-mono font-semibold">{bc.toFixed(4)}</div>
+          <div className="bg-[#f4f8fc] rounded-lg px-2 py-1.5">
+            <div className="text-[#617189] text-[9px]">Betweenness</div>
+            <div className="text-[#00579C] font-mono font-semibold">{bc.toFixed(4)}</div>
           </div>
-          <div className="bg-slate-800/60 rounded-lg px-2 py-1.5">
-            <div className="text-slate-500 text-[9px]">Connections</div>
-            <div className="text-slate-200 font-mono font-semibold">{nodeEdges.length}</div>
+          <div className="bg-[#f4f8fc] rounded-lg px-2 py-1.5">
+            <div className="text-[#617189] text-[9px]">Connections</div>
+            <div className="text-[#24364f] font-mono font-semibold">{nodeEdges.length}</div>
           </div>
-          <div className="bg-slate-800/60 rounded-lg px-2 py-1.5">
-            <div className="text-slate-500 text-[9px]">Volume</div>
-            <div className="text-emerald-400 font-mono font-semibold">{fmtVol(totalAmount)}</div>
+          <div className="bg-[#f4f8fc] rounded-lg px-2 py-1.5">
+            <div className="text-[#617189] text-[9px]">Volume</div>
+            <div className="text-[#0f9f6e] font-mono font-semibold">{fmtVol(totalAmount)}</div>
           </div>
         </div>
         {/* Flow Direction */}
         <div>
-          <div className="text-slate-500 text-[9px] mb-1">Flow Direction</div>
+          <div className="text-[#617189] text-[9px] mb-1">Flow Direction</div>
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="text-green-400 w-10">IN</span>
-              <div className="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-                <div className="h-full bg-green-500/70 rounded-full" style={{ width: `${(inflowAmt / maxFlow) * 100}%` }} />
+              <span className="text-[#00579C] w-10">IN</span>
+              <div className="flex-1 h-1.5 bg-[#d7e3f1] rounded-full overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${(inflowAmt / maxFlow) * 100}%`, background: '#00579C' }} />
               </div>
-              <span className="text-slate-400 text-[9px] w-16 text-right">{fmtVol(inflowAmt)}</span>
+              <span className="text-[#4b5d76] text-[9px] w-16 text-right">{fmtVol(inflowAmt)}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-red-400 w-10">OUT</span>
-              <div className="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-                <div className="h-full bg-red-500/70 rounded-full" style={{ width: `${(outflowAmt / maxFlow) * 100}%` }} />
+              <span className="text-[#DA251C] w-10">OUT</span>
+              <div className="flex-1 h-1.5 bg-[#d7e3f1] rounded-full overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${(outflowAmt / maxFlow) * 100}%`, background: '#DA251C' }} />
               </div>
-              <span className="text-slate-400 text-[9px] w-16 text-right">{fmtVol(outflowAmt)}</span>
+              <span className="text-[#4b5d76] text-[9px] w-16 text-right">{fmtVol(outflowAmt)}</span>
             </div>
           </div>
         </div>
         {/* Fraud Breakdown */}
         {fraudBreakdown.size > 0 && (
           <div>
-            <div className="text-slate-500 text-[9px] mb-1">Fraud Breakdown</div>
+            <div className="text-[#617189] text-[9px] mb-1">Fraud Breakdown</div>
             <div className="space-y-1">
               {[...fraudBreakdown.entries()].map(([fl, count]) => (
                 <div key={fl} className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full" style={{ background: FRAUD_TYPE_COLORS[fl] }} />
-                  <span className="text-slate-300 flex-1">{FRAUD_PATTERN_LABELS[fl] ?? `Type ${fl}`}</span>
-                  <span className="text-slate-400">{count}</span>
+                  <span className="text-[#24364f] flex-1">{FRAUD_PATTERN_LABELS[fl] ?? `Type ${fl}`}</span>
+                  <span className="text-[#4b5d76]">{count}</span>
                 </div>
               ))}
             </div>
@@ -754,7 +766,7 @@ function InGraphNodeDetailPanel({
         {/* Channels */}
         {channels.size > 0 && (
           <div>
-            <div className="text-slate-500 text-[9px] mb-1">Channels</div>
+            <div className="text-[#617189] text-[9px] mb-1">Channels</div>
             <div className="flex flex-wrap gap-1">
               {[...channels.entries()].sort((a, b) => b[1] - a[1]).map(([ch, count]) => (
                 <span key={ch} className="px-1.5 py-0.5 rounded text-[9px] flex items-center gap-1" style={{ background: (CHANNEL_COLORS[ch] ?? '#94a3b8') + '22', color: CHANNEL_COLORS[ch] ?? '#94a3b8', border: `1px solid ${(CHANNEL_COLORS[ch] ?? '#94a3b8')}33` }}>
@@ -773,13 +785,12 @@ function InGraphNodeDetailPanel({
 // ============================================================================
 // VFX Toggle Switch
 // ============================================================================
-function VfxToggle({ label, enabled, onChange, shortcut }: { label: string; enabled: boolean; onChange: () => void; shortcut?: string }) {
+function VfxToggle({ label, enabled, onChange }: { label: string; enabled: boolean; onChange: () => void }) {
   return (
-    <button onClick={onChange} className="flex items-center justify-between w-full px-2 py-1 rounded hover:bg-slate-700/50 transition-colors text-[10px]">
-      <span className="text-slate-300">{label}</span>
+    <button onClick={onChange} className="flex items-center justify-between w-full px-2 py-1 rounded hover:bg-[#f4f8fc] transition-colors text-[10px]">
+      <span className="text-[#24364f]">{label}</span>
       <div className="flex items-center gap-1.5">
-        {shortcut && <span className="text-slate-600 text-[8px] font-mono">{shortcut}</span>}
-        <div className={`w-7 h-4 rounded-full transition-colors duration-200 relative ${enabled ? 'bg-blue-500' : 'bg-slate-600'}`}>
+        <div className={`w-7 h-4 rounded-full transition-colors duration-200 relative ${enabled ? 'bg-[#00579C]' : 'bg-[#b8c7db]'}`}>
           <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform duration-200 ${enabled ? 'left-3.5' : 'left-0.5'}`} />
         </div>
       </div>
@@ -797,10 +808,8 @@ function Graph3DControls({
   heatmapMode, setHeatmapMode,
   particlesEnabled, setParticlesEnabled,
   autoRotate, setAutoRotate,
-  fogEnabled, setFogEnabled,
   glowEnabled, setGlowEnabled,
   labelsEnabled, setLabelsEnabled,
-  starsEnabled, setStarsEnabled,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fgRef: React.RefObject<any>
@@ -814,10 +823,8 @@ function Graph3DControls({
   heatmapMode: boolean; setHeatmapMode: (v: boolean) => void
   particlesEnabled: boolean; setParticlesEnabled: (v: boolean) => void
   autoRotate: boolean; setAutoRotate: (v: boolean) => void
-  fogEnabled: boolean; setFogEnabled: (v: boolean) => void
   glowEnabled: boolean; setGlowEnabled: (v: boolean) => void
   labelsEnabled: boolean; setLabelsEnabled: (v: boolean) => void
-  starsEnabled: boolean; setStarsEnabled: (v: boolean) => void
 }) {
   const [showVfx, setShowVfx] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
@@ -871,11 +878,10 @@ function Graph3DControls({
       if (e.key === 'r' || e.key === 'R') setAutoRotate(!autoRotate)
       if (e.key === 'g' || e.key === 'G') setGlowEnabled(!glowEnabled)
       if (e.key === 'l' || e.key === 'L') setLabelsEnabled(!labelsEnabled)
-      if (e.key === 'f' || e.key === 'F') setFogEnabled(!fogEnabled)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [particlesEnabled, autoRotate, glowEnabled, labelsEnabled, fogEnabled, setParticlesEnabled, setAutoRotate, setGlowEnabled, setLabelsEnabled, setFogEnabled])
+  }, [particlesEnabled, autoRotate, glowEnabled, labelsEnabled, setParticlesEnabled, setAutoRotate, setGlowEnabled, setLabelsEnabled])
 
   const filterButtons: { key: GraphFilter; icon: React.ReactNode; label: string }[] = [
     { key: 'none', icon: <Network size={13} />, label: 'All' },
@@ -891,10 +897,10 @@ function Graph3DControls({
   return (
     <div className="absolute top-3 left-3 z-20 flex flex-col gap-1.5">
       {/* Filter row */}
-      <div className="flex items-center gap-1 bg-slate-900/90 border border-slate-700/50 rounded-lg px-1.5 py-1 shadow-lg backdrop-blur-sm">
+      <div className="flex items-center gap-1 bg-white/95 border border-[#d7e3f1] rounded-lg px-1.5 py-1 shadow-lg backdrop-blur-sm">
         {filterButtons.map(fb => (
           <button key={fb.key} onClick={() => { if (fb.key === 'cycles') onCycles(); if (fb.key === 'mule') onMules(); if (fb.key === 'layering') onLayering(); setFilter(fb.key) }}
-            className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-all ${filter === fb.key ? 'bg-blue-500/20 text-blue-400 shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-all ${filter === fb.key ? 'bg-[#00579C]/15 text-[#00579C] shadow-sm' : 'text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc]'}`}
             title={fb.label}>
             {fb.icon}
             <span className="hidden sm:inline">{fb.label}</span>
@@ -902,49 +908,49 @@ function Graph3DControls({
         ))}
       </div>
       {/* Tool row */}
-      <div className="flex items-center gap-1 bg-slate-900/90 border border-slate-700/50 rounded-lg px-1.5 py-1 shadow-lg backdrop-blur-sm">
-        <button onClick={() => zoom(1)} className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 rounded transition-colors" title="Zoom in"><ZoomIn size={13} /></button>
-        <button onClick={() => zoom(-1)} className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 rounded transition-colors" title="Zoom out"><ZoomOut size={13} /></button>
-        <button onClick={fit} className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 rounded transition-colors" title="Fit"><Maximize2 size={13} /></button>
-        <div className="w-px h-4 bg-slate-700/50 mx-0.5" />
-        <button onClick={doCenterFraud} className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 rounded transition-colors" title="Center on fraud"><Crosshair size={13} /></button>
-        <button onClick={onRestart} className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 rounded transition-colors" title="Restart layout"><RotateCcw size={13} /></button>
-        <button onClick={doExport} className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 rounded transition-colors" title="Export PNG"><Download size={13} /></button>
-        <div className="w-px h-4 bg-slate-700/50 mx-0.5" />
-        <button onClick={() => setShowSearch(!showSearch)} className={`p-1.5 rounded transition-colors ${showSearch ? 'text-blue-400 bg-blue-500/10' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`} title="Search"><Search size={13} /></button>
-        <button onClick={() => setShowVfx(!showVfx)} className={`p-1.5 rounded transition-colors ${showVfx ? 'text-blue-400 bg-blue-500/10' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`} title="3D Effects"><Zap size={13} /></button>
-        <button onClick={() => setShowFilters(!showFilters)} className={`p-1.5 rounded transition-colors ${showFilters ? 'text-amber-400 bg-amber-500/10' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`} title="Advanced Filters"><SlidersHorizontal size={13} /></button>
-        <button onClick={() => setHeatmapMode(!heatmapMode)} className={`p-1.5 rounded transition-colors ${heatmapMode ? 'text-orange-400 bg-orange-500/10' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`} title="Heatmap Mode"><Flame size={13} /></button>
+      <div className="flex items-center gap-1 bg-white/95 border border-[#d7e3f1] rounded-lg px-1.5 py-1 shadow-lg backdrop-blur-sm">
+        <button onClick={() => zoom(1)} className="p-1.5 text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc] rounded transition-colors" title="Zoom in"><ZoomIn size={13} /></button>
+        <button onClick={() => zoom(-1)} className="p-1.5 text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc] rounded transition-colors" title="Zoom out"><ZoomOut size={13} /></button>
+        <button onClick={fit} className="p-1.5 text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc] rounded transition-colors" title="Fit"><Maximize2 size={13} /></button>
+        <div className="w-px h-4 bg-[#f4f8fc] mx-0.5" />
+        <button onClick={doCenterFraud} className="p-1.5 text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc] rounded transition-colors" title="Center on fraud"><Crosshair size={13} /></button>
+        <button onClick={onRestart} className="p-1.5 text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc] rounded transition-colors" title="Restart layout"><RotateCcw size={13} /></button>
+        <button onClick={doExport} className="p-1.5 text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc] rounded transition-colors" title="Export PNG"><Download size={13} /></button>
+        <div className="w-px h-4 bg-[#f4f8fc] mx-0.5" />
+        <button onClick={() => setShowSearch(!showSearch)} className={`p-1.5 rounded transition-colors ${showSearch ? 'text-[#00579C] bg-[#00579C]/10' : 'text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc]'}`} title="Search"><Search size={13} /></button>
+        <button onClick={() => setShowVfx(!showVfx)} className={`p-1.5 rounded transition-colors ${showVfx ? 'text-[#00579C] bg-[#00579C]/10' : 'text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc]'}`} title="Graph view options"><Zap size={13} /></button>
+        <button onClick={() => setShowFilters(!showFilters)} className={`p-1.5 rounded transition-colors ${showFilters ? 'text-[#7a5a00] bg-[#f5b400]/15' : 'text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc]'}`} title="Advanced Filters"><SlidersHorizontal size={13} /></button>
+        <button onClick={() => setHeatmapMode(!heatmapMode)} className={`p-1.5 rounded transition-colors ${heatmapMode ? 'text-[#DA251C] bg-[#DA251C]/10' : 'text-[#4b5d76] hover:text-[#24364f] hover:bg-[#f4f8fc]'}`} title="Heatmap Mode"><Flame size={13} /></button>
       </div>
       {/* Search input with fly-to results */}
       {showSearch && (
-        <div className="bg-slate-900/90 border border-slate-700/50 rounded-lg px-2 py-1.5 shadow-lg backdrop-blur-sm min-w-[220px]">
+        <div className="bg-white/95 border border-[#d7e3f1] rounded-lg px-2 py-1.5 shadow-lg backdrop-blur-sm min-w-[220px]">
           <div className="flex items-center gap-1.5 mb-1">
-            <Search size={11} className="text-slate-500" />
-            <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Search nodes by ID..."
-              className="flex-1 bg-transparent border-none outline-none text-xs text-slate-200 placeholder:text-slate-500" autoFocus />
-            {searchTerm && <button onClick={() => setSearchTerm('')} className="text-slate-500 hover:text-slate-300 text-xs">&times;</button>}
+            <Search size={11} className="text-[#617189]" />
+            <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Node ID"
+              className="flex-1 bg-transparent border-none outline-none text-xs text-[#24364f] placeholder:text-[#617189]" autoFocus />
+            {searchTerm && <button onClick={() => setSearchTerm('')} className="text-[#617189] hover:text-[#24364f] text-xs">&times;</button>}
           </div>
           {searchTerm.length >= 2 && (() => {
             const sl = searchTerm.toLowerCase()
             const matches = graphData.nodes.filter(n => n.id.toLowerCase().includes(sl)).slice(0, 8)
-            if (matches.length === 0) return <div className="text-[9px] text-slate-500 py-1">No matches found</div>
+            if (matches.length === 0) return <div className="text-[9px] text-[#617189] py-1">No matches found</div>
             return (
-              <div className="border-t border-slate-700/40 pt-1 max-h-[180px] overflow-y-auto space-y-0.5">
+              <div className="border-t border-[#d7e3f1] pt-1 max-h-[180px] overflow-y-auto space-y-0.5">
                 {matches.map(n => {
                   const riskLevel = n.fraudRatio > 0.6 ? 'CRIT' : n.fraudRatio > 0.3 ? 'HIGH' : n.fraudRatio > 0.1 ? 'MED' : 'LOW'
-                  const riskColor = ({ CRIT: '#ef4444', HIGH: '#f97316', MED: '#eab308', LOW: '#22c55e' } as Record<string,string>)[riskLevel]
+                  const riskColor = RISK_COLORS[riskLevel]
                   return (
                     <button key={n.id} onClick={() => { onFlyToNode(n.id); setSearchTerm('') }}
-                      className="w-full flex items-center gap-2 px-1.5 py-1 rounded hover:bg-slate-700/40 transition-colors text-left group">
+                      className="w-full flex items-center gap-2 px-1.5 py-1 rounded hover:bg-[#f4f8fc] transition-colors text-left group">
                       <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: n.color }} />
-                      <span className="text-[10px] font-mono text-slate-300 flex-1 truncate group-hover:text-white">{n.id}</span>
+                      <span className="text-[10px] font-mono text-[#24364f] flex-1 truncate group-hover:text-[#00579C]">{n.id}</span>
                       <span className="text-[8px] font-semibold px-1 py-0.5 rounded" style={{ background: riskColor + '22', color: riskColor }}>{riskLevel}</span>
-                      <Crosshair size={9} className="text-slate-600 group-hover:text-cyan-400 shrink-0" />
+                      <Crosshair size={9} className="text-[#8a98aa] group-hover:text-[#00579C] shrink-0" />
                     </button>
                   )
                 })}
-                <div className="text-[8px] text-slate-600 pt-0.5">Click to fly to node</div>
+                <div className="text-[8px] text-[#8a98aa] pt-0.5">Click to fly to node</div>
               </div>
             )
           })()}
@@ -952,29 +958,27 @@ function Graph3DControls({
       )}
       {/* VFX panel */}
       {showVfx && (
-        <div className="bg-slate-900/90 border border-slate-700/50 rounded-lg px-2 py-2 shadow-lg backdrop-blur-sm min-w-[180px]">
-          <div className="text-[9px] text-slate-500 font-semibold uppercase tracking-wider mb-1.5 flex items-center gap-1"><Zap size={10} /> 3D Effects</div>
+        <div className="bg-white/95 border border-[#d7e3f1] rounded-lg px-2 py-2 shadow-lg backdrop-blur-sm min-w-[180px]">
+          <div className="text-[9px] text-[#617189] font-semibold uppercase tracking-wider mb-1.5 flex items-center gap-1"><Zap size={10} /> Graph View Options</div>
           <div className="space-y-0.5">
-            <VfxToggle label="Particle Flow" enabled={particlesEnabled} onChange={() => setParticlesEnabled(!particlesEnabled)} shortcut="P" />
-            <VfxToggle label="Auto Rotate" enabled={autoRotate} onChange={() => setAutoRotate(!autoRotate)} shortcut="R" />
-            <VfxToggle label="Node Glow" enabled={glowEnabled} onChange={() => setGlowEnabled(!glowEnabled)} shortcut="G" />
-            <VfxToggle label="Node Labels" enabled={labelsEnabled} onChange={() => setLabelsEnabled(!labelsEnabled)} shortcut="L" />
-            <VfxToggle label="Fog Depth" enabled={fogEnabled} onChange={() => setFogEnabled(!fogEnabled)} shortcut="F" />
-            <VfxToggle label="Star Field" enabled={starsEnabled} onChange={() => setStarsEnabled(!starsEnabled)} />
+            <VfxToggle label="Particle Flow" enabled={particlesEnabled} onChange={() => setParticlesEnabled(!particlesEnabled)} />
+            <VfxToggle label="Auto Rotate" enabled={autoRotate} onChange={() => setAutoRotate(!autoRotate)} />
+            <VfxToggle label="Node Glow" enabled={glowEnabled} onChange={() => setGlowEnabled(!glowEnabled)} />
+            <VfxToggle label="Node Labels" enabled={labelsEnabled} onChange={() => setLabelsEnabled(!labelsEnabled)} />
           </div>
         </div>
       )}
       {/* Advanced Filter panel */}
       {showFilters && (
-        <div className="bg-slate-900/90 border border-slate-700/50 rounded-lg px-2 py-2 shadow-lg backdrop-blur-sm min-w-[220px] max-h-[400px] overflow-y-auto">
-          <div className="text-[9px] text-slate-500 font-semibold uppercase tracking-wider mb-1.5 flex items-center gap-1"><SlidersHorizontal size={10} /> Advanced Filters</div>
+        <div className="bg-white/95 border border-[#d7e3f1] rounded-lg px-2 py-2 shadow-lg backdrop-blur-sm min-w-[220px] max-h-[400px] overflow-y-auto">
+          <div className="text-[9px] text-[#617189] font-semibold uppercase tracking-wider mb-1.5 flex items-center gap-1"><SlidersHorizontal size={10} /> Advanced Filters</div>
           {/* Channel filters */}
           <div className="mb-2">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[9px] text-slate-400 font-medium">Channels</span>
+              <span className="text-[9px] text-[#4b5d76] font-medium">Channels</span>
               <div className="flex gap-1">
-                <button onClick={() => setActiveChannels(new Set([0,1,2,3,4,5,6,7,8,9]))} className="text-[8px] text-cyan-400 hover:underline">All</button>
-                <button onClick={() => setActiveChannels(new Set())} className="text-[8px] text-slate-500 hover:underline">None</button>
+                <button onClick={() => setActiveChannels(new Set([0,1,2,3,4,5,6,7,8,9]))} className="text-[8px] text-[#00579C] hover:underline">All</button>
+                <button onClick={() => setActiveChannels(new Set())} className="text-[8px] text-[#617189] hover:underline">None</button>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
@@ -989,9 +993,9 @@ function Graph3DControls({
                       else next.add(i)
                       setActiveChannels(next)
                     }} className="hidden" />
-                    <div className={`w-2.5 h-2.5 rounded-sm border transition-all ${on ? 'border-transparent' : 'border-slate-600 bg-slate-800'}`}
+                    <div className={`w-2.5 h-2.5 rounded-sm border transition-all ${on ? 'border-transparent' : 'border-[#b8c7db] bg-[#d7e3f1]'}`}
                       style={on ? { background: CHANNEL_COLORS[i] } : {}} />
-                    <span className={`text-[9px] truncate transition-colors ${on ? 'text-slate-300' : 'text-slate-600'}`}>{label}</span>
+                    <span className={`text-[9px] truncate transition-colors ${on ? 'text-[#24364f]' : 'text-[#8a98aa]'}`}>{label}</span>
                   </label>
                 )
               })}
@@ -1000,10 +1004,10 @@ function Graph3DControls({
           {/* Fraud type filters */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[9px] text-slate-400 font-medium">Fraud Types</span>
+              <span className="text-[9px] text-[#4b5d76] font-medium">Fraud Types</span>
               <div className="flex gap-1">
-                <button onClick={() => setActiveFraudTypes(new Set([0,1,2,3,4,5,6,7,8]))} className="text-[8px] text-cyan-400 hover:underline">All</button>
-                <button onClick={() => setActiveFraudTypes(new Set())} className="text-[8px] text-slate-500 hover:underline">None</button>
+                <button onClick={() => setActiveFraudTypes(new Set([0,1,2,3,4,5,6,7,8]))} className="text-[8px] text-[#00579C] hover:underline">All</button>
+                <button onClick={() => setActiveFraudTypes(new Set())} className="text-[8px] text-[#617189] hover:underline">None</button>
               </div>
             </div>
             <div className="space-y-0.5">
@@ -1019,9 +1023,9 @@ function Graph3DControls({
                       else next.add(i)
                       setActiveFraudTypes(next)
                     }} className="hidden" />
-                    <div className={`w-2.5 h-2.5 rounded-sm border transition-all ${on ? 'border-transparent' : 'border-slate-600 bg-slate-800'}`}
+                    <div className={`w-2.5 h-2.5 rounded-sm border transition-all ${on ? 'border-transparent' : 'border-[#b8c7db] bg-[#d7e3f1]'}`}
                       style={on ? { background: color } : {}} />
-                    <span className={`text-[9px] truncate transition-colors ${on ? 'text-slate-300' : 'text-slate-600'}`}>{label}</span>
+                    <span className={`text-[9px] truncate transition-colors ${on ? 'text-[#24364f]' : 'text-[#8a98aa]'}`}>{label}</span>
                   </label>
                 )
               })}
@@ -1069,17 +1073,17 @@ function GraphLegend({ edges }: { edges: CytoEdge[] }) {
   return (
     <div className="absolute bottom-3 right-3 z-20">
       <button onClick={() => setCollapsed(!collapsed)}
-        className="bg-slate-900/90 border border-slate-700/50 rounded-lg px-2.5 py-1.5 text-[10px] text-slate-400 hover:text-slate-200 shadow-lg backdrop-blur-sm transition-colors flex items-center gap-1">
+        className="bg-white/95 border border-[#d7e3f1] rounded-lg px-2.5 py-1.5 text-[10px] text-[#4b5d76] hover:text-[#24364f] shadow-lg backdrop-blur-sm transition-colors flex items-center gap-1">
         <Network size={11} /> Legend {collapsed ? '+' : '−'}
       </button>
       {!collapsed && (
-        <div className="mt-1 bg-slate-900/95 border border-slate-700/50 rounded-xl px-3 py-2.5 shadow-xl backdrop-blur-sm min-w-[200px] max-w-[240px]">
+        <div className="mt-1 bg-white/95 border border-[#d7e3f1] rounded-xl px-3 py-2.5 shadow-xl backdrop-blur-sm min-w-[200px] max-w-[240px]">
           {/* Tabs */}
-          <div className="flex gap-0.5 mb-2 border-b border-slate-700/40 pb-1.5">
+          <div className="flex gap-0.5 mb-2 border-b border-[#d7e3f1] pb-1.5">
             {tabs.map(t => (
               <button key={t.key} onClick={() => setSection(t.key)}
                 className={`px-2 py-0.5 rounded text-[9px] font-medium transition-colors ${
-                  section === t.key ? 'bg-blue-500/20 text-blue-400' : 'text-slate-500 hover:text-slate-300'
+                  section === t.key ? 'bg-[#00579C]/15 text-[#00579C]' : 'text-[#617189] hover:text-[#24364f]'
                 }`}>
                 {t.label}
               </button>
@@ -1094,14 +1098,14 @@ function GraphLegend({ edges }: { edges: CytoEdge[] }) {
                 return (
                   <div key={k} className="flex items-center gap-2 text-[10px]">
                     <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: FRAUD_TYPE_COLORS[Number(k)] }} />
-                    <span className="text-slate-300 flex-1 truncate">{label}</span>
-                    {count > 0 && <span className="text-slate-500 font-mono text-[9px]">{count}</span>}
+                    <span className="text-[#24364f] flex-1 truncate">{label}</span>
+                    {count > 0 && <span className="text-[#617189] font-mono text-[9px]">{count}</span>}
                   </div>
                 )
               })}
-              <div className="flex items-center gap-2 text-[10px] mt-1 pt-1 border-t border-slate-700/30">
+              <div className="flex items-center gap-2 text-[10px] mt-1 pt-1 border-t border-[#d7e3f1]">
                 <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: NODE_COLOR_SAFE }} />
-                <span className="text-slate-400">Clean / No Fraud</span>
+                <span className="text-[#4b5d76]">Clean / No Fraud</span>
               </div>
             </div>
           )}
@@ -1117,8 +1121,8 @@ function GraphLegend({ edges }: { edges: CytoEdge[] }) {
                 return (
                   <div key={k} className="flex items-center gap-2 text-[10px]">
                     <div className="w-5 h-[3px] rounded-full shrink-0" style={{ background: CHANNEL_COLORS[Number(k)] }} />
-                    <span className="text-slate-300 flex-1 truncate">{label}</span>
-                    <span className="text-slate-500 font-mono text-[9px]">{pct}%</span>
+                    <span className="text-[#24364f] flex-1 truncate">{label}</span>
+                    <span className="text-[#617189] font-mono text-[9px]">{pct}%</span>
                   </div>
                 )
               })}
@@ -1131,11 +1135,11 @@ function GraphLegend({ edges }: { edges: CytoEdge[] }) {
               {Object.entries(STATUS_BORDER_COLORS).map(([status, color]) => (
                 <div key={status} className="flex items-center gap-2 text-[10px]">
                   <div className="w-3 h-3 rounded-full border-2 shrink-0" style={{ borderColor: color, background: status === 'frozen' ? color + '22' : 'transparent' }} />
-                  <span className="text-slate-300 capitalize flex-1">{status}</span>
-                  <span className="text-slate-600 text-[8px]">{status === 'frozen' ? 'ring + fill' : status === 'suspicious' ? 'ring' : '—'}</span>
+                  <span className="text-[#24364f] capitalize flex-1">{status}</span>
+                  <span className="text-[#8a98aa] text-[8px]">{status === 'frozen' ? 'ring + fill' : status === 'suspicious' ? 'ring' : '—'}</span>
                 </div>
               ))}
-              <div className="mt-1 pt-1 border-t border-slate-700/30 text-[9px] text-slate-500">
+              <div className="mt-1 pt-1 border-t border-[#d7e3f1] text-[9px] text-[#617189]">
                 Ring border = node status indicator
               </div>
             </div>
@@ -1144,7 +1148,7 @@ function GraphLegend({ edges }: { edges: CytoEdge[] }) {
           {/* Size Guide */}
           {section === 'size' && (
             <div className="space-y-1.5">
-              <div className="text-[9px] text-slate-500 mb-1">Node Size = Importance</div>
+              <div className="text-[9px] text-[#617189] mb-1">Node Size = Importance</div>
               {[
                 { sz: 10, label: 'Frozen / Suspicious', desc: 'Highest risk' },
                 { sz: 8, label: 'High-degree Fraud', desc: '≥4 connections' },
@@ -1154,13 +1158,13 @@ function GraphLegend({ edges }: { edges: CytoEdge[] }) {
               ].map(({ sz, label, desc }) => (
                 <div key={label} className="flex items-center gap-2 text-[10px]">
                   <div className="w-5 flex items-center justify-center shrink-0">
-                    <div className="rounded-full bg-blue-400/50" style={{ width: sz, height: sz }} />
+                    <div className="rounded-full bg-[#00579C]/50" style={{ width: sz, height: sz }} />
                   </div>
-                  <span className="text-slate-300 flex-1">{label}</span>
-                  <span className="text-slate-600 text-[8px]">{desc}</span>
+                  <span className="text-[#24364f] flex-1">{label}</span>
+                  <span className="text-[#8a98aa] text-[8px]">{desc}</span>
                 </div>
               ))}
-              <div className="mt-1.5 pt-1 border-t border-slate-700/30 text-[9px] text-slate-500">
+              <div className="mt-1.5 pt-1 border-t border-[#d7e3f1] text-[9px] text-[#617189]">
                 Link arrows = fraud direction<br />
                 Particles = transaction flow
               </div>
@@ -1181,7 +1185,7 @@ function NetworkRiskGauge({
   graph: Graph; edges: CytoEdge[]; clusteringCoeff: number
 }) {
   const nodeCount = graph.order || 1
-  const edgeCount = graph.size || 1
+  const edgeCount = edges.length || 1
   const fraudEdgeCount = edges.filter(e => (e.data.fraud_label ?? 0) > 0).length
   const fraudRatio = edgeCount > 0 ? fraudEdgeCount / edgeCount : 0
 
@@ -1202,7 +1206,7 @@ function NetworkRiskGauge({
   ))
 
   const riskLabel = riskScore >= 75 ? 'CRITICAL' : riskScore >= 50 ? 'HIGH' : riskScore >= 25 ? 'ELEVATED' : 'LOW'
-  const riskColor = riskScore >= 75 ? '#ef4444' : riskScore >= 50 ? '#f97316' : riskScore >= 25 ? '#eab308' : '#22c55e'
+  const riskColor = riskScore >= 75 ? '#DA251C' : riskScore >= 50 ? '#B51A13' : riskScore >= 25 ? '#f5b400' : '#00579C'
 
   // SVG arc parameters
   const radius = 38
@@ -1211,12 +1215,12 @@ function NetworkRiskGauge({
 
   return (
     <div className="absolute bottom-3 left-3 z-20">
-      <div className="bg-slate-900/95 border border-slate-700/50 rounded-xl px-3 py-2.5 shadow-xl backdrop-blur-sm w-[130px]">
-        <div className="text-[9px] text-slate-500 font-semibold uppercase tracking-wider mb-1 text-center">Network Risk</div>
+      <div className="bg-white/95 border border-[#d7e3f1] rounded-xl px-3 py-2.5 shadow-xl backdrop-blur-sm w-[130px]">
+        <div className="text-[9px] text-[#617189] font-semibold uppercase tracking-wider mb-1 text-center">Network Risk</div>
         <div className="relative flex justify-center">
           <svg width="100" height="58" viewBox="0 0 100 58">
             {/* Background arc */}
-            <path d="M 10 52 A 38 38 0 0 1 90 52" fill="none" stroke="#334155" strokeWidth="5" strokeLinecap="round" />
+            <path d="M 10 52 A 38 38 0 0 1 90 52" fill="none" stroke="#d7e3f1" strokeWidth="5" strokeLinecap="round" />
             {/* Risk arc */}
             <path d="M 10 52 A 38 38 0 0 1 90 52" fill="none" stroke={riskColor} strokeWidth="5" strokeLinecap="round"
               strokeDasharray={`${circumference}`} strokeDashoffset={offset}
@@ -1227,7 +1231,7 @@ function NetworkRiskGauge({
               style={{ transition: 'stroke-dashoffset 1s ease-out' }} />
             {/* Score text */}
             <text x="50" y="42" textAnchor="middle" fill={riskColor} fontSize="18" fontWeight="bold" fontFamily="monospace">{riskScore}</text>
-            <text x="50" y="54" textAnchor="middle" fill="#64748b" fontSize="7" fontFamily="system-ui">/100</text>
+            <text x="50" y="54" textAnchor="middle" fill="#617189" fontSize="7" fontFamily="system-ui">/100</text>
           </svg>
         </div>
         <div className="text-center mt-0.5">
@@ -1237,16 +1241,16 @@ function NetworkRiskGauge({
         </div>
         <div className="mt-1.5 grid grid-cols-3 gap-1 text-center">
           <div>
-            <div className="text-[8px] text-slate-500">Fraud</div>
-            <div className="text-[9px] font-mono text-red-400">{(fraudRatio * 100).toFixed(0)}%</div>
+            <div className="text-[8px] text-[#617189]">Fraud</div>
+            <div className="text-[9px] font-mono text-[#DA251C]">{(fraudRatio * 100).toFixed(0)}%</div>
           </div>
           <div>
-            <div className="text-[8px] text-slate-500">Frozen</div>
-            <div className="text-[9px] font-mono text-yellow-400">{frozen}</div>
+            <div className="text-[8px] text-[#617189]">Frozen</div>
+            <div className="text-[9px] font-mono text-[#7a5a00]">{frozen}</div>
           </div>
           <div>
-            <div className="text-[8px] text-slate-500">Susp</div>
-            <div className="text-[9px] font-mono text-orange-400">{suspicious}</div>
+            <div className="text-[8px] text-[#617189]">Susp</div>
+            <div className="text-[9px] font-mono text-[#DA251C]">{suspicious}</div>
           </div>
         </div>
       </div>
@@ -1266,7 +1270,7 @@ function GraphStatsOverlay({
   muleCount: number; layeringCount: number; structuringCount: number
 }) {
   const nodeCount = graph.order
-  const edgeCount = graph.size
+  const edgeCount = edges.length
   const fraudEdgeCount = edges.filter(e => (e.data.fraud_label ?? 0) > 0).length
   const fraudPercent = edgeCount > 0 ? ((fraudEdgeCount / edgeCount) * 100).toFixed(1) : '0'
 
@@ -1305,9 +1309,9 @@ function GraphStatsOverlay({
   const fmtVol = (v: number) => v >= 1e7 ? `₹${(v / 1e7).toFixed(1)}Cr` : v >= 1e5 ? `₹${(v / 1e5).toFixed(1)}L` : `₹${(v / 100).toFixed(0)}`
 
   return (
-    <div className="absolute top-3 right-3 z-20 bg-slate-900/90 border border-slate-700/50 rounded-xl shadow-lg backdrop-blur-sm w-60">
-      <div className="px-3 py-2 border-b border-slate-700/50 flex items-center justify-between">
-        <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider flex items-center gap-1">
+    <div className="absolute top-3 right-3 z-20 bg-white/95 border border-[#d7e3f1] rounded-xl shadow-lg backdrop-blur-sm w-60">
+      <div className="px-3 py-2 border-b border-[#d7e3f1] flex items-center justify-between">
+        <span className="text-[10px] text-[#4b5d76] font-semibold uppercase tracking-wider flex items-center gap-1">
           <TrendingUp size={10} /> Network Stats
         </span>
         <ActivitySparkline />
@@ -1315,39 +1319,39 @@ function GraphStatsOverlay({
       <div className="px-3 py-2 space-y-2 text-[10px]">
         {/* Core metrics grid */}
         <div className="grid grid-cols-3 gap-x-2 gap-y-1">
-          <div className="flex flex-col items-center bg-slate-800/40 rounded px-1 py-1">
-            <span className="text-slate-200 font-mono font-semibold">{nodeCount}</span>
-            <span className="text-[8px] text-slate-500">Nodes</span>
+          <div className="flex flex-col items-center bg-[#f4f8fc] rounded px-1 py-1">
+            <span className="text-[#24364f] font-mono font-semibold">{nodeCount}</span>
+            <span className="text-[8px] text-[#617189]">Nodes</span>
           </div>
-          <div className="flex flex-col items-center bg-slate-800/40 rounded px-1 py-1">
-            <span className="text-slate-200 font-mono font-semibold">{edgeCount}</span>
-            <span className="text-[8px] text-slate-500">Edges</span>
+          <div className="flex flex-col items-center bg-[#f4f8fc] rounded px-1 py-1">
+            <span className="text-[#24364f] font-mono font-semibold">{edgeCount}</span>
+            <span className="text-[8px] text-[#617189]">Edges</span>
           </div>
-          <div className="flex flex-col items-center bg-slate-800/40 rounded px-1 py-1">
-            <span className="text-red-400 font-mono font-semibold">{fraudPercent}%</span>
-            <span className="text-[8px] text-slate-500">Fraud</span>
+          <div className="flex flex-col items-center bg-[#f4f8fc] rounded px-1 py-1">
+            <span className="text-[#DA251C] font-mono font-semibold">{fraudPercent}%</span>
+            <span className="text-[8px] text-[#617189]">Fraud</span>
           </div>
         </div>
 
         {/* Volume & degree */}
         <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-          <div className="flex justify-between"><span className="text-slate-500">Volume</span><span className="text-emerald-400 font-mono">{fmtVol(totalVolume)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">Fraud Vol</span><span className="text-red-400 font-mono">{fmtVol(fraudVolume)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">Avg Txn</span><span className="text-slate-300 font-mono">{fmtVol(avgTxn)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">Avg Deg</span><span className="text-cyan-400 font-mono">{avgDegree}</span></div>
-          <div className="flex justify-between col-span-2"><span className="text-slate-500">Clustering</span><span className="text-cyan-400 font-mono">{clusteringCoeff.toFixed(3)}</span></div>
+          <div className="flex justify-between"><span className="text-[#617189]">Volume</span><span className="text-[#0f9f6e] font-mono">{fmtVol(totalVolume)}</span></div>
+          <div className="flex justify-between"><span className="text-[#617189]">Fraud Vol</span><span className="text-[#DA251C] font-mono">{fmtVol(fraudVolume)}</span></div>
+          <div className="flex justify-between"><span className="text-[#617189]">Avg Txn</span><span className="text-[#24364f] font-mono">{fmtVol(avgTxn)}</span></div>
+          <div className="flex justify-between"><span className="text-[#617189]">Avg Deg</span><span className="text-[#00579C] font-mono">{avgDegree}</span></div>
+          <div className="flex justify-between col-span-2"><span className="text-[#617189]">Clustering</span><span className="text-[#00579C] font-mono">{clusteringCoeff.toFixed(3)}</span></div>
         </div>
 
         {/* Risk distribution bar */}
         <div>
-          <div className="text-[9px] text-slate-500 mb-1">Risk Distribution</div>
+          <div className="text-[9px] text-[#617189] mb-1">Risk Distribution</div>
           <div className="w-full h-2 rounded-full overflow-hidden flex">
-            {frozen > 0 && <div style={{ width: `${(frozen/total)*100}%`, background: '#f87171' }} className="h-full" />}
-            {suspicious > 0 && <div style={{ width: `${(suspicious/total)*100}%`, background: '#facc15' }} className="h-full" />}
-            {paused > 0 && <div style={{ width: `${(paused/total)*100}%`, background: '#fb923c' }} className="h-full" />}
-            {normal > 0 && <div style={{ width: `${(normal/total)*100}%`, background: '#475569' }} className="h-full" />}
+            {frozen > 0 && <div style={{ width: `${(frozen/total)*100}%`, background: '#DA251C' }} className="h-full" />}
+            {suspicious > 0 && <div style={{ width: `${(suspicious/total)*100}%`, background: '#f5b400' }} className="h-full" />}
+            {paused > 0 && <div style={{ width: `${(paused/total)*100}%`, background: '#00579C' }} className="h-full" />}
+            {normal > 0 && <div style={{ width: `${(normal/total)*100}%`, background: '#617189' }} className="h-full" />}
           </div>
-          <div className="flex justify-between mt-0.5 text-[8px] text-slate-500">
+          <div className="flex justify-between mt-0.5 text-[8px] text-[#617189]">
             <span>{frozen} frozen</span><span>{suspicious} susp</span><span>{normal} ok</span>
           </div>
         </div>
@@ -1355,18 +1359,18 @@ function GraphStatsOverlay({
         {/* Top fraud patterns with mini bars */}
         {sortedPatterns.length > 0 && (
           <div>
-            <div className="text-[9px] text-slate-500 mb-1">Top Fraud Patterns</div>
+            <div className="text-[9px] text-[#617189] mb-1">Top Fraud Patterns</div>
             <div className="space-y-1">
               {sortedPatterns.slice(0, 4).map(([fl, count]) => {
                 const pct = edgeCount > 0 ? (count / edgeCount) * 100 : 0
                 return (
                   <div key={fl} className="flex items-center gap-1.5">
                     <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: FRAUD_TYPE_COLORS[fl] }} />
-                    <span className="text-slate-400 flex-1 truncate text-[9px]">{FRAUD_PATTERN_LABELS[fl] ?? `T${fl}`}</span>
-                    <div className="w-12 h-1 bg-slate-700 rounded-full overflow-hidden">
+                    <span className="text-[#4b5d76] flex-1 truncate text-[9px]">{FRAUD_PATTERN_LABELS[fl] ?? `T${fl}`}</span>
+                    <div className="w-12 h-1 bg-[#d7e3f1] rounded-full overflow-hidden">
                       <div className="h-full rounded-full" style={{ width: `${Math.min(pct * 3, 100)}%`, background: FRAUD_TYPE_COLORS[fl] }} />
                     </div>
-                    <span className="text-slate-500 font-mono text-[8px] w-5 text-right">{count}</span>
+                    <span className="text-[#617189] font-mono text-[8px] w-5 text-right">{count}</span>
                   </div>
                 )
               })}
@@ -1377,7 +1381,7 @@ function GraphStatsOverlay({
         {/* Channel breakdown */}
         {sortedChannels.length > 0 && (
           <div>
-            <div className="text-[9px] text-slate-500 mb-1">Channel Mix</div>
+            <div className="text-[9px] text-[#617189] mb-1">Channel Mix</div>
             <div className="w-full h-2 rounded-full overflow-hidden flex">
               {sortedChannels.map(([ch, count]) => (
                 <div key={ch} style={{ width: `${(count / (edgeCount || 1)) * 100}%`, background: CHANNEL_COLORS[ch] }} className="h-full" title={CHANNEL_LABELS[ch]} />
@@ -1385,7 +1389,7 @@ function GraphStatsOverlay({
             </div>
             <div className="flex flex-wrap gap-x-2 mt-0.5">
               {sortedChannels.slice(0, 3).map(([ch]) => (
-                <span key={ch} className="flex items-center gap-0.5 text-[8px] text-slate-500">
+                <span key={ch} className="flex items-center gap-0.5 text-[8px] text-[#617189]">
                   <span className="w-1 h-1 rounded-full inline-block" style={{ background: CHANNEL_COLORS[ch] }} />
                   {CHANNEL_LABELS[ch]}
                 </span>
@@ -1397,19 +1401,19 @@ function GraphStatsOverlay({
         {/* AML Indicators */}
         {(muleCount > 0 || layeringCount > 0 || structuringCount > 0) && (
           <div>
-            <div className="text-[9px] text-slate-500 mb-1 flex items-center gap-1"><Shield size={9} className="text-amber-400" /> AML Indicators</div>
+            <div className="text-[9px] text-[#617189] mb-1 flex items-center gap-1"><Shield size={9} className="text-[#7a5a00]" /> AML Indicators</div>
             <div className="grid grid-cols-3 gap-x-2 gap-y-1">
-              <div className="flex flex-col items-center bg-red-950/30 border border-red-800/20 rounded px-1 py-1">
-                <span className="text-red-400 font-mono font-semibold">{muleCount}</span>
-                <span className="text-[8px] text-slate-500">Mules</span>
+              <div className="flex flex-col items-center bg-[#DA251C]/10 border border-[#DA251C]/20 rounded px-1 py-1">
+                <span className="text-[#DA251C] font-mono font-semibold">{muleCount}</span>
+                <span className="text-[8px] text-[#617189]">Mules</span>
               </div>
-              <div className="flex flex-col items-center bg-purple-950/30 border border-purple-800/20 rounded px-1 py-1">
-                <span className="text-purple-400 font-mono font-semibold">{layeringCount}</span>
-                <span className="text-[8px] text-slate-500">Layering</span>
+              <div className="flex flex-col items-center bg-[#00579C]/8 border border-[#00579C]/20 rounded px-1 py-1">
+                <span className="text-[#00579C] font-mono font-semibold">{layeringCount}</span>
+                <span className="text-[8px] text-[#617189]">Layering</span>
               </div>
-              <div className="flex flex-col items-center bg-amber-950/30 border border-amber-800/20 rounded px-1 py-1">
-                <span className="text-amber-400 font-mono font-semibold">{structuringCount}</span>
-                <span className="text-[8px] text-slate-500">Structuring</span>
+              <div className="flex flex-col items-center bg-[#f5b400]/12 border border-[#f5b400]/30 rounded px-1 py-1">
+                <span className="text-[#7a5a00] font-mono font-semibold">{structuringCount}</span>
+                <span className="text-[8px] text-[#617189]">Structuring</span>
               </div>
             </div>
           </div>
@@ -1418,19 +1422,19 @@ function GraphStatsOverlay({
         {/* Key Actors */}
         {(topPR || topBC) && (
           <div>
-            <div className="text-[9px] text-slate-500 mb-1">Key Actors</div>
+            <div className="text-[9px] text-[#617189] mb-1">Key Actors</div>
             {topPR && (
               <div className="flex items-center gap-1 mb-0.5">
-                <Target size={9} className="text-blue-400" />
-                <span className="text-slate-400">PR:</span>
-                <span className="text-blue-400 font-mono truncate max-w-[100px]">{topPR.length > 12 ? topPR.slice(0,6)+'..'+topPR.slice(-4) : topPR}</span>
+                <Target size={9} className="text-[#00579C]" />
+                <span className="text-[#4b5d76]">PR:</span>
+                <span className="text-[#00579C] font-mono truncate max-w-[100px]">{topPR.length > 12 ? topPR.slice(0,6)+'..'+topPR.slice(-4) : topPR}</span>
               </div>
             )}
             {topBC && (
               <div className="flex items-center gap-1">
-                <Zap size={9} className="text-purple-400" />
-                <span className="text-slate-400">BC:</span>
-                <span className="text-purple-400 font-mono truncate max-w-[100px]">{topBC.length > 12 ? topBC.slice(0,6)+'..'+topBC.slice(-4) : topBC}</span>
+                <Zap size={9} className="text-[#00579C]" />
+                <span className="text-[#4b5d76]">BC:</span>
+                <span className="text-[#00579C] font-mono truncate max-w-[100px]">{topBC.length > 12 ? topBC.slice(0,6)+'..'+topBC.slice(-4) : topBC}</span>
               </div>
             )}
           </div>
@@ -1443,29 +1447,22 @@ function GraphStatsOverlay({
 // ============================================================================
 // Threat Radar -- animated scanning ring visible in threat-path mode
 // ============================================================================
-function ThreatRadar({ active }: { active: boolean }) {
-  const [signalCount, setSignalCount] = useState(0)
-  useEffect(() => {
-    if (!active) return
-    const iv = setInterval(() => setSignalCount(Math.floor(Math.random() * 12) + 1), 3000)
-    return () => clearInterval(iv)
-  }, [active])
-
+function ThreatRadar({ active, signalCount }: { active: boolean; signalCount: number }) {
   if (!active) return null
   return (
     <div className="absolute bottom-20 right-3 z-20 flex flex-col items-center gap-1">
       <div className="relative w-16 h-16">
         <svg viewBox="0 0 100 100" className="w-full h-full">
-          <circle cx="50" cy="50" r="45" fill="none" stroke="#334155" strokeWidth="0.5" />
-          <circle cx="50" cy="50" r="30" fill="none" stroke="#334155" strokeWidth="0.5" />
-          <circle cx="50" cy="50" r="15" fill="none" stroke="#334155" strokeWidth="0.5" />
-          <line x1="50" y1="2" x2="50" y2="98" stroke="#334155" strokeWidth="0.5" />
-          <line x1="2" y1="50" x2="98" y2="50" stroke="#334155" strokeWidth="0.5" />
-          <line x1="50" y1="50" x2="50" y2="5" stroke="#22d3ee" strokeWidth="1.5" opacity="0.7" className="origin-center animate-[radar-spin_3s_linear_infinite]" style={{ transformOrigin: '50px 50px' }} />
-          <circle cx="50" cy="50" r="3" fill="#22d3ee" className="animate-pulse" />
+          <circle cx="50" cy="50" r="45" fill="none" stroke="#d7e3f1" strokeWidth="0.5" />
+          <circle cx="50" cy="50" r="30" fill="none" stroke="#d7e3f1" strokeWidth="0.5" />
+          <circle cx="50" cy="50" r="15" fill="none" stroke="#d7e3f1" strokeWidth="0.5" />
+          <line x1="50" y1="2" x2="50" y2="98" stroke="#d7e3f1" strokeWidth="0.5" />
+          <line x1="2" y1="50" x2="98" y2="50" stroke="#d7e3f1" strokeWidth="0.5" />
+          <line x1="50" y1="50" x2="50" y2="5" stroke="#00579C" strokeWidth="1.5" opacity="0.7" className="origin-center animate-[radar-spin_3s_linear_infinite]" style={{ transformOrigin: '50px 50px' }} />
+          <circle cx="50" cy="50" r="3" fill="#00579C" className="animate-pulse" />
         </svg>
       </div>
-      <div className="bg-slate-900/80 border border-cyan-900/40 rounded px-2 py-0.5 text-[9px] text-cyan-400 font-mono backdrop-blur-sm flex items-center gap-1">
+      <div className="bg-white/90 border border-[#00579C]/30 rounded px-2 py-0.5 text-[9px] text-[#00579C] font-mono backdrop-blur-sm flex items-center gap-1">
         <Radio size={8} className="animate-pulse" /> SCANNING · {signalCount} signals
       </div>
     </div>
@@ -1503,12 +1500,11 @@ export default function SigmaGraph() {
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [cycleNodes, setCycleNodes] = useState<Set<string>>(new Set())
-  const [particlesEnabled, setParticlesEnabled] = useState(false)
-  const [autoRotate, setAutoRotate] = useState(false)
-  const [fogEnabled, setFogEnabled] = useState(false)
-  const [glowEnabled, setGlowEnabled] = useState(false)
+  const [particlesEnabled, setParticlesEnabled] = useState(true)
+  const [autoRotate, setAutoRotate] = useState(true)
+  const [glowEnabled, setGlowEnabled] = useState(true)
   const [labelsEnabled, setLabelsEnabled] = useState(false)
-  const [starsEnabled, setStarsEnabled] = useState(false)
+  const [lastLiveSyncAt, setLastLiveSyncAt] = useState(() => Date.now())
   // Advanced filters
   const [activeChannels, setActiveChannels] = useState<Set<number>>(new Set([0,1,2,3,4,5,6,7,8,9]))
   const [activeFraudTypes, setActiveFraudTypes] = useState<Set<number>>(new Set([0,1,2,3,4,5,6,7,8]))
@@ -1574,6 +1570,7 @@ export default function SigmaGraph() {
       lastSyncRef.current = Date.now()
       syncGraphology(graphRef.current, visibleNodes, visibleEdges)
       setVersion(v => v + 1)
+      setLastLiveSyncAt(Date.now())
       recordActivity(visibleEdges.length)
     }
     const elapsed = Date.now() - lastSyncRef.current
@@ -1601,7 +1598,7 @@ export default function SigmaGraph() {
 
   const denseScene = graphData.nodes.length > 64 || graphData.links.length > 120
   const labelCap = denseScene ? 24 : 64
-  const useCustomNodeObjects = labelsEnabled || filter === 'cycles' || filter === 'mule' || filter === 'layering'
+  const useCustomNodeObjects = labelsEnabled || glowEnabled || filter === 'cycles' || filter === 'mule' || filter === 'layering'
 
   const resumeRenderer = useCallback(() => {
     if (renderPauseTimerRef.current) {
@@ -1612,17 +1609,18 @@ export default function SigmaGraph() {
   }, [])
 
   const scheduleRenderPause = useCallback((delay = 1_200) => {
-    if (autoRotate || particlesEnabled) return
+    if (autoRotate || particlesEnabled || glowEnabled) return
     if (renderPauseTimerRef.current) clearTimeout(renderPauseTimerRef.current)
     renderPauseTimerRef.current = setTimeout(() => {
       fgRef.current?.pauseAnimation?.()
       renderPauseTimerRef.current = null
     }, delay)
-  }, [autoRotate, particlesEnabled])
+  }, [autoRotate, particlesEnabled, glowEnabled])
 
   useEffect(() => {
     if (!fgRef.current) return
     resumeRenderer()
+    fgRef.current?.d3ReheatSimulation?.()
     scheduleRenderPause(1_500)
     return () => {
       if (renderPauseTimerRef.current) {
@@ -1630,7 +1628,7 @@ export default function SigmaGraph() {
         renderPauseTimerRef.current = null
       }
     }
-  }, [graphData, dimensions.width, dimensions.height, autoRotate, particlesEnabled, resumeRenderer, scheduleRenderPause])
+  }, [graphData, dimensions.width, dimensions.height, autoRotate, particlesEnabled, glowEnabled, resumeRenderer, scheduleRenderPause])
 
   // -- Recompute analytics (debounced — 3s after last graph sync) --
   useEffect(() => {
@@ -1677,17 +1675,17 @@ export default function SigmaGraph() {
     const ptLight = new THREE.PointLight(0xffffff, 0.8, 2000)
     ptLight.position.set(0, 300, 200)
     scene.add(ptLight)
-    const ptLight2 = new THREE.PointLight(0x6688ff, 0.5, 2000)
+    const ptLight2 = new THREE.PointLight(0x00579c, 0.5, 2000)
     ptLight2.position.set(-200, -100, 150)
     scene.add(ptLight2)
     // Rim light for dramatic sphere silhouette
-    const rimLight = new THREE.PointLight(0x22d3ee, 0.35, 2000)
+    const rimLight = new THREE.PointLight(0x00579c, 0.35, 2000)
     rimLight.position.set(150, -200, -150)
     scene.add(rimLight)
     // Subtle wireframe sphere shell — reinforces the sphere surface structure
     const wireGeo = new THREE.SphereGeometry(140, 32, 24)
     const wireMat = new THREE.MeshBasicMaterial({
-      color: 0x1e3a5f,
+      color: 0x00579c,
       wireframe: true,
       transparent: true,
       opacity: 0.04,
@@ -1696,46 +1694,15 @@ export default function SigmaGraph() {
     // Inner glow sphere — faint solid sphere for depth perception
     const innerGeo = new THREE.SphereGeometry(137, 32, 24)
     const innerMat = new THREE.MeshBasicMaterial({
-      color: 0x0f172a,
+      color: 0xf4f8fc,
       transparent: true,
       opacity: 0.15,
       side: THREE.BackSide,
     })
     scene.add(new THREE.Mesh(innerGeo, innerMat))
 
-    // Exponential fog is optional; the default demo path keeps it off for smoother rendering.
-    scene.fog = fogEnabled ? new THREE.FogExp2(0x0f172a, 0.0018) : null
-
-    // Star field backdrop — kept lightweight and disabled by default.
-    const starCount = 180
-    const starPositions = new Float32Array(starCount * 3)
-    const starSizes = new Float32Array(starCount)
-    for (let i = 0; i < starCount; i++) {
-      const theta = Math.random() * Math.PI * 2
-      const phi = Math.acos(2 * Math.random() - 1)
-      const r = 450 + Math.random() * 500
-      starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta)
-      starPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta)
-      starPositions[i * 3 + 2] = r * Math.cos(phi)
-      starSizes[i] = 0.3 + Math.random() * 1.2
-    }
-    const starGeo = new THREE.BufferGeometry()
-    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3))
-    starGeo.setAttribute('size', new THREE.BufferAttribute(starSizes, 1))
-    const starMat = new THREE.PointsMaterial({
-      color: 0x6b8db5,
-      size: 0.6,
-      transparent: true,
-      opacity: 0.5,
-      sizeAttenuation: true,
-    })
-    const stars = new THREE.Points(starGeo, starMat)
-    stars.name = '__payflow_stars'
-    stars.visible = starsEnabled
-    scene.add(stars)
-
     // Latitude guide rings — equator and ±35° latitude lines
-    const ringMaterial = new THREE.LineBasicMaterial({ color: 0x1e3a5f, transparent: true, opacity: 0.12 })
+    const ringMaterial = new THREE.LineBasicMaterial({ color: 0x00579c, transparent: true, opacity: 0.12 })
     for (const lat of [0, 35, -35]) {
       const latRad = (lat * Math.PI) / 180
       const ringR = 140 * Math.cos(latRad)
@@ -1768,7 +1735,7 @@ export default function SigmaGraph() {
     // Zoom to fit after simulation settles
     setTimeout(() => fgRef.current?.zoomToFit(800, 40), 2000)
     setTimeout(() => fgRef.current?.zoomToFit(800, 40), 5000)
-  }, [graphData, dimensions, fogEnabled, starsEnabled])
+  }, [graphData, dimensions])
 
   // -- Auto-rotate --
   useEffect(() => {
@@ -1780,50 +1747,32 @@ export default function SigmaGraph() {
     }
   }, [autoRotate])
 
-  // -- Fog toggle --
-  useEffect(() => {
-    if (!fgRef.current) return
-    const scene = fgRef.current.scene()
-    if (scene) {
-      scene.fog = fogEnabled ? new THREE.FogExp2(0x0f172a, 0.0018) : null
-    }
-  }, [fogEnabled])
-
-  // -- Stars toggle --
-  useEffect(() => {
-    if (!fgRef.current) return
-    const scene = fgRef.current.scene()
-    if (!scene) return
-    const stars = scene.getObjectByName('__payflow_stars')
-    if (stars) stars.visible = starsEnabled
-  }, [starsEnabled])
-
   // -- Node color accessor (handles filter/hover/search) --
   const getNodeColor = useCallback((node: FGNode) => {
     const searchLower = searchTerm.toLowerCase()
-    if (searchTerm && !node.id.toLowerCase().includes(searchLower)) return '#2a3a4d'
+    if (searchTerm && !node.id.toLowerCase().includes(searchLower)) return GRAPH_DIMMED_COLOR
     if (hoveredNode) {
       if (node.id === hoveredNode) return node.color
       if (neighborSet.has(node.id)) return node.color
-      return '#2a3a4d'
+      return GRAPH_DIMMED_COLOR
     }
-    if (filter === 'fraud-only' && node.fraudRatio === 0) return '#2a3a4d'
-    if (filter === 'high-risk' && node.status !== 'frozen' && node.status !== 'suspicious') return '#2a3a4d'
+    if (filter === 'fraud-only' && node.fraudRatio === 0) return GRAPH_DIMMED_COLOR
+    if (filter === 'high-risk' && node.status !== 'frozen' && node.status !== 'suspicious') return GRAPH_DIMMED_COLOR
     if (filter === 'cycles') {
-      if (!cycleNodes.has(node.id)) return '#2a3a4d'
-      return '#f59e0b'
+      if (!cycleNodes.has(node.id)) return GRAPH_DIMMED_COLOR
+      return '#f5b400'
     }
     if (filter === 'community') return COMMUNITY_COLORS[node.degree % COMMUNITY_COLORS.length]
-    if (filter === 'threat-path' && (threatLevels.get(node.id) ?? 0) === 0) return '#2a3a4d'
+    if (filter === 'threat-path' && (threatLevels.get(node.id) ?? 0) === 0) return GRAPH_DIMMED_COLOR
     if (filter === 'mule') {
-      if (!muleNodes.has(node.id)) return '#2a3a4d'
-      return '#ff6b6b'
+      if (!muleNodes.has(node.id)) return GRAPH_DIMMED_COLOR
+      return '#DA251C'
     }
     if (filter === 'layering') {
-      if (!layeringNodes.has(node.id)) return '#2a3a4d'
-      return '#a855f7'
+      if (!layeringNodes.has(node.id)) return GRAPH_DIMMED_COLOR
+      return '#00579C'
     }
-    // Heatmap mode: green → yellow → red based on fraudRatio
+    // Heatmap mode: low-to-high color ramp based on fraudRatio.
     if (heatmapMode) {
       const r = Math.min(1, node.fraudRatio ?? 0)
       const red = Math.round(255 * Math.min(1, r * 2))
@@ -1891,18 +1840,18 @@ export default function SigmaGraph() {
   // -- Node tooltip (rich HTML) --
   const getNodeLabel = useCallback((node: FGNode) => {
     const riskLevel = node.fraudRatio > 0.6 ? 'CRITICAL' : node.fraudRatio > 0.3 ? 'HIGH' : node.fraudRatio > 0.1 ? 'MEDIUM' : 'LOW'
-    const riskColor = ({ CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#eab308', LOW: '#22c55e' } as Record<string,string>)[riskLevel]
-    return `<div style="background:rgba(15,23,42,0.95);border:1px solid rgba(71,85,105,0.5);border-radius:8px;padding:8px 12px;min-width:180px;font-family:system-ui;backdrop-filter:blur(8px);">
+    const riskColor = RISK_COLORS[riskLevel]
+    return `<div style="background:rgba(255,255,255,0.96);border:1px solid rgba(0,87,156,0.22);border-radius:8px;padding:8px 12px;min-width:180px;font-family:system-ui;backdrop-filter:blur(8px);box-shadow:0 10px 26px rgba(0,39,76,0.18);">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
-        <span style="font-size:12px;font-family:monospace;color:#e2e8f0;font-weight:600;">${node.id}</span>
+        <span style="font-size:12px;font-family:monospace;color:#24364f;font-weight:600;">${node.id}</span>
         <span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:999px;background:${riskColor}22;color:${riskColor};border:1px solid ${riskColor}44;">${riskLevel}</span>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:#94a3b8;margin-bottom:6px;">
+      <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:#617189;margin-bottom:6px;">
         <span style="padding:2px 6px;border-radius:4px;background:${STATUS_BORDER_COLORS[node.status]}22;color:${STATUS_BORDER_COLORS[node.status]}">${node.status}</span>
         <span>${node.degree} connections</span>
       </div>
-      <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;">Fraud: ${(node.fraudRatio * 100).toFixed(0)}%</div>
-      <div style="width:100%;height:6px;background:#334155;border-radius:999px;overflow:hidden;">
+      <div style="font-size:10px;color:#617189;margin-bottom:4px;">Fraud: ${(node.fraudRatio * 100).toFixed(0)}%</div>
+      <div style="width:100%;height:6px;background:#d7e3f1;border-radius:999px;overflow:hidden;">
         <div style="height:100%;width:${node.fraudRatio * 100}%;background:linear-gradient(90deg,${riskColor}88,${riskColor});border-radius:999px;"></div>
       </div>
       ${node.dominantFraud > 0 ? `<div style="font-size:10px;margin-top:6px;color:${FRAUD_TYPE_COLORS[node.dominantFraud]}">${FRAUD_PATTERN_LABELS[node.dominantFraud] ?? 'Type ' + node.dominantFraud}</div>` : ''}
@@ -1916,21 +1865,21 @@ export default function SigmaGraph() {
     const fmtAmt = link.amount >= 1e7 ? `₹${(link.amount / 1e7).toFixed(2)} Cr` : link.amount >= 1e5 ? `₹${(link.amount / 1e5).toFixed(2)} L` : `₹${(link.amount / 100).toLocaleString()}`
     const channel = Number(link.channel)
     const chLabel = CHANNEL_LABELS[channel] ?? `Ch ${link.channel}`
-    const chColor = CHANNEL_COLORS[channel] ?? '#94a3b8'
+    const chColor = CHANNEL_COLORS[channel] ?? '#617189'
     const isFraud = link.fraud_label > 0
-    const borderClr = isFraud ? FRAUD_TYPE_COLORS[link.fraud_label] + '66' : 'rgba(71,85,105,0.5)'
-    return `<div style="background:rgba(15,23,42,0.97);border:1px solid ${borderClr};border-radius:10px;padding:10px 14px;min-width:200px;font-family:system-ui;backdrop-filter:blur(12px);box-shadow:0 8px 32px rgba(0,0,0,0.4);">
+    const borderClr = isFraud ? FRAUD_TYPE_COLORS[link.fraud_label] + '66' : 'rgba(0,87,156,0.2)'
+    return `<div style="background:rgba(255,255,255,0.97);border:1px solid ${borderClr};border-radius:10px;padding:10px 14px;min-width:200px;font-family:system-ui;backdrop-filter:blur(12px);box-shadow:0 8px 26px rgba(0,39,76,0.18);">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-        <span style="font-size:11px;font-family:monospace;color:#e2e8f0;font-weight:600;">${src.length > 14 ? src.slice(0,7)+'..'+src.slice(-5) : src}</span>
-        <span style="color:#475569;font-size:13px;">→</span>
-        <span style="font-size:11px;font-family:monospace;color:#e2e8f0;font-weight:600;">${tgt.length > 14 ? tgt.slice(0,7)+'..'+tgt.slice(-5) : tgt}</span>
+        <span style="font-size:11px;font-family:monospace;color:#24364f;font-weight:600;">${src.length > 14 ? src.slice(0,7)+'..'+src.slice(-5) : src}</span>
+        <span style="color:#617189;font-size:13px;">→</span>
+        <span style="font-size:11px;font-family:monospace;color:#24364f;font-weight:600;">${tgt.length > 14 ? tgt.slice(0,7)+'..'+tgt.slice(-5) : tgt}</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;font-size:10px;margin-bottom:6px;">
         <span style="padding:2px 8px;border-radius:999px;background:${chColor}22;color:${chColor};border:1px solid ${chColor}33;font-weight:500;">${chLabel}</span>
-        ${isFraud ? `<span style="padding:2px 8px;border-radius:999px;background:${FRAUD_TYPE_COLORS[link.fraud_label]}22;color:${FRAUD_TYPE_COLORS[link.fraud_label]};border:1px solid ${FRAUD_TYPE_COLORS[link.fraud_label]}33;font-weight:600;">⚠ ${FRAUD_PATTERN_LABELS[link.fraud_label] ?? 'Type ' + link.fraud_label}</span>` : '<span style="padding:2px 8px;border-radius:999px;background:#22c55e22;color:#22c55e;font-size:9px;">Clean</span>'}
+        ${isFraud ? `<span style="padding:2px 8px;border-radius:999px;background:${FRAUD_TYPE_COLORS[link.fraud_label]}22;color:${FRAUD_TYPE_COLORS[link.fraud_label]};border:1px solid ${FRAUD_TYPE_COLORS[link.fraud_label]}33;font-weight:600;">Flagged ${FRAUD_PATTERN_LABELS[link.fraud_label] ?? 'Type ' + link.fraud_label}</span>` : '<span style="padding:2px 8px;border-radius:999px;background:#00579C14;color:#00579C;font-size:9px;">Clean</span>'}
       </div>
       <div style="display:flex;align-items:baseline;gap:4px;">
-        <span style="font-size:14px;font-weight:700;color:${isFraud ? '#f87171' : '#34d399'};font-family:monospace;">${fmtAmt}</span>
+        <span style="font-size:14px;font-weight:700;color:${isFraud ? '#DA251C' : '#00579C'};font-family:monospace;">${fmtAmt}</span>
       </div>
     </div>`
   }, [])
@@ -1939,7 +1888,7 @@ export default function SigmaGraph() {
   const nodeThreeObject = useCallback((node: FGNode) => {
     const size = Math.cbrt(getNodeVal(node)) * 2.0
     const color = getNodeColor(node)
-    const isDimmed = color === '#2a3a4d'
+    const isDimmed = color === GRAPH_DIMMED_COLOR
     const isSelected = selectedNode === node.id
     const isHovered = hoveredNode === node.id
     const shouldShowLabel = labelsEnabled && (
@@ -1964,6 +1913,13 @@ export default function SigmaGraph() {
       specular: new THREE.Color(0x444444),
     })
     const sphere = new THREE.Mesh(geo, mat)
+    if (glowEnabled && !isDimmed && node.fraudRatio > 0.08) {
+      const pulseSeed = hashString(`${node.id}:live-glow`) % 1600
+      sphere.onBeforeRender = () => {
+        const wave = (Math.sin((performance.now() + pulseSeed) / 520) + 1) / 2
+        mat.emissiveIntensity = (denseScene ? 0.18 : 0.32) + wave * (node.fraudRatio > 0.35 ? 0.42 : 0.22)
+      }
+    }
 
     // All visible (non-dimmed) nodes get a group for labels; only notable ones get effects
     if (isDimmed) return sphere
@@ -1982,7 +1938,7 @@ export default function SigmaGraph() {
     if (filter === 'cycles' && cycleNodes.has(node.id)) {
       const wireGeo = new THREE.OctahedronGeometry(size * 2.8, 0)
       const wireMat = new THREE.MeshBasicMaterial({
-        color: 0xfbbf24,
+        color: 0xf5b400,
         wireframe: true,
         transparent: true,
         opacity: 0.5,
@@ -2029,7 +1985,7 @@ export default function SigmaGraph() {
         depthWrite: false,
       })
       const pulseRing = new THREE.Mesh(pulseGeo, pulseMat)
-      const startTime = performance.now() + Math.random() * 2000
+      const startTime = performance.now() + (hashString(`${node.id}:pulse`) % 2000)
       pulseRing.onBeforeRender = () => {
         const elapsed = ((performance.now() - startTime) % 2000) / 2000
         const scale = 1 + elapsed * 1.5
@@ -2043,7 +1999,7 @@ export default function SigmaGraph() {
     if (filter === 'mule' && muleNodes.has(node.id)) {
       const muleGeo = new THREE.IcosahedronGeometry(size * 2.5, 0)
       const muleMat = new THREE.MeshBasicMaterial({
-        color: 0xff6b6b,
+        color: 0xda251c,
         wireframe: true,
         transparent: true,
         opacity: 0.6,
@@ -2060,7 +2016,7 @@ export default function SigmaGraph() {
     if (filter === 'layering' && layeringNodes.has(node.id)) {
       const layerRing1 = new THREE.RingGeometry(size * 2.0, size * 2.3, 24)
       const layerMat = new THREE.MeshBasicMaterial({
-        color: 0xa855f7,
+        color: 0x00579c,
         transparent: true,
         opacity: 0.45,
         side: THREE.DoubleSide,
@@ -2084,7 +2040,7 @@ export default function SigmaGraph() {
         const angle = (ci / chCount) * Math.PI * 2
         const dotGeo = new THREE.SphereGeometry(0.25, 6, 6)
         const dotMat = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(CHANNEL_COLORS[ch] ?? '#94a3b8'),
+          color: new THREE.Color(CHANNEL_COLORS[ch] ?? '#617189'),
           transparent: true,
           opacity: 0.8,
         })
@@ -2109,10 +2065,10 @@ export default function SigmaGraph() {
       const primary = new SpriteText(primaryText, 1.6, primaryColor)
       primary.fontFace = 'monospace'
       primary.backgroundColor = node.fraudRatio > 0.3
-        ? 'rgba(127,29,29,0.6)'
-        : node.status === 'frozen' ? 'rgba(127,29,29,0.5)'
-        : node.status === 'suspicious' ? 'rgba(120,80,0,0.5)'
-        : 'rgba(15,23,42,0.7)'
+        ? 'rgba(218,37,28,0.16)'
+        : node.status === 'frozen' ? 'rgba(218,37,28,0.14)'
+        : node.status === 'suspicious' ? 'rgba(245,180,0,0.16)'
+        : 'rgba(255,255,255,0.82)'
       primary.borderRadius = 3
       primary.padding = [1, 2]
       primary.position.y = size + 3.5
@@ -2126,13 +2082,13 @@ export default function SigmaGraph() {
         if (statusTag) badges.push(statusTag)
         if (badges.length > 0) {
           const badgeText = badges.join(' · ')
-          const badgeColor = node.status === 'frozen' ? '#ef4444'
-            : node.status === 'suspicious' ? '#f59e0b'
-            : node.dominantFraud > 0 ? (FRAUD_TYPE_COLORS[node.dominantFraud] ?? '#94a3b8')
-            : '#94a3b8'
+          const badgeColor = node.status === 'frozen' ? '#DA251C'
+            : node.status === 'suspicious' ? '#f5b400'
+            : node.dominantFraud > 0 ? (FRAUD_TYPE_COLORS[node.dominantFraud] ?? '#617189')
+            : '#617189'
           const badge = new SpriteText(badgeText, 1.15, badgeColor)
           badge.fontFace = 'monospace'
-          badge.backgroundColor = 'rgba(15,23,42,0.65)'
+          badge.backgroundColor = 'rgba(255,255,255,0.8)'
           badge.borderRadius = 3
           badge.padding = [0.6, 1.5]
           badge.position.y = size + 6.5
@@ -2221,8 +2177,8 @@ export default function SigmaGraph() {
     return (
       <div className="flex h-full items-center justify-center rounded-xl border border-border-subtle bg-bg-surface">
         <div className="text-center space-y-3">
-          <Network size={32} className="text-slate-600 mx-auto animate-pulse" />
-          <p className="text-xs text-slate-500">Waiting for graph topology…</p>
+          <Network size={32} className="text-[#8a98aa] mx-auto animate-pulse" />
+          <p className="text-xs text-[#617189]">Waiting for graph topology…</p>
           <div className="mx-auto h-1 w-32 overflow-hidden rounded-full bg-bg-elevated">
             <div className="h-full w-1/3 animate-[shimmer_1.5s_ease-in-out_infinite] bg-gradient-to-r from-accent-primary to-alert-critical" />
           </div>
@@ -2261,21 +2217,21 @@ export default function SigmaGraph() {
             if (filter === 'cycles') {
               const src = getLinkSourceId(link)
               const tgt = getLinkTargetId(link)
-              if (cycleNodes.has(src) && cycleNodes.has(tgt)) return '#f59e0b'
+              if (cycleNodes.has(src) && cycleNodes.has(tgt)) return '#f5b400'
             }
             if (filter === 'mule') {
               const src = getLinkSourceId(link)
               const tgt = getLinkTargetId(link)
-              if (muleNodes.has(src) || muleNodes.has(tgt)) return '#ff6b6b'
+              if (muleNodes.has(src) || muleNodes.has(tgt)) return '#DA251C'
             }
             if (filter === 'layering') {
               const src = getLinkSourceId(link)
               const tgt = getLinkTargetId(link)
-              if (layeringNodes.has(src) && layeringNodes.has(tgt)) return '#a855f7'
+              if (layeringNodes.has(src) && layeringNodes.has(tgt)) return '#00579C'
             }
             // Structuring threshold warning color
             const edgeKey = `${getLinkSourceId(link)}->${getLinkTargetId(link)}`
-            if (structuringEdgeKeys.has(edgeKey)) return '#f59e0b'
+            if (structuringEdgeKeys.has(edgeKey)) return '#f5b400'
             return link.color
           }}
           linkWidth={(link: FGLink) => {
@@ -2349,14 +2305,14 @@ export default function SigmaGraph() {
             if (filter === 'cycles') {
               const src = getLinkSourceId(link)
               const tgt = getLinkTargetId(link)
-              if (cycleNodes.has(src) && cycleNodes.has(tgt)) return '#fbbf24'
+              if (cycleNodes.has(src) && cycleNodes.has(tgt)) return '#f5b400'
             }
-            if (filter === 'mule') return '#ff6b6b'
-            if (filter === 'layering') return '#a855f7'
+            if (filter === 'mule') return '#DA251C'
+            if (filter === 'layering') return '#00579C'
             // Structuring gets amber particles
             const edgeKey = `${getLinkSourceId(link)}->${getLinkTargetId(link)}`
-            if (structuringEdgeKeys.has(edgeKey)) return '#f59e0b'
-            return FRAUD_TYPE_COLORS[link.fraud_label] ?? '#3b82f6'
+            if (structuringEdgeKeys.has(edgeKey)) return '#f5b400'
+            return FRAUD_TYPE_COLORS[link.fraud_label] ?? '#00579C'
           }}
           linkLabel={getLinkLabel}
           onNodeClick={handleNodeClick}
@@ -2367,6 +2323,14 @@ export default function SigmaGraph() {
           d3AlphaDecay={1}
           d3VelocityDecay={1}
         />
+
+      <div className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-[#00579C]/25 bg-white/92 px-3 py-1.5 text-[9px] font-bold uppercase tracking-[0.12em] text-[#00579C] shadow-sm backdrop-blur">
+        <Radio className="h-3.5 w-3.5 animate-pulse text-[#DA251C]" />
+        Live graph sync
+        <span className="font-mono text-[#24364f]">{graphData.nodes.length}n</span>
+        <span className="font-mono text-[#24364f]">{graphData.links.length}e</span>
+        <span className="font-mono text-[#617189]">{Math.max(0, Math.round((Date.now() - lastLiveSyncAt) / 1000))}s</span>
+      </div>
 
       {/* Controls overlay */}
       <Graph3DControls
@@ -2391,14 +2355,10 @@ export default function SigmaGraph() {
         setParticlesEnabled={setParticlesEnabled}
         autoRotate={autoRotate}
         setAutoRotate={setAutoRotate}
-        fogEnabled={fogEnabled}
-        setFogEnabled={setFogEnabled}
         glowEnabled={glowEnabled}
         setGlowEnabled={setGlowEnabled}
         labelsEnabled={labelsEnabled}
         setLabelsEnabled={setLabelsEnabled}
-        starsEnabled={starsEnabled}
-        setStarsEnabled={setStarsEnabled}
       />
 
       {/* Selected node detail panel */}
@@ -2406,17 +2366,17 @@ export default function SigmaGraph() {
         <InGraphNodeDetailPanel
           nodeId={selectedNode}
           graph={graphRef.current}
-          edges={edges}
+          edges={visibleEdges}
           onClose={() => setSelectedNode(null)}
           pageRanks={pageRanks}
           betweenness={betweennessMap}
         />
       )}
 
-      <GraphLegend edges={edges} />
+      <GraphLegend edges={visibleEdges} />
       <GraphStatsOverlay
         graph={graphRef.current}
-        edges={edges}
+        edges={visibleEdges}
         clusteringCoeff={clusteringCoeff}
         pageRanks={pageRanks}
         betweenness={betweennessMap}
@@ -2426,22 +2386,19 @@ export default function SigmaGraph() {
       />
       <NetworkRiskGauge
         graph={graphRef.current}
-        edges={edges}
+        edges={visibleEdges}
         clusteringCoeff={clusteringCoeff}
       />
-      <ThreatRadar active={filter === 'threat-path'} />
+      <ThreatRadar
+        active={filter === 'threat-path'}
+        signalCount={
+          [...threatLevels.values()].filter((level) => level >= 0.35).length
+          + muleNodes.size
+          + layeringNodes.size
+          + structuringEdgeKeys.size
+        }
+      />
 
-      {/* 3D navigation hints */}
-      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-3 text-[9px] text-slate-600 select-none">
-        <span>Left-drag: <b className="text-slate-500">rotate</b></span>
-        <span>Right-drag: <b className="text-slate-500">pan</b></span>
-        <span>Scroll: <b className="text-slate-500">zoom</b></span>
-        <span><kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-500 font-mono">P</kbd> particles</span>
-        <span><kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-500 font-mono">R</kbd> rotate</span>
-        <span><kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-500 font-mono">G</kbd> glow</span>
-        <span><kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-500 font-mono">L</kbd> labels</span>
-        <span><kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-500 font-mono">F</kbd> fog</span>
-      </div>
     </div>
   )
 }

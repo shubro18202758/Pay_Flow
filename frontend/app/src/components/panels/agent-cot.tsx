@@ -1,12 +1,15 @@
 // ============================================================================
-// Agent Chain-of-Thought -- Thinking steps, tool calls, verdicts (bottom drawer)
+// Agent Evidence Trace -- public rationale steps, tool calls, verdicts (bottom drawer)
 // Enhanced: expandable entries, tool args preview, confidence bar, evidence tags
 // ============================================================================
 
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { useDashboardStore } from '@/stores/use-dashboard-store'
-import { SeverityBadge, verdictToSeverity } from '@/components/shared/severity-badge'
-import { cn, truncId } from '@/lib/utils'
+import { SeverityBadge } from '@/components/shared/severity-badge'
+import { verdictToSeverity } from '@/lib/severity'
+import { cn, fmtOptionalMs, truncId } from '@/lib/utils'
+import { useLLMStatus } from '@/hooks/use-api'
+import { resolveLLMRuntime } from '@/lib/llm-runtime'
 import type { SSEAgentThinking, SSEAgentToolCall, SSEAgentVerdict } from '@/lib/types'
 import {
   Brain,
@@ -53,7 +56,26 @@ function Expandable({
 }
 
 /* ── Confidence mini-bar ── */
-function ConfidenceBar({ value }: { value: number }) {
+function isFallbackVerdict(d: SSEAgentVerdict): boolean {
+  const evidenceCount = (d.evidence_cited?.length ?? d.evidence?.length ?? 0)
+  return (
+    d.confidence_source === 'deterministic_evidence_fallback' ||
+    d.llm_parse_status?.includes('fallback') ||
+    (d.confidence === 0.5 &&
+      evidenceCount === 0 &&
+      Boolean(d.reasoning_summary?.includes('Unable to reach definitive conclusion')))
+  )
+}
+
+function ConfidenceBar({ value, fallback = false }: { value: number; fallback?: boolean }) {
+  if (fallback || !Number.isFinite(value)) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <div className="w-12 h-1 rounded-full bg-bg-elevated overflow-hidden" />
+        <span className="text-[9px] font-mono tabular-nums text-text-muted">n/a</span>
+      </div>
+    )
+  }
   const pct = Math.round(value * 100)
   const color =
     pct >= 85 ? 'bg-alert-critical' :
@@ -71,15 +93,23 @@ function ConfidenceBar({ value }: { value: number }) {
 }
 
 /* ── Latency badge ── */
-function LatencyBadge({ ms }: { ms: number }) {
-  const color = ms < 100 ? 'text-green-400' : ms < 500 ? 'text-blue-400' : ms < 2000 ? 'text-amber-400' : 'text-red-400'
+function LatencyBadge({ ms }: { ms?: number | null }) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+    return <span className="text-[9px] font-mono tabular-nums text-text-muted">n/a</span>
+  }
+  const color = ms < 100 ? 'text-[#00579C]' : ms < 500 ? 'text-[#00579C]' : ms < 2000 ? 'text-[#DA251C]' : 'text-[#DA251C]'
   return <span className={cn('text-[9px] font-mono tabular-nums', color)}>{ms.toFixed(0)}ms</span>
 }
 
-export function AgentCoT() {
+export function AgentInvestigationTrace() {
   const agentLog = useDashboardStore((s) => s.agentLog)
+  const { data: llmStatus, isLoading: llmStatusLoading, isError: llmStatusError } = useLLMStatus()
   const scrollRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
+  const llmRuntime = resolveLLMRuntime(llmStatus, {
+    loading: llmStatusLoading,
+    error: llmStatusError,
+  })
 
   const thinkingCount = agentLog.filter((e) => e.type === 'thinking').length
   const toolCount = agentLog.filter((e) => e.type === 'tool_call').length
@@ -105,8 +135,11 @@ export function AgentCoT() {
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-border-subtle shrink-0 bg-bg-surface/50">
         <div className="flex items-center gap-2">
           <BrainCircuit className="w-3.5 h-3.5 text-accent-primary" />
-          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
-            Qwen 3.5 Agent CoT
+          <span
+            className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
+            title={`LLM runtime: ${llmRuntime.model} (${llmRuntime.statusLabel})`}
+          >
+            {llmRuntime.model} Evidence Trace
           </span>
         </div>
         <div className="flex items-center gap-2.5">
@@ -147,7 +180,7 @@ export function AgentCoT() {
                 Awaiting agent activity
               </p>
               <p className="text-text-muted/50 text-[9px] mt-1">
-                LangGraph think → act → observe → verdict loop
+                LangGraph evidence to tool to verdict loop
               </p>
             </div>
           </div>
@@ -164,7 +197,7 @@ export function AgentCoT() {
                       <Brain className="w-3 h-3 text-accent-primary shrink-0 mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="text-accent-primary text-[9px] font-bold">THINK</span>
+                          <span className="text-accent-primary text-[9px] font-bold">EVIDENCE</span>
                           <span className="text-text-muted text-[8px]">
                             {truncId(d.txn_id, 8)}
                           </span>
@@ -210,7 +243,7 @@ export function AgentCoT() {
                   <div className="border-l border-border-subtle pl-2 py-1 space-y-1">
                     <div className="flex items-center gap-2 text-[9px]">
                       <Clock className="w-2.5 h-2.5 text-text-muted" />
-                      <span className="text-text-muted">Duration: {d.duration_ms.toFixed(1)}ms</span>
+                      <span className="text-text-muted">Duration: {fmtOptionalMs(d.duration_ms, 1)}</span>
                       <span className={d.success ? 'text-alert-low' : 'text-alert-critical'}>{d.success ? 'SUCCESS' : 'FAILED'}</span>
                     </div>
                     {d.tool_args !== undefined && d.tool_args !== null && (
@@ -229,6 +262,7 @@ export function AgentCoT() {
             /* ── Verdict ── */
             const d = entry.data as SSEAgentVerdict
             const severity = verdictToSeverity(d.verdict)
+            const fallback = isFallbackVerdict(d)
             return (
               <Expandable
                 key={entry.id}
@@ -248,8 +282,13 @@ export function AgentCoT() {
                       <Gavel className="w-3 h-3 text-text-secondary shrink-0" />
                       <SeverityBadge severity={severity} label={d.verdict.toUpperCase()} />
                       <span className="text-text-primary font-bold">{truncId(d.txn_id, 10)}</span>
+                      {fallback && (
+                        <span className="text-[8px] font-bold px-1.5 py-0.5 rounded text-slate-400 bg-slate-500/10">
+                          fallback
+                        </span>
+                      )}
                       <div className="ml-auto">
-                        <ConfidenceBar value={d.confidence} />
+                        <ConfidenceBar value={d.confidence} fallback={fallback} />
                       </div>
                     </div>
                   </div>
@@ -258,13 +297,13 @@ export function AgentCoT() {
                 <div className="border-l border-border-subtle pl-2 py-1.5 space-y-1.5">
                   {d.reasoning_summary && (
                     <div className="text-[9px] text-text-secondary leading-relaxed">
-                      <span className="text-text-muted font-semibold uppercase text-[8px]">Reasoning: </span>
+                      <span className="text-text-muted font-semibold uppercase text-[8px]">Rationale: </span>
                       {d.reasoning_summary}
                     </div>
                   )}
                   {d.evidence && d.evidence.length > 0 && (
                     <div className="flex items-start gap-1.5 text-[9px]">
-                      <AlertTriangle className="w-2.5 h-2.5 text-amber-400 shrink-0 mt-0.5" />
+                      <AlertTriangle className="w-2.5 h-2.5 text-[#DA251C] shrink-0 mt-0.5" />
                       <div className="flex flex-wrap gap-1">
                         {d.evidence.map((ev: string, i: number) => (
                           <span key={i} className="px-1.5 py-0.5 rounded bg-bg-deep text-text-muted text-[8px] font-mono border border-border-subtle">
@@ -283,7 +322,7 @@ export function AgentCoT() {
                   <div className="flex items-center gap-3 text-[8px] text-text-muted tabular-nums">
                     <span><Layers className="w-2 h-2 inline mr-0.5" />{d.thinking_steps} steps</span>
                     <span><Wrench className="w-2 h-2 inline mr-0.5" />{d.tools_used?.length ?? 0} tools</span>
-                    <span><Clock className="w-2 h-2 inline mr-0.5" />{d.total_duration_ms?.toFixed(0)}ms</span>
+                    <span><Clock className="w-2 h-2 inline mr-0.5" />{fmtOptionalMs(d.total_duration_ms)}</span>
                   </div>
                 </div>
               </Expandable>

@@ -135,6 +135,7 @@ class FraudClassifier:
         self._training_metrics: TrainingMetrics | None = None
         self._recent_scores: list[float] = []
         self._MAX_RECENT_SCORES = 2000
+        self._inference_device_logged = False
 
     # ── Training ──────────────────────────────────────────────────────────
 
@@ -212,7 +213,7 @@ class FraudClassifier:
 
         # Evaluate on held-out set for AUCPR
         if X_eval is not None and y_bin_eval is not None:
-            proba = self._model.predict_proba(X_eval)[:, 1]
+            proba = self._predict_proba_array(X_eval)
             from sklearn.metrics import average_precision_score
             metrics.best_aucpr = float(average_precision_score(y_bin_eval, proba))
 
@@ -266,6 +267,27 @@ class FraudClassifier:
 
     # ── Inference ─────────────────────────────────────────────────────────
 
+    def _prepare_inference_device(self) -> None:
+        """
+        XGBoost's sklearn wrapper keeps the trained booster on CUDA. Our feature
+        batches are NumPy CPU arrays, so pin inference to CPU after training to
+        avoid XGBoost's implicit device-mismatch fallback and preserve VRAM for Qwen.
+        """
+        if self._model is None or self._device == "cpu":
+            return
+        try:
+            self._model.set_params(device="cpu")
+            self._model.get_booster().set_param({"device": "cpu"})
+            if not self._inference_device_logged:
+                logger.info("XGBoost inference pinned to CPU to preserve Qwen GPU headroom.")
+                self._inference_device_logged = True
+        except Exception as exc:
+            logger.debug("Could not pin XGBoost inference to CPU: %s", exc)
+
+    def _predict_proba_array(self, X: np.ndarray) -> np.ndarray:
+        self._prepare_inference_device()
+        return self._model.predict_proba(X)[:, 1]
+
     def predict(self, X: np.ndarray) -> PredictionResult:
         """
         Compute fraud probabilities for a feature batch.
@@ -281,7 +303,7 @@ class FraudClassifier:
 
         t0 = time.perf_counter()
         try:
-            proba = self._model.predict_proba(X)[:, 1]
+            proba = self._predict_proba_array(X)
         except Exception as exc:
             # GPU inference failure → rebuild on CPU and retry
             logger.warning("GPU predict failed (%s). Retrying on CPU.", exc)
@@ -306,7 +328,7 @@ class FraudClassifier:
         if not self._is_fitted:
             raise RuntimeError("Classifier not trained. Call train() first.")
         try:
-            return self._model.predict_proba(X)[:, 1]
+            return self._predict_proba_array(X)
         except Exception:
             return self._cpu_fallback_predict(X)
 

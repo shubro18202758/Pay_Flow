@@ -1,8 +1,8 @@
 // ============================================================================
-// Pre-Fraud Intel Page -- preventive OSINT/SOCMINT cockpit for Union Bank PS3
+// Pre-Fraud Intel Page -- preventive OSINT/SOCMINT cockpit for Union Bank fund-flow operations
 // ============================================================================
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Area,
   AreaChart,
@@ -12,7 +12,6 @@ import {
   Cell,
   Pie,
   PieChart,
-  ResponsiveContainer,
   Tooltip,
   Line,
   LineChart,
@@ -51,11 +50,14 @@ import {
   useIntelTrends,
   useIntelTuningStatus,
   useLaunchPS3Scenario,
+  useLLMStatus,
   useRefreshIntel,
   useSimulateIntelSignal,
 } from '@/hooks/use-api'
+import { useRoleAccess } from '@/hooks/use-rbac'
 import { useUIStore } from '@/stores/use-ui-store'
 import { cn } from '@/lib/utils'
+import { resolveLLMRuntime } from '@/lib/llm-runtime'
 import type {
   AdaptivePlaybook,
   ExternalThreatSignal,
@@ -64,14 +66,22 @@ import type {
   IntelGeoHotspot,
   IntelMediaPreview,
   IntelSourceConfig,
+  PS3ScenarioId,
 } from '@/lib/types'
 
-const DEMO_SCENARIOS = [
+const INTEL_SCENARIOS = [
   { id: 'digital_arrest_mule', label: 'Digital Arrest Mule Burst' },
   { id: 'kyc_phishing', label: 'KYC APK Phishing' },
   { id: 'loan_app_mule', label: 'Loan App Collections' },
   { id: 'investment_scam', label: 'Investment Scam Chain' },
 ]
+
+const INTEL_TO_PS3_SCENARIO: Record<string, PS3ScenarioId> = {
+  digital_arrest_mule: 'rapid_layering',
+  kyc_phishing: 'profile_mismatch',
+  loan_app_mule: 'rapid_layering',
+  investment_scam: 'round_tripping',
+}
 
 const CHART_COLORS = ['#22d3ee', '#34d399', '#f59e0b', '#fb7185', '#a78bfa', '#60a5fa']
 
@@ -80,7 +90,7 @@ function pct(value: number | undefined) {
 }
 
 function timeLabel(value: number | null | undefined) {
-  if (!value) return 'not polled'
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 'not polled'
   return new Date(value * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
@@ -91,34 +101,37 @@ function ageLabel(seconds: number | null | undefined) {
   return `${Math.round(seconds / 3600)}h ago`
 }
 
-function xmlEscape(value: string) {
-  return value.replace(/[<>&"']/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[ch] ?? ch)
-}
-
-function thumbnailPalette(key: string) {
-  if (key.includes('kyc')) return ['#0f766e', '#22d3ee', '#f59e0b']
-  if (key.includes('loan')) return ['#7c2d12', '#fb923c', '#34d399']
-  if (key.includes('investment')) return ['#14532d', '#84cc16', '#38bdf8']
-  if (key.includes('dormant')) return ['#312e81', '#a78bfa', '#f43f5e']
-  if (key.includes('layering')) return ['#1e1b4b', '#a78bfa', '#22d3ee']
-  return ['#082f49', '#22d3ee', '#fb7185']
-}
-
-function stableNumber(value: string) {
-  return value.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0)
+function youtubeThumbnailUrl(preview: IntelMediaPreview) {
+  const rawUrl = preview.video_embed_url || preview.video_page_url || preview.media_url || preview.source_url
+  if (!rawUrl) return ''
+  try {
+    const url = new URL(rawUrl)
+    let videoId = ''
+    if (url.hostname.includes('youtu.be')) {
+      videoId = url.pathname.split('/').filter(Boolean)[0] ?? ''
+    } else if (url.hostname.includes('youtube.com')) {
+      const parts = url.pathname.split('/').filter(Boolean)
+      videoId = url.searchParams.get('v') || (parts[0] === 'embed' ? parts[1] : '') || ''
+    }
+    return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : ''
+  } catch {
+    return ''
+  }
 }
 
 function mediaUrl(preview: IntelMediaPreview) {
   const status = mediaStatus(preview)
-  if (status === 'real_video_embed') return preview.thumbnail_url || preview.publisher_logo_url || ''
+  if (status === 'source_card') return preview.publisher_logo_url || ''
+  if (status === 'real_video_embed') return youtubeThumbnailUrl(preview) || preview.thumbnail_url || preview.image_url || preview.publisher_logo_url || ''
   return preview.thumbnail_url || preview.image_url || preview.media_url || ''
 }
 
 function mediaStatus(preview: IntelMediaPreview) {
+  if (preview.preview_status === 'generated_fallback' || preview.preview_status === 'broken') return 'source_card'
   if (preview.preview_status) return preview.preview_status
   if (preview.image_status === 'real_image' || preview.image_status === 'real_video_embed') return preview.image_status
   if (preview.media_origin === 'publisher_logo') return 'publisher_logo_only'
-  if (preview.media_origin === 'generated_poster') return 'generated_fallback'
+  if (preview.media_origin === 'generated_poster') return 'source_card'
   if (['gdelt_social_image', 'open_graph_image', 'live_image', 'bing_news_image'].includes(String(preview.media_origin))) return 'real_image'
   return 'source_card'
 }
@@ -139,10 +152,6 @@ function isSourceCard(preview: IntelMediaPreview) {
   return ['source_card', 'publisher_logo_only'].includes(mediaStatus(preview))
 }
 
-function isFallbackMedia(preview: IntelMediaPreview) {
-  return mediaStatus(preview) === 'generated_fallback' || mediaStatus(preview) === 'broken'
-}
-
 function mediaRank(preview: IntelMediaPreview) {
   if (isRealVideo(preview)) return 0
   if (isRealImage(preview)) return 1
@@ -157,78 +166,20 @@ function mediaOriginLabel(preview: IntelMediaPreview) {
   if (status === 'real_image') return 'real image'
   if (status === 'source_card') return 'source card'
   if (status === 'publisher_logo_only') return 'publisher logo only'
-  if (status === 'generated_fallback') return 'fallback'
   const origin = preview.media_origin || (mediaUrl(preview) ? 'live_image' : 'generated_poster')
   if (origin === 'gdelt_social_image') return 'live news image'
   if (origin === 'open_graph_image') return 'source page image'
   if (origin === 'live_image') return 'live source image'
   if (origin === 'publisher_logo') return 'publisher signal'
-  return 'generated fallback'
-}
-
-function mediaSvgDataUri(preview: IntelMediaPreview) {
-  const [bg, accent, hot] = thumbnailPalette(preview.thumbnail_key)
-  const seed = stableNumber(`${preview.media_id}-${preview.title}-${preview.source_kind}`)
-  const waveA = 208 + (seed % 44)
-  const waveB = 140 + (seed % 58)
-  const orbX = 420 + (seed % 96)
-  const orbY = 82 + (seed % 72)
-  const barWidth = 260 + (seed % 220)
-  const words = preview.title.split(/\s+/)
-  const lines: string[] = []
-  for (const word of words) {
-    const current = lines[lines.length - 1] ?? ''
-    if (!current) lines.push(word)
-    else if (`${current} ${word}`.length <= 34) lines[lines.length - 1] = `${current} ${word}`
-    else if (lines.length < 2) lines.push(word)
-  }
-  if (lines.length === 2 && words.join(' ').length > lines.join(' ').length) {
-    lines[1] = `${lines[1].slice(0, 31)}...`
-  }
-  const kind = xmlEscape(preview.source_kind.toUpperCase())
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
-      <defs>
-        <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
-          <stop offset="0" stop-color="${bg}"/>
-          <stop offset="0.58" stop-color="#020617"/>
-          <stop offset="1" stop-color="#0f172a"/>
-        </linearGradient>
-        <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
-          <path d="M 28 0 L 0 0 0 28" fill="none" stroke="${accent}" stroke-opacity=".12" stroke-width="1"/>
-        </pattern>
-      </defs>
-      <rect width="640" height="360" fill="url(#g)"/>
-      <rect width="640" height="360" fill="url(#grid)"/>
-      <circle cx="${orbX}" cy="${orbY}" r="${74 + (seed % 28)}" fill="${accent}" opacity=".13"/>
-      <circle cx="${orbX + 42}" cy="${orbY + 38}" r="${34 + (seed % 22)}" fill="${hot}" opacity=".18"/>
-      <path d="M70 ${waveA} C160 ${waveB},210 ${waveA + 54},312 ${waveB + 30} S472 ${waveB - 24},570 ${waveA - 8}" stroke="${accent}" stroke-width="7" fill="none" stroke-opacity=".8"/>
-      <path d="M70 ${waveA + 36} C158 ${waveB + 42},232 ${waveA + 82},328 ${waveB + 70} S460 ${waveB + 48},570 ${waveA + 46}" stroke="${hot}" stroke-width="4" fill="none" stroke-opacity=".65"/>
-      <g opacity=".85">
-        <circle cx="92" cy="248" r="10" fill="${accent}"/>
-        <circle cx="206" cy="264" r="14" fill="${hot}"/>
-        <circle cx="326" cy="211" r="12" fill="${accent}"/>
-        <circle cx="470" cy="169" r="16" fill="${hot}"/>
-        <circle cx="568" cy="207" r="11" fill="${accent}"/>
-      </g>
-      <rect x="32" y="30" width="182" height="28" rx="6" fill="#020617" opacity=".72" stroke="${accent}" stroke-opacity=".5"/>
-      <text x="44" y="49" fill="${accent}" font-family="Arial, sans-serif" font-size="13" font-weight="700">${kind}</text>
-      <text x="34" y="96" fill="#f8fafc" font-family="Arial, sans-serif" font-size="25" font-weight="800">${xmlEscape(lines[0] ?? preview.title.slice(0, 34))}</text>
-      <text x="34" y="126" fill="#f8fafc" font-family="Arial, sans-serif" font-size="25" font-weight="800">${xmlEscape(lines[1] ?? '')}</text>
-      <text x="36" y="158" fill="#94a3b8" font-family="Arial, sans-serif" font-size="14">Public-source preview | India banking fraud intelligence</text>
-      <rect x="36" y="295" width="568" height="8" rx="4" fill="#0f172a" opacity=".88"/>
-      <rect x="36" y="295" width="${barWidth}" height="8" rx="4" fill="${accent}"/>
-      <text x="36" y="316" fill="#cbd5e1" font-family="Arial, sans-serif" font-size="11" font-weight="700">GENERATED FALLBACK | NO VERIFIED MEDIA THUMBNAIL</text>
-    </svg>`
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+  return 'source card'
 }
 
 function ToneBadge({ label, tone = 'slate' }: { label: string; tone?: 'slate' | 'emerald' | 'amber' | 'rose' | 'cyan' }) {
   const classes = {
-    emerald: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300',
-    amber: 'border-amber-400/30 bg-amber-500/10 text-amber-300',
-    rose: 'border-rose-400/30 bg-rose-500/10 text-rose-300',
-    cyan: 'border-cyan-400/30 bg-cyan-500/10 text-cyan-200',
+    emerald: 'border-[#00579C]/30 bg-[#00579C]/10 text-[#00579C]',
+    amber: 'border-[#DA251C]/30 bg-[#DA251C]/10 text-[#DA251C]',
+    rose: 'border-[#DA251C]/30 bg-[#DA251C]/10 text-[#DA251C]',
+    cyan: 'border-[#00579C]/30 bg-[#00579C]/10 text-[#00579C]',
     slate: 'border-border-default bg-bg-overlay text-text-muted',
   }[tone]
   return (
@@ -274,44 +225,162 @@ function Panel({
   )
 }
 
+function ChartFrame({
+  children,
+  className = 'h-[220px] p-2',
+}: {
+  children: (size: { width: number; height: number }) => React.ReactNode
+  className?: string
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [size, setSize] = useState({ width: 0, height: 0 })
+
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) return
+
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect()
+      const width = Math.floor(rect.width)
+      const height = Math.floor(rect.height)
+      if (width > 0 && height > 0) {
+        setSize((current) => (
+          current.width === width && current.height === height
+            ? current
+            : { width, height }
+        ))
+      }
+    }
+
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <div ref={ref} className={className}>
+      {size.width > 0 && size.height > 0 ? children(size) : null}
+    </div>
+  )
+}
+
+function SourceMediaFallback({
+  preview,
+  className,
+}: {
+  preview: Pick<IntelMediaPreview, 'publisher' | 'publisher_logo_url' | 'source_domain' | 'source_kind' | 'source_url'>
+  className?: string
+}) {
+  return (
+    <div
+      className={cn(
+        'flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-[#00579C]/20 bg-[linear-gradient(135deg,#ffffff_0%,#eef6ff_55%,#d8ecff_100%)]',
+        className,
+      )}
+      title={preview.source_domain || preview.source_url || preview.publisher}
+    >
+      <div className="flex min-w-0 flex-col items-center gap-1 px-2 text-center">
+        <div className="flex h-8 w-8 items-center justify-center rounded-md border border-[#00579C]/15 bg-white text-[#00579C] shadow-sm">
+          {preview.publisher_logo_url ? (
+            <img src={preview.publisher_logo_url} alt="" className="h-5 w-5 object-contain" />
+          ) : (
+            <Newspaper className="h-4 w-4" />
+          )}
+        </div>
+        <div className="max-w-full truncate text-[7px] font-extrabold uppercase tracking-[0.08em] text-[#00579C]">
+          {preview.source_kind || 'source'}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MediaThumbnail({ preview, className }: { preview: IntelMediaPreview; className?: string }) {
+  const [failed, setFailed] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const thumb = mediaUrl(preview)
+
+  return (
+    <div className={cn('relative shrink-0 overflow-hidden rounded-md border border-border-subtle bg-white', className)}>
+      <SourceMediaFallback preview={preview} className="absolute inset-0 h-full w-full rounded-none border-0" />
+      {thumb && !failed && (
+      <img
+        src={thumb}
+        alt=""
+        onError={() => setFailed(true)}
+        onLoad={() => setLoaded(true)}
+        className={cn(
+          'absolute inset-0 h-full w-full object-cover transition-opacity',
+          loaded ? 'opacity-100' : 'opacity-0',
+          isSourceCard(preview) && 'object-contain p-3',
+        )}
+      />
+      )}
+    </div>
+  )
+}
+
 function MediaPreviewCard({ preview, prominent = false }: { preview: IntelMediaPreview; prominent?: boolean }) {
-  const generatedPoster = mediaSvgDataUri(preview)
   const status = mediaStatus(preview)
   const sourceCard = isSourceCard(preview)
-  const fallbackOnly = isFallbackMedia(preview)
   const realImage = isRealImage(preview)
   const realVideo = isRealVideo(preview)
-  const poster = realImage ? mediaUrl(preview) : (fallbackOnly ? generatedPoster : '')
-  const statusTone: 'amber' | 'emerald' | 'rose' = realImage || realVideo ? 'emerald' : fallbackOnly ? 'rose' : 'amber'
+  const [visualFailed, setVisualFailed] = useState(false)
+  const [visualLoaded, setVisualLoaded] = useState(false)
+  const poster = mediaUrl(preview)
+  const showLiveVisual = Boolean((realImage || realVideo) && poster && !visualFailed)
+  const statusTone: 'amber' | 'emerald' = realImage || realVideo ? 'emerald' : 'amber'
   return (
     <article className={cn('group relative overflow-hidden rounded-lg border border-border-subtle bg-bg-elevated/60', prominent ? 'min-h-[270px]' : 'min-h-[184px]')}>
       {realVideo ? (
-        <iframe
-          src={preview.video_embed_url ?? undefined}
-          title={preview.title}
-          loading="lazy"
-          referrerPolicy="no-referrer-when-downgrade"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          className="absolute inset-0 h-full w-full border-0 bg-[#071427]"
-        />
+        <div className="absolute inset-0 bg-[linear-gradient(135deg,#071427_0%,#0d3260_56%,#0b162b_100%)]">
+          <SourceMediaFallback preview={preview} className="absolute inset-0 h-full w-full rounded-none border-0 opacity-80" />
+          {showLiveVisual && (
+            <img
+              src={poster}
+              alt={preview.caption || preview.title}
+              onError={() => setVisualFailed(true)}
+              onLoad={() => setVisualLoaded(true)}
+              className={cn(
+                'absolute inset-0 h-full w-full object-cover transition-opacity duration-300',
+                visualLoaded ? 'opacity-95' : 'opacity-0',
+              )}
+            />
+          )}
+          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(7,20,39,0.12),rgba(7,20,39,0.25)_45%,rgba(3,11,22,0.88))]" />
+          <div className="absolute inset-x-0 top-0 h-1.5 bg-[linear-gradient(90deg,#DA251C,#00579C)]" />
+          <div className="absolute left-5 top-6 flex items-center gap-3 rounded-lg border border-white/15 bg-black/35 px-3 py-2 backdrop-blur-sm">
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-white/20 bg-white/10 shadow-[0_0_24px_rgba(218,37,28,0.3)]">
+              <Video className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-white/75">Live provider thumbnail</div>
+              <div className="mt-1 max-w-[210px] truncate text-[11px] font-semibold text-white">{preview.source_domain ?? preview.source_kind}</div>
+            </div>
+          </div>
+        </div>
       ) : realImage ? (
-        <img
-          src={poster}
-          alt={preview.caption}
-          onError={(event) => { event.currentTarget.src = preview.publisher_logo_url || generatedPoster }}
-          className="absolute inset-0 h-full w-full object-cover opacity-90"
-        />
-      ) : fallbackOnly ? (
-        <img
-          src={generatedPoster}
-          alt={preview.caption}
-          className="absolute inset-0 h-full w-full object-cover opacity-90"
-        />
+        <div className="absolute inset-0">
+          <SourceMediaFallback preview={preview} className="absolute inset-0 h-full w-full rounded-none border-0" />
+          {showLiveVisual && (
+            <img
+              src={poster}
+              alt={preview.caption || preview.title}
+              onError={() => setVisualFailed(true)}
+              onLoad={() => setVisualLoaded(true)}
+              className={cn(
+                'absolute inset-0 h-full w-full object-cover transition-opacity duration-300',
+                visualLoaded ? 'opacity-95' : 'opacity-0',
+              )}
+            />
+          )}
+        </div>
       ) : (
         <div className="absolute inset-0 bg-[linear-gradient(135deg,#ffffff_0%,#eef6ff_55%,#d8ecff_100%)]">
-          <div className="absolute inset-x-0 top-0 h-1.5 bg-[linear-gradient(90deg,#ed1b24,#0057a8)]" />
+          <div className="absolute inset-x-0 top-0 h-1.5 bg-[linear-gradient(90deg,#DA251C,#00579C)]" />
           <div className="absolute left-5 top-6 flex items-center gap-3">
-            <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-[#0057a8]/20 bg-white shadow-sm">
+            <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-[#00579C]/20 bg-white shadow-sm">
               {preview.publisher_logo_url ? (
                 <img src={preview.publisher_logo_url} alt="" className="h-10 w-10 object-contain" />
               ) : (
@@ -325,13 +394,13 @@ function MediaPreviewCard({ preview, prominent = false }: { preview: IntelMediaP
             </div>
           </div>
           <div className="absolute inset-x-5 bottom-5 rounded-lg border border-border-subtle bg-white/85 p-3 shadow-sm">
-            <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.12em] text-amber-600">Source card | no verified article media</div>
+            <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.12em] text-[#DA251C]">Source card | no verified article media</div>
             <div className="line-clamp-2 text-[13px] font-semibold leading-snug text-text-primary">{preview.title}</div>
             <a
               href={preview.video_page_url || preview.source_url}
               target="_blank"
               rel="noreferrer"
-              className="mt-2 inline-flex items-center gap-1 rounded bg-[#0057a8] px-2 py-1 text-[8px] font-bold uppercase tracking-[0.08em] text-white"
+              className="mt-2 inline-flex items-center gap-1 rounded bg-[#00579C] px-2 py-1 text-[8px] font-bold uppercase tracking-[0.08em] text-white"
             >
               Open source
               <ExternalLink className="h-3 w-3" />
@@ -352,7 +421,7 @@ function MediaPreviewCard({ preview, prominent = false }: { preview: IntelMediaP
       )}
       <div className={cn('absolute inset-x-0 bottom-0 p-3', sourceCard && 'hidden')}>
         <div className="mb-1 flex items-center gap-2 text-[9px] uppercase tracking-[0.12em] text-white/80">
-          {realVideo ? <Film className="h-3.5 w-3.5 text-rose-300" /> : <ImageIcon className="h-3.5 w-3.5 text-cyan-300" />}
+          {realVideo ? <Film className="h-3.5 w-3.5 text-[#DA251C]" /> : <ImageIcon className="h-3.5 w-3.5 text-[#00579C]" />}
           <span className="truncate">{preview.source_domain || preview.publisher}</span>
         </div>
         <h3 className={cn('line-clamp-2 font-semibold leading-tight text-white', prominent ? 'text-base' : 'text-[12px]')} title={preview.title}>
@@ -361,7 +430,7 @@ function MediaPreviewCard({ preview, prominent = false }: { preview: IntelMediaP
         <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-white/80">{preview.caption}</p>
         <div className="mt-2 flex flex-wrap gap-1.5">
           {preview.image_status && (
-            <span className="rounded bg-white/85 px-2 py-0.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-[#0057a8]">
+            <span className="rounded bg-white/85 px-2 py-0.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-[#00579C]">
               {status.replace(/_/g, ' ')}
             </span>
           )}
@@ -376,7 +445,7 @@ function MediaPreviewCard({ preview, prominent = false }: { preview: IntelMediaP
             href={preview.video_page_url || preview.source_url}
             target="_blank"
             rel="noreferrer"
-            className="mt-2 inline-flex items-center gap-1 rounded bg-white/85 px-2 py-1 text-[8px] font-bold uppercase tracking-[0.08em] text-[#0057a8]"
+            className="mt-2 inline-flex items-center gap-1 rounded bg-white/85 px-2 py-1 text-[8px] font-bold uppercase tracking-[0.08em] text-[#00579C]"
           >
             Open source
             <ExternalLink className="h-3 w-3" />
@@ -387,7 +456,7 @@ function MediaPreviewCard({ preview, prominent = false }: { preview: IntelMediaP
   )
 }
 
-type MediaFilter = 'all' | 'images' | 'videos' | 'source_cards' | 'fallbacks'
+type MediaFilter = 'all' | 'images' | 'videos' | 'source_cards'
 
 function MediaCommandDeck({ previews }: { previews: IntelMediaPreview[] }) {
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -397,7 +466,6 @@ function MediaCommandDeck({ previews }: { previews: IntelMediaPreview[] }) {
     if (filter === 'images') return isRealImage(preview)
     if (filter === 'videos') return isVideoSource(preview)
     if (filter === 'source_cards') return isSourceCard(preview)
-    if (filter === 'fallbacks') return isFallbackMedia(preview)
     return true
   }), [filter, sorted])
   const selected = filtered.find((preview) => preview.media_id === activeId) ?? filtered[0]
@@ -406,7 +474,6 @@ function MediaCommandDeck({ previews }: { previews: IntelMediaPreview[] }) {
     { id: 'images', label: 'Images', count: sorted.filter(isRealImage).length },
     { id: 'videos', label: 'Videos', count: sorted.filter(isVideoSource).length },
     { id: 'source_cards', label: 'Source Cards', count: sorted.filter(isSourceCard).length },
-    { id: 'fallbacks', label: 'Fallbacks', count: sorted.filter(isFallbackMedia).length },
   ]
   if (!sorted.length) return null
   return (
@@ -431,7 +498,7 @@ function MediaCommandDeck({ previews }: { previews: IntelMediaPreview[] }) {
         ))}
       </div>
       {filters.find((item) => item.id === 'videos')?.count === 0 && (
-        <div className="rounded-md border border-amber-400/35 bg-amber-500/10 px-3 py-2 text-[9px] font-semibold text-amber-700">
+        <div className="rounded-md border border-[#DA251C]/35 bg-[#DA251C]/10 px-3 py-2 text-[9px] font-semibold text-[#DA251C]">
           No verified public video source found in the current pulse. Embeds appear only when public provider metadata is available.
         </div>
       )}
@@ -450,7 +517,6 @@ function MediaCommandDeck({ previews }: { previews: IntelMediaPreview[] }) {
         <MediaPreviewCard preview={selected} prominent />
         <div className="min-h-0 max-h-[420px] space-y-2 overflow-auto pr-1">
           {filtered.slice(0, 14).map((preview) => {
-            const thumb = isFallbackMedia(preview) ? mediaSvgDataUri(preview) : mediaUrl(preview)
             return (
               <button
                 key={preview.media_id}
@@ -462,24 +528,10 @@ function MediaCommandDeck({ previews }: { previews: IntelMediaPreview[] }) {
                     : 'border-border-subtle bg-bg-elevated/45 hover:border-border-default',
                 )}
               >
-                {thumb ? (
-                  <img
-                    src={thumb}
-                    alt=""
-                    onError={(event) => { event.currentTarget.src = mediaSvgDataUri(preview) }}
-                    className={cn(
-                      'h-16 w-24 shrink-0 rounded-md border border-border-subtle bg-white object-cover',
-                      isSourceCard(preview) && 'object-contain p-3',
-                    )}
-                  />
-                ) : (
-                  <div className="flex h-16 w-24 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-white">
-                    <Newspaper className="h-6 w-6 text-accent-primary" />
-                  </div>
-                )}
+                <MediaThumbnail preview={preview} className="h-16 w-24" />
                 <div className="min-w-0">
                   <div className="mb-1 flex items-center gap-1.5 text-[8px] uppercase tracking-[0.12em] text-text-muted">
-                    {isRealVideo(preview) ? <Video className="h-3 w-3 text-rose-300" /> : <ImageIcon className="h-3 w-3 text-cyan-300" />}
+                    {isRealVideo(preview) ? <Video className="h-3 w-3 text-[#DA251C]" /> : <ImageIcon className="h-3 w-3 text-[#00579C]" />}
                     {mediaOriginLabel(preview)} | {preview.source_kind}
                   </div>
                   <div className="line-clamp-2 text-[10px] font-semibold text-text-primary">{preview.title}</div>
@@ -501,9 +553,9 @@ function LiveVelocityChart({ cockpit }: { cockpit?: IntelCockpitResponse }) {
   const data = cockpit?.signal_timeline ?? []
   return (
     <Panel title="Live Signal Velocity" icon={Activity} badge={`${cockpit?.metrics.live_mentions ?? 0} mentions`}>
-      <div className="h-[220px] p-2">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data}>
+      <ChartFrame>
+        {({ width, height }) => (
+          <AreaChart width={width} height={height} data={data}>
             <defs>
               <linearGradient id="officialFill" x1="0" x2="0" y1="0" y2="1">
                 <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.7} />
@@ -522,8 +574,8 @@ function LiveVelocityChart({ cockpit }: { cockpit?: IntelCockpitResponse }) {
             <Area type="monotone" dataKey="news" stackId="1" stroke="#34d399" fill="#34d39922" strokeWidth={2} />
             <Area type="monotone" dataKey="social" stackId="1" stroke="#fb7185" fill="url(#socialFill)" strokeWidth={2} />
           </AreaChart>
-        </ResponsiveContainer>
-      </div>
+        )}
+      </ChartFrame>
     </Panel>
   )
 }
@@ -532,9 +584,9 @@ function ChannelExposureChart({ cockpit }: { cockpit?: IntelCockpitResponse }) {
   const data = cockpit?.channel_exposure ?? []
   return (
     <Panel title="Channel Exposure" icon={Zap}>
-      <div className="h-[220px] p-2">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} layout="vertical" margin={{ left: 8, right: 12, top: 4, bottom: 4 }}>
+      <ChartFrame>
+        {({ width, height }) => (
+          <BarChart width={width} height={height} data={data} layout="vertical" margin={{ left: 8, right: 12, top: 4, bottom: 4 }}>
             <CartesianGrid stroke="rgba(148,163,184,0.08)" horizontal={false} />
             <XAxis type="number" domain={[0, 1]} hide />
             <YAxis type="category" dataKey="channel" width={72} tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
@@ -543,8 +595,8 @@ function ChannelExposureChart({ cockpit }: { cockpit?: IntelCockpitResponse }) {
               {data.map((_, index) => <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
             </Bar>
           </BarChart>
-        </ResponsiveContainer>
-      </div>
+        )}
+      </ChartFrame>
     </Panel>
   )
 }
@@ -553,20 +605,20 @@ function SourceVelocityPanel({ cockpit }: { cockpit?: IntelCockpitResponse }) {
   const data = cockpit?.source_velocity_series ?? []
   return (
     <Panel title="Source Velocity By Tier" icon={Activity} badge={`${data.length} buckets`}>
-      <div className="h-[220px] p-2">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data}>
+      <ChartFrame>
+        {({ width, height }) => (
+          <LineChart width={width} height={height} data={data}>
             <CartesianGrid stroke="rgba(0,87,168,0.10)" vertical={false} />
             <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} minTickGap={18} />
             <YAxis tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} width={28} />
             <Tooltip contentStyle={{ background: '#ffffff', border: '1px solid #c6d3e3', borderRadius: 8, color: '#172033', fontSize: 11 }} />
-            <Line type="monotone" dataKey="official" stroke="#0057a8" strokeWidth={2.2} dot={false} />
+            <Line type="monotone" dataKey="official" stroke="#00579C" strokeWidth={2.2} dot={false} />
             <Line type="monotone" dataKey="news" stroke="#10b981" strokeWidth={2} dot={false} />
             <Line type="monotone" dataKey="social" stroke="#f59e0b" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="open_web" stroke="#d71920" strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="open_web" stroke="#DA251C" strokeWidth={2} dot={false} />
           </LineChart>
-        </ResponsiveContainer>
-      </div>
+        )}
+      </ChartFrame>
     </Panel>
   )
 }
@@ -638,25 +690,24 @@ function MediaEvidenceMatrixPanel({ cockpit }: { cockpit?: IntelCockpitResponse 
   const live = cockpit?.metrics.live_media_items ?? 0
   const videos = cockpit?.metrics.real_videos ?? 0
   const sourceCards = (cockpit?.metrics.source_cards ?? 0) + (cockpit?.metrics.publisher_logo_only ?? 0)
-  const fallback = cockpit?.metrics.generated_fallbacks ?? Math.max(0, total - live - sourceCards)
+  const noThumbnailCards = sourceCards + (cockpit?.metrics.generated_fallbacks ?? Math.max(0, total - live - sourceCards))
   const health = cockpit?.metrics.media_health ?? (total > 0 ? live / total : 0)
   const official = rows.reduce((sum, row) => sum + row.official, 0)
   const news = rows.reduce((sum, row) => sum + row.news, 0)
   const statusRows = [
     { label: 'Verified source media', value: live, ratio: total > 0 ? live / total : 0 },
     { label: 'Verified video embeds', value: videos, ratio: total > 0 ? videos / total : 0 },
-    { label: 'Source cards', value: sourceCards, ratio: total > 0 ? sourceCards / total : 0 },
+    { label: 'No-thumbnail source cards', value: noThumbnailCards, ratio: total > 0 ? noThumbnailCards / total : 0 },
     { label: 'Official-source previews', value: official, ratio: total > 0 ? official / total : 0 },
     { label: 'News-source previews', value: news, ratio: total > 0 ? news / total : 0 },
-    { label: 'Generated fallback posters', value: fallback, ratio: total > 0 ? fallback / total : 0 },
   ]
   return (
     <Panel title="Media Evidence Health" icon={ImageIcon} badge={`${live} real`}>
       <div className="space-y-2 p-3">
         <div className="grid grid-cols-3 gap-2">
-          <Metric label="Health" value={pct(health)} accent="text-emerald-300" />
+          <Metric label="Health" value={pct(health)} accent="text-[#00579C]" />
           <Metric label="Real" value={`${live}/${total}`} accent="text-accent-primary" />
-          <Metric label="Fallback" value={String(fallback)} accent={fallback > 0 ? 'text-amber-300' : 'text-emerald-300'} />
+          <Metric label="Source Cards" value={String(noThumbnailCards)} accent={noThumbnailCards > 0 ? 'text-[#DA251C]' : 'text-[#00579C]'} />
         </div>
         {rows.map((row) => (
           <div key={row.origin} className="rounded-md border border-border-subtle bg-bg-elevated/55 p-2">
@@ -698,15 +749,15 @@ function SourceMixPanel({ cockpit }: { cockpit?: IntelCockpitResponse }) {
   return (
     <Panel title="Source Trust Mix" icon={Landmark}>
       <div className="grid grid-cols-[150px_minmax(0,1fr)] gap-2 p-3">
-        <div className="h-[160px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
+        <ChartFrame className="h-[160px]">
+          {({ width, height }) => (
+            <PieChart width={width} height={height}>
               <Pie data={data} dataKey="signals" innerRadius={42} outerRadius={68} paddingAngle={3}>
                 {data.map((_, index) => <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
               </Pie>
             </PieChart>
-          </ResponsiveContainer>
-        </div>
+          )}
+        </ChartFrame>
         <div className="space-y-2">
           {data.map((row, index) => (
             <div key={row.tier} className="flex items-center justify-between gap-2 rounded-md border border-border-subtle bg-bg-elevated/45 px-2 py-1.5">
@@ -805,7 +856,7 @@ function IndiaIntelMap({ hotspots, links = [], freshnessSec }: {
         <svg viewBox="0 0 600 420" className="h-[500px] w-full rounded-lg border border-border-subtle bg-[#eef6ff]">
           <defs>
             <pattern id="india-grid" width="24" height="24" patternUnits="userSpaceOnUse">
-              <path d="M24 0H0V24" fill="none" stroke="#0057a8" strokeOpacity=".07" />
+              <path d="M24 0H0V24" fill="none" stroke="#00579C" strokeOpacity=".07" />
             </pattern>
             <linearGradient id="india-fill" x1="0" x2="1" y1="0" y2="1">
               <stop offset="0" stopColor="#dff4ff" />
@@ -816,13 +867,13 @@ function IndiaIntelMap({ hotspots, links = [], freshnessSec }: {
           <path
             d="M250 32 L306 52 L351 95 L379 151 L430 187 L461 238 L434 307 L378 334 L328 373 L283 394 L250 346 L223 294 L182 256 L151 203 L164 134 Z"
             fill="url(#india-fill)"
-            stroke="#0057a8"
+            stroke="#00579C"
             strokeWidth="2.5"
           />
           <path
             d="M266 45 L309 65 L342 100 L369 157 L414 191 L439 238 L407 289 L358 314 L314 349 L283 382"
             fill="none"
-            stroke="#0057a8"
+            stroke="#00579C"
             strokeOpacity=".12"
             strokeWidth="10"
           />
@@ -839,7 +890,7 @@ function IndiaIntelMap({ hotspots, links = [], freshnessSec }: {
                 key={`${link.source}-${link.target}`}
                 d={`M ${a.x} ${a.y} Q ${midX} ${midY} ${b.x} ${b.y}`}
                 fill="none"
-                stroke={link.channel === 'IMPS' ? '#d71920' : '#0057a8'}
+                stroke={link.channel === 'IMPS' ? '#DA251C' : '#00579C'}
                 strokeOpacity={0.18 + link.weight * 0.34}
                 strokeWidth={1.5 + link.weight * 3}
               />
@@ -892,7 +943,7 @@ function TypologyHeatmap({ cockpit }: { cockpit?: IntelCockpitResponse }) {
                   <div className="flex h-full items-center justify-center font-mono text-[9px] font-bold text-text-primary">{value}</div>
                 </div>
               ))}
-              <div className="text-right font-mono text-[9px] text-emerald-300">{pct(row.trust)}</div>
+              <div className="text-right font-mono text-[9px] text-[#00579C]">{pct(row.trust)}</div>
             </div>
           )
         })}
@@ -907,22 +958,11 @@ function SignalRadarList({ signals }: { signals: ExternalThreatSignal[] }) {
       <div className="max-h-[520px] space-y-2 overflow-auto p-3">
         {signals.map((signal) => (
           <article key={signal.signal_id} className="grid grid-cols-[86px_minmax(0,1fr)] gap-3 rounded-md border border-border-subtle bg-bg-elevated/55 p-2">
-            {mediaUrl(signal.media_preview) && !isFallbackMedia(signal.media_preview) ? (
-              <img
-                src={mediaUrl(signal.media_preview)}
-                alt=""
-                onError={(event) => { event.currentTarget.src = mediaSvgDataUri(signal.media_preview) }}
-                className={cn('h-20 w-[86px] rounded-md border border-border-subtle bg-white object-cover', isSourceCard(signal.media_preview) && 'object-contain p-3')}
-              />
-            ) : (
-              <div className="flex h-20 w-[86px] items-center justify-center rounded-md border border-border-subtle bg-white">
-                <Newspaper className="h-6 w-6 text-accent-primary" />
-              </div>
-            )}
+            <MediaThumbnail preview={signal.media_preview} className="h-20 w-[86px]" />
             <div className="min-w-0">
               <div className="mb-1 flex items-start justify-between gap-2">
                 <h3 className="line-clamp-2 text-[11px] font-semibold text-text-primary">{signal.title}</h3>
-                <span className="font-mono text-[10px] font-bold text-emerald-300">{pct(signal.trust_score)}</span>
+                <span className="font-mono text-[10px] font-bold text-[#00579C]">{pct(signal.trust_score)}</span>
               </div>
               <p className="line-clamp-2 text-[9px] leading-relaxed text-text-muted">{signal.normalized_text}</p>
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -991,9 +1031,9 @@ function TrendCards({ trends, playbooks }: { trends: FraudTrendCluster[]; playbo
                 <ToneBadge label={playbook?.promotion_status ?? 'cluster'} tone={playbook?.promotion_status === 'applied' ? 'emerald' : 'amber'} />
               </div>
               <div className="grid grid-cols-3 gap-2">
-                <Metric label="Velocity" value={pct(trend.velocity_score)} accent="text-cyan-300" />
-                <Metric label="India Fit" value={pct(trend.india_relevance_score)} accent="text-emerald-300" />
-                <Metric label="Trust" value={pct(trend.trust_score)} accent="text-amber-300" />
+                <Metric label="Velocity" value={pct(trend.velocity_score)} accent="text-[#00579C]" />
+                <Metric label="India Fit" value={pct(trend.india_relevance_score)} accent="text-[#00579C]" />
+                <Metric label="Trust" value={pct(trend.trust_score)} accent="text-[#DA251C]" />
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {trend.affected_channels.slice(0, 4).map((channel) => (
@@ -1036,13 +1076,13 @@ function FusionGraph({ cockpit }: { cockpit?: IntelCockpitResponse }) {
         <svg viewBox="0 0 760 360" className="h-full w-full rounded-md border border-border-subtle bg-bg-elevated/45">
           <defs>
             <pattern id="fusion-grid" width="28" height="28" patternUnits="userSpaceOnUse">
-              <path d="M28 0H0V28" fill="none" stroke="#0057a8" strokeOpacity=".06" />
+              <path d="M28 0H0V28" fill="none" stroke="#00579C" strokeOpacity=".06" />
             </pattern>
           </defs>
           <rect width="760" height="360" fill="url(#fusion-grid)" />
           {kinds.map((kind) => (
             <g key={kind}>
-              <line x1={columns[kind]} y1="42" x2={columns[kind]} y2="320" stroke="#0057a8" strokeOpacity=".14" strokeDasharray="4 8" />
+              <line x1={columns[kind]} y1="42" x2={columns[kind]} y2="320" stroke="#00579C" strokeOpacity=".14" strokeDasharray="4 8" />
               <text x={columns[kind]} y="28" textAnchor="middle" fill="#64748b" fontSize="9" fontFamily="monospace" fontWeight="700">
                 {labels[kind].toUpperCase()}
               </text>
@@ -1058,7 +1098,7 @@ function FusionGraph({ cockpit }: { cockpit?: IntelCockpitResponse }) {
                 key={index}
                 d={`M ${source.x} ${source.y} C ${mid} ${source.y}, ${mid} ${target.y}, ${target.x} ${target.y}`}
                 fill="none"
-                stroke={target.kind === 'trend' ? '#0057a8' : '#475569'}
+                stroke={target.kind === 'trend' ? '#00579C' : '#475569'}
                 strokeWidth={1.1 + link.weight * 2.4}
                 strokeOpacity={0.24 + Math.min(0.44, link.weight * 0.34)}
                 strokeLinecap="round"
@@ -1088,34 +1128,40 @@ function FusionGraph({ cockpit }: { cockpit?: IntelCockpitResponse }) {
   )
 }
 
-function DemoConsole({
-  demoScenario,
-  setDemoScenario,
+function PreventiveControlConsole({
+  selectedScenario,
+  setSelectedScenario,
   busy,
+  canRefresh,
+  canPrimeCase,
+  roleLabel,
   onRefresh,
-  onDemo,
+  onPrimeCase,
   onOpenOverview,
   lastCaseId,
 }: {
-  demoScenario: string
-  setDemoScenario: (value: string) => void
+  selectedScenario: string
+  setSelectedScenario: (value: string) => void
   busy: boolean
+  canRefresh: boolean
+  canPrimeCase: boolean
+  roleLabel: string
   onRefresh: () => void
-  onDemo: () => void
+  onPrimeCase: () => void
   onOpenOverview: () => void
   lastCaseId: string | null
 }) {
   return (
-    <Panel title="Judge Demo Console" icon={Crosshair}>
+    <Panel title="Preventive Control Console" icon={Crosshair}>
       <div className="space-y-3 p-3">
         <div className="grid grid-cols-2 gap-2">
-          {DEMO_SCENARIOS.map((scenario) => (
+          {INTEL_SCENARIOS.map((scenario) => (
             <button
               key={scenario.id}
-              onClick={() => setDemoScenario(scenario.id)}
+              onClick={() => setSelectedScenario(scenario.id)}
               className={cn(
                 'rounded-md border p-2 text-left text-[10px] font-semibold transition-colors',
-                demoScenario === scenario.id
+                selectedScenario === scenario.id
                   ? 'border-accent-primary/60 bg-accent-primary/10 text-text-primary'
                   : 'border-border-subtle bg-bg-elevated/45 text-text-muted hover:border-border-default',
               )}
@@ -1125,22 +1171,22 @@ function DemoConsole({
           ))}
         </div>
         <div className="grid grid-cols-3 gap-2">
-          <button onClick={onRefresh} disabled={busy} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border-default px-3 py-2 text-[9px] font-bold uppercase tracking-[0.12em] text-text-secondary transition-colors hover:border-accent-primary hover:text-accent-primary disabled:cursor-not-allowed disabled:opacity-50">
+          <button onClick={onRefresh} disabled={busy || !canRefresh} title={!canRefresh ? `${roleLabel} cannot refresh preventive intelligence` : 'Refresh preventive intelligence'} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border-default px-3 py-2 text-[9px] font-bold uppercase tracking-[0.12em] text-text-secondary transition-colors hover:border-accent-primary hover:text-accent-primary disabled:cursor-not-allowed disabled:opacity-50">
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh
           </button>
-          <button onClick={onDemo} disabled={busy} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-accent-primary/60 px-3 py-2 text-[9px] font-bold uppercase tracking-[0.12em] text-accent-primary transition-colors hover:bg-accent-primary hover:text-bg-deep disabled:cursor-not-allowed disabled:opacity-50">
+          <button onClick={onPrimeCase} disabled={busy || !canPrimeCase} title={!canPrimeCase ? `${roleLabel} cannot prime fund-flow case drills` : 'Prime fund-flow case'} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-accent-primary/60 px-3 py-2 text-[9px] font-bold uppercase tracking-[0.12em] text-accent-primary transition-colors hover:bg-accent-primary hover:text-bg-deep disabled:cursor-not-allowed disabled:opacity-50">
             <Play className="h-3.5 w-3.5" />
-            Demo
+            Prime Case
           </button>
-          <button onClick={onOpenOverview} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-emerald-400/40 px-3 py-2 text-[9px] font-bold uppercase tracking-[0.12em] text-emerald-300 transition-colors hover:bg-emerald-400 hover:text-bg-deep">
+          <button onClick={onOpenOverview} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-[#00579C]/40 px-3 py-2 text-[9px] font-bold uppercase tracking-[0.12em] text-[#00579C] transition-colors hover:bg-[#00579C] hover:text-bg-deep">
             <ArrowRight className="h-3.5 w-3.5" />
             Graph
           </button>
         </div>
         {lastCaseId && (
-          <div className="rounded-md border border-emerald-400/25 bg-emerald-500/10 p-2 text-[9px] text-emerald-300">
-            Preventive signal active before PS3 case {lastCaseId}
+          <div className="rounded-md border border-[#00579C]/25 bg-[#00579C]/10 p-2 text-[9px] text-[#00579C]">
+            Preventive signal active before fund-flow case {lastCaseId}
           </div>
         )}
       </div>
@@ -1149,7 +1195,8 @@ function DemoConsole({
 }
 
 export function PreFraudIntelPage() {
-  const [demoScenario, setDemoScenario] = useState('digital_arrest_mule')
+  const access = useRoleAccess()
+  const [selectedScenario, setSelectedScenario] = useState('digital_arrest_mule')
   const [lastCaseId, setLastCaseId] = useState<string | null>(null)
   const [autoRefreshRequested, setAutoRefreshRequested] = useState(false)
   const setActiveTab = useUIStore((s) => s.setActiveTab)
@@ -1164,6 +1211,7 @@ export function PreFraudIntelPage() {
   const refresh = useRefreshIntel()
   const simulate = useSimulateIntelSignal()
   const launchPS3 = useLaunchPS3Scenario()
+  const { data: llmStatus, isLoading: llmStatusLoading, isError: llmStatusError } = useLLMStatus()
 
   const sources = sourcesData?.sources ?? []
   const signals = signalsData?.signals ?? []
@@ -1171,13 +1219,20 @@ export function PreFraudIntelPage() {
   const playbooks = cockpit?.active_playbooks ?? playbooksData?.playbooks ?? []
   const previews = mediaData?.media_previews ?? cockpit?.media_previews ?? signals.map((signal) => signal.media_preview).filter(Boolean)
   const busy = refresh.isPending || simulate.isPending || launchPS3.isPending
+  const canRefreshIntel = access.can('intel:write')
+  const canPrimeCase = access.can('intel:write') && access.can('case:launch')
+  const llmRuntime = resolveLLMRuntime(llmStatus, {
+    loading: llmStatusLoading,
+    error: llmStatusError,
+    fallbackModel: tuningData?.qwen_model,
+  })
 
   useEffect(() => {
     const hasArticleMedia = previews.some((preview) => (
       isRealImage(preview) || isRealVideo(preview)
     ))
     const isStale = (cockpit?.metrics.freshness_sec ?? 0) > 900
-    if (!autoRefreshRequested && !refresh.isPending && previews.length > 0 && (!hasArticleMedia || isStale)) {
+    if (canRefreshIntel && !autoRefreshRequested && !refresh.isPending && previews.length > 0 && (!hasArticleMedia || isStale)) {
       const id = window.setTimeout(() => {
         setAutoRefreshRequested(true)
         void refresh.mutateAsync(undefined)
@@ -1185,30 +1240,35 @@ export function PreFraudIntelPage() {
       return () => window.clearTimeout(id)
     }
     return undefined
-  }, [autoRefreshRequested, cockpit?.metrics.freshness_sec, previews, refresh])
+  }, [autoRefreshRequested, canRefreshIntel, cockpit?.metrics.freshness_sec, previews, refresh])
 
   const heroMetrics = useMemo(() => [
-    { label: 'External Signals', value: String(cockpit?.metrics.signal_count ?? signals.length), accent: 'text-cyan-300' },
-    { label: 'Active Sources', value: String(cockpit?.metrics.active_sources ?? sources.length), accent: 'text-emerald-300' },
+    { label: 'External Signals', value: String(cockpit?.metrics.signal_count ?? signals.length), accent: 'text-[#00579C]' },
+    { label: 'Active Sources', value: String(cockpit?.metrics.active_sources ?? sources.length), accent: 'text-[#00579C]' },
     { label: 'Velocity Index', value: pct(cockpit?.metrics.velocity_index), accent: 'text-accent-primary' },
-    { label: 'Trust Index', value: pct(cockpit?.metrics.trust_index), accent: 'text-amber-300' },
-    { label: 'Corroborated', value: pct(cockpit?.metrics.corroboration_rate), accent: 'text-emerald-300' },
+    { label: 'Trust Index', value: pct(cockpit?.metrics.trust_index), accent: 'text-[#DA251C]' },
+    { label: 'Corroborated', value: pct(cockpit?.metrics.corroboration_rate), accent: 'text-[#00579C]' },
     { label: 'Map Coverage', value: pct(cockpit?.metrics.map_coverage), accent: 'text-accent-primary' },
-    { label: 'Real Media', value: `${cockpit?.metrics.live_media_items ?? mediaData?.summary.live_media ?? 0}/${cockpit?.metrics.media_items ?? previews.length}`, accent: 'text-rose-300' },
+    { label: 'Real Media', value: `${cockpit?.metrics.live_media_items ?? mediaData?.summary.live_media ?? 0}/${cockpit?.metrics.media_items ?? previews.length}`, accent: 'text-[#DA251C]' },
     { label: 'Videos', value: String(cockpit?.metrics.real_videos ?? mediaData?.summary.real_videos ?? 0), accent: 'text-accent-primary' },
-    { label: 'Media Health', value: pct(cockpit?.metrics.media_health ?? mediaData?.summary.health), accent: 'text-emerald-300' },
-    { label: 'Active Playbooks', value: String(tuningData?.active_playbooks ?? cockpit?.metrics.active_playbooks ?? 0), accent: 'text-violet-300' },
-  ], [cockpit, mediaData?.summary.health, mediaData?.summary.live_media, previews.length, signals.length, sources.length, tuningData?.active_playbooks])
+    { label: 'Media Health', value: pct(cockpit?.metrics.media_health ?? mediaData?.summary.health), accent: 'text-[#00579C]' },
+    { label: 'Active Playbooks', value: String(tuningData?.active_playbooks ?? cockpit?.metrics.active_playbooks ?? 0), accent: 'text-[#00579C]' },
+  ], [cockpit, mediaData?.summary.health, mediaData?.summary.live_media, mediaData?.summary.real_videos, previews.length, signals.length, sources.length, tuningData?.active_playbooks])
 
-  async function runPreventiveDemo() {
-    await simulate.mutateAsync(demoScenario)
-    const launched = await launchPS3.mutateAsync({ scenario: 'rapid_layering', intensity: 'demo', seed: 2026 })
+  async function primePreventiveCase() {
+    if (!canPrimeCase) return
+    await simulate.mutateAsync(selectedScenario)
+    const launched = await launchPS3.mutateAsync({
+      scenario: INTEL_TO_PS3_SCENARIO[selectedScenario] ?? 'rapid_layering',
+      intensity: 'scale',
+      seed: Date.now() % 1_000_000,
+    })
     setActiveCaseId(launched.primary_case_id)
     setLastCaseId(launched.primary_case_id)
   }
 
   return (
-    <div className="flex h-full flex-col bg-transparent">
+    <div className="flex min-h-full flex-col bg-transparent">
       <div className="ubi-page-band shrink-0 border-b px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
@@ -1221,7 +1281,7 @@ export function PreFraudIntelPage() {
                 <ToneBadge label="entry layer" tone="cyan" />
               </div>
               <p className="mt-0.5 truncate text-[10px] text-text-muted">
-                OSINT/SOCMINT fusion before fund-flow detection | source media, India signal maps, playbook tuning, Qwen {tuningData?.qwen_model ?? 'qwen3.5:4b-q4_K_M'}
+                OSINT/SOCMINT fusion before fund-flow detection | source media, India signal maps, playbook tuning, {llmRuntime.model} context {llmRuntime.statusLabel}
               </p>
             </div>
           </div>
@@ -1240,7 +1300,7 @@ export function PreFraudIntelPage() {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="min-h-0 p-4">
         <div className="grid auto-rows-min grid-cols-12 items-start gap-3">
           <div className="col-span-12 2xl:col-span-8">
             <Panel title="Source Media Intelligence Board" icon={Newspaper} badge={`${previews.length} previews`}>
@@ -1251,12 +1311,15 @@ export function PreFraudIntelPage() {
           </div>
 
           <div className="col-span-12 grid gap-3 xl:grid-cols-2 2xl:col-span-4 2xl:grid-cols-1">
-            <DemoConsole
-              demoScenario={demoScenario}
-              setDemoScenario={setDemoScenario}
+            <PreventiveControlConsole
+              selectedScenario={selectedScenario}
+              setSelectedScenario={setSelectedScenario}
               busy={busy}
+              canRefresh={canRefreshIntel}
+              canPrimeCase={canPrimeCase}
+              roleLabel={access.policy.label}
               onRefresh={() => void refresh.mutateAsync(undefined)}
-              onDemo={() => void runPreventiveDemo()}
+              onPrimeCase={() => void primePreventiveCase()}
               onOpenOverview={() => setActiveTab('overview')}
               lastCaseId={lastCaseId}
             />
@@ -1300,7 +1363,7 @@ export function PreFraudIntelPage() {
                   <Metric label="Rollback" value={tuningData?.rollback_available ? 'available' : 'none'} />
                 </div>
                 <div className="rounded-md border border-border-subtle bg-bg-elevated/45 p-2 text-[9px] leading-relaxed text-text-muted">
-                  External signals tune watchlists, scenario seeds, and Qwen context only. Graph, ML, rules, ledger, and circuit-breaker evidence remain authoritative.
+                  External signals tune watchlists, scenario seeds, and {llmRuntime.model} context only. Graph, ML, rules, ledger, and circuit-breaker evidence remain authoritative.
                 </div>
               </div>
             </Panel>

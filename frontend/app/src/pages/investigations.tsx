@@ -1,8 +1,8 @@
 // ============================================================================
-// Investigations Page -- Union Bank PS3 Case Workbench
+// Investigations Page -- Union Bank fund-flow case workbench
 // ============================================================================
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   Activity,
   BadgeCheck,
@@ -16,59 +16,24 @@ import {
   TimerReset,
 } from 'lucide-react'
 import { PreFraudIntelBrief } from '@/components/panels/pre-fraud-intel-brief'
+import { EscalationList } from '@/components/investigations/escalation-list'
+import { useRoleAccess } from '@/hooks/use-rbac'
 import {
   useCaseTrace,
   useCreateEvidencePackage,
   useLaunchPS3Scenario,
+  useLLMStatus,
   usePS3Readiness,
   usePS3Scenarios,
 } from '@/hooks/use-api'
+import { resolveLLMRuntime } from '@/lib/llm-runtime'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/stores/use-ui-store'
 import type {
   CaseTraceResponse,
   EvidencePackageResponse,
   PS3ScenarioId,
-  PS3ScenarioSummary,
 } from '@/lib/types'
-
-const FALLBACK_SCENARIOS: PS3ScenarioSummary[] = [
-  {
-    id: 'rapid_layering',
-    label: 'Rapid Layering Through Multiple Accounts',
-    typologies: ['LAYERING'],
-    expected_indicators: ['Compressed multi-hop path', 'Amount decay', 'Mixed channels'],
-    recommended_actions: ['Freeze terminal accounts', 'Attach graph evidence'],
-  },
-  {
-    id: 'round_tripping',
-    label: 'Circular Transactions / Round-Tripping',
-    typologies: ['ROUND_TRIPPING'],
-    expected_indicators: ['Closed loop', 'Shell-like accounts', 'Circular movement'],
-    recommended_actions: ['Escalate cycle participants', 'Attach circular graph'],
-  },
-  {
-    id: 'structuring',
-    label: 'Structuring Below Reporting Thresholds',
-    typologies: ['STRUCTURING'],
-    expected_indicators: ['Sub-threshold repetition', 'Collector convergence', 'Short window'],
-    recommended_actions: ['Aggregate linked transfers', 'Flag collector'],
-  },
-  {
-    id: 'dormant_activation',
-    label: 'Dormant Account Activation',
-    typologies: ['DORMANT_ACTIVATION'],
-    expected_indicators: ['Dormant login', 'OTP before transfer', 'New device'],
-    recommended_actions: ['Hold account', 'Preserve auth trail'],
-  },
-  {
-    id: 'profile_mismatch',
-    label: 'Profile vs Fund Movement Mismatch',
-    typologies: ['PROFILE_MISMATCH'],
-    expected_indicators: ['Profile deviation', 'Large outward transfers', 'Business-like routing'],
-    recommended_actions: ['Refresh customer profile', 'Attach behavior narrative'],
-  },
-]
 
 function shortId(value: string, keep = 12) {
   if (!value) return 'n/a'
@@ -77,6 +42,12 @@ function shortId(value: string, keep = 12) {
 
 function pct(value: number) {
   return `${Math.round(value * 100)}%`
+}
+
+function metricOrNA(value: number | string | null | undefined, suffix = '') {
+  if (value == null || value === '') return 'n/a'
+  if (typeof value === 'number' && !Number.isFinite(value)) return 'n/a'
+  return `${value}${suffix}`
 }
 
 function openPrintablePackage(pkg: EvidencePackageResponse) {
@@ -93,8 +64,8 @@ function StatusBadge({ status }: { status: string }) {
       className={cn(
         'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.12em]',
         ready
-          ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300'
-          : 'border-amber-400/30 bg-amber-500/10 text-amber-300',
+          ? 'border-[#00579C]/30 bg-[#00579C]/10 text-[#00579C]'
+          : 'border-[#DA251C]/30 bg-[#DA251C]/10 text-[#DA251C]',
       )}
     >
       <BadgeCheck className="h-3 w-3" />
@@ -111,11 +82,11 @@ function ReadinessPanel() {
     <section className="rounded-lg border border-border-subtle bg-bg-deep p-3">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-secondary">
-          <ShieldCheck className="h-4 w-4 text-emerald-300" />
-          Union Bank PS3 Readiness
+          <ShieldCheck className="h-4 w-4 text-[#00579C]" />
+          Union Bank Fund-Flow Readiness
         </div>
-        <span className="rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.12em] text-emerald-300">
-          {requirements.filter((r) => r.status === 'ready').length}/5 ready
+        <span className="rounded-md border border-[#00579C]/25 bg-[#00579C]/10 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.12em] text-[#00579C]">
+          {data ? `${requirements.filter((r) => r.status === 'ready').length}/${requirements.length} ready` : 'syncing'}
         </span>
       </div>
       <div className="space-y-2">
@@ -138,25 +109,31 @@ function ScenarioGallery({
   onSelect,
   onLaunch,
   launching,
+  canLaunchRole,
+  roleLabel,
 }: {
   selected: PS3ScenarioId
   onSelect: (id: PS3ScenarioId) => void
   onLaunch: () => void
   launching: boolean
+  canLaunchRole: boolean
+  roleLabel: string
 }) {
-  const { data } = usePS3Scenarios()
-  const scenarios = data?.scenarios?.length ? data.scenarios : FALLBACK_SCENARIOS
+  const { data, isLoading, isError } = usePS3Scenarios()
+  const scenarios = data?.scenarios ?? []
+  const canLaunch = scenarios.length > 0 && !isLoading && !isError
 
   return (
     <section className="rounded-lg border border-border-subtle bg-bg-deep p-3">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-secondary">
           <GitBranch className="h-4 w-4 text-accent-primary" />
-          PS3 Scenario Gallery
+          Fund-Flow Case Drill Gallery
         </div>
         <button
           onClick={onLaunch}
-          disabled={launching}
+          disabled={launching || !canLaunch || !canLaunchRole}
+          title={!canLaunchRole ? `${roleLabel} cannot launch fund-flow case drills` : 'Launch case drill'}
           className={cn(
             'inline-flex items-center gap-1.5 rounded-md border border-accent-primary/60 px-3 py-1.5',
             'text-[9px] font-bold uppercase tracking-[0.12em] text-accent-primary transition-colors',
@@ -164,10 +141,21 @@ function ScenarioGallery({
           )}
         >
           <Play className="h-3.5 w-3.5" />
-          {launching ? 'Launching' : 'Run Judge Demo'}
+          {launching ? 'Launching' : 'Launch Case Drill'}
         </button>
       </div>
       <div className="grid grid-cols-1 gap-2">
+        {isLoading && (
+          <div className="rounded-md border border-border-subtle bg-bg-elevated/45 p-3">
+            <div className="mb-2 h-3 w-44 animate-pulse rounded bg-border-default" />
+            <div className="h-2 w-64 animate-pulse rounded bg-border-subtle" />
+          </div>
+        )}
+        {!isLoading && (isError || scenarios.length === 0) && (
+          <div className="rounded-md border border-dashed border-border-subtle bg-bg-elevated/45 p-4 text-[10px] leading-relaxed text-text-muted">
+            Scenario definitions are not available from the backend right now. Case drills stay disabled until `/api/v1/simulation/fund-flow/scenarios` returns live configuration.
+          </div>
+        )}
         {scenarios.map((scenario) => {
           const active = scenario.id === selected
           return (
@@ -213,7 +201,7 @@ function CaseTracePanel({ trace }: { trace: CaseTraceResponse | undefined }) {
               Case Workbench
             </div>
             <h2 className="text-sm font-semibold text-text-primary">
-              {trace?.scenario_label ?? 'Awaiting PS3 case replay'}
+              {trace?.scenario_label ?? 'Awaiting fund-flow case replay'}
             </h2>
           </div>
           {trace && <StatusBadge status={trace.status} />}
@@ -221,8 +209,8 @@ function CaseTracePanel({ trace }: { trace: CaseTraceResponse | undefined }) {
         <div className="grid grid-cols-4 gap-2">
           <Metric label="Case" value={trace?.case_id ?? 'n/a'} />
           <Metric label="Focus Txn" value={shortId(trace?.focus_txn_id ?? '')} />
-          <Metric label="Graph Evidence" value={trace ? pct(trace.risk_scores.graph_evidence_score) : '0%'} />
-          <Metric label="Value" value={trace?.risk_scores.total_amount_display ?? 'INR 0.00'} />
+          <Metric label="Graph Evidence" value={trace ? pct(trace.risk_scores.graph_evidence_score) : 'n/a'} />
+          <Metric label="Value" value={trace?.risk_scores.total_amount_display ?? 'n/a'} />
         </div>
         <PreFraudIntelBrief
           variant="case"
@@ -234,7 +222,7 @@ function CaseTracePanel({ trace }: { trace: CaseTraceResponse | undefined }) {
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 2xl:grid-cols-[1.15fr_0.85fr]">
         <div className="min-h-0 overflow-auto p-4">
           <div className="mb-3 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-secondary">
-            <TimerReset className="h-4 w-4 text-amber-300" />
+            <TimerReset className="h-4 w-4 text-[#DA251C]" />
             Transaction Timeline
           </div>
           <div className="space-y-2">
@@ -262,7 +250,7 @@ function CaseTracePanel({ trace }: { trace: CaseTraceResponse | undefined }) {
             ))}
             {timeline.length === 0 && (
               <div className="flex h-60 items-center justify-center rounded-md border border-dashed border-border-subtle text-[10px] uppercase tracking-[0.12em] text-text-muted">
-                Launch a PS3 scenario
+                Launch a fund-flow scenario
               </div>
             )}
           </div>
@@ -270,7 +258,7 @@ function CaseTracePanel({ trace }: { trace: CaseTraceResponse | undefined }) {
 
         <div className="min-h-0 overflow-auto border-t border-border-subtle p-4 2xl:border-l 2xl:border-t-0">
           <div className="mb-3 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-secondary">
-            <GitBranch className="h-4 w-4 text-emerald-300" />
+            <GitBranch className="h-4 w-4 text-[#00579C]" />
             Fund Path
           </div>
           <div className="space-y-2">
@@ -316,26 +304,31 @@ function EvidencePanel({
   packageData,
   onGenerate,
   generating,
+  canGenerateRole,
+  roleLabel,
 }: {
   caseId: string | null
   packageData: EvidencePackageResponse | null
   onGenerate: () => void
   generating: boolean
+  canGenerateRole: boolean
+  roleLabel: string
 }) {
   return (
     <section className="rounded-lg border border-border-subtle bg-bg-deep p-3">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-secondary">
-          <FileText className="h-4 w-4 text-amber-300" />
+          <FileText className="h-4 w-4 text-[#DA251C]" />
           Evidence Package v2
         </div>
         <button
           onClick={onGenerate}
-          disabled={!caseId || generating}
+          disabled={!caseId || generating || !canGenerateRole}
+          title={!canGenerateRole ? `${roleLabel} cannot generate FIU evidence packages` : 'Generate FIU evidence package'}
           className={cn(
-            'inline-flex items-center gap-1.5 rounded-md border border-amber-300/50 px-2.5 py-1.5',
-            'text-[9px] font-bold uppercase tracking-[0.12em] text-amber-300 transition-colors',
-            'hover:bg-amber-300 hover:text-bg-deep disabled:cursor-not-allowed disabled:opacity-40',
+            'inline-flex items-center gap-1.5 rounded-md border border-[#DA251C]/50 px-2.5 py-1.5',
+            'text-[9px] font-bold uppercase tracking-[0.12em] text-[#DA251C] transition-colors',
+            'hover:bg-[#DA251C] hover:text-bg-deep disabled:cursor-not-allowed disabled:opacity-40',
           )}
         >
           <FileText className="h-3.5 w-3.5" />
@@ -385,12 +378,12 @@ function ScalePanel() {
         Scale Proof
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <Metric label="Events" value={String(metrics?.events_ingested ?? 0)} />
-        <Metric label="EPS" value={String(metrics?.events_per_sec ?? 0)} />
-        <Metric label="Graph Nodes" value={String(metrics?.graph_nodes ?? 0)} />
-        <Metric label="Graph Edges" value={String(metrics?.graph_edges ?? 0)} />
-        <Metric label="Free VRAM" value={`${metrics?.gpu_vram_free_mb ?? 0} MB`} />
-        <Metric label="LLM Tokens" value={String(metrics?.llm_tokens_total ?? 0)} />
+        <Metric label="Events" value={metricOrNA(metrics?.events_ingested)} />
+        <Metric label="EPS" value={metricOrNA(metrics?.events_per_sec)} />
+        <Metric label="Graph Nodes" value={metricOrNA(metrics?.graph_nodes)} />
+        <Metric label="Graph Edges" value={metricOrNA(metrics?.graph_edges)} />
+        <Metric label="Free VRAM" value={metricOrNA(metrics?.gpu_vram_free_mb, ' MB')} />
+        <Metric label="LLM Tokens" value={metricOrNA(metrics?.llm_tokens_total)} />
       </div>
       <div className="mt-3 space-y-2">
         {(data?.pilot_architecture ?? []).slice(0, 4).map((item) => (
@@ -415,44 +408,47 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 export function InvestigationsPage() {
+  const access = useRoleAccess()
   const [selectedScenario, setSelectedScenario] = useState<PS3ScenarioId>('rapid_layering')
   const activeCaseId = useUIStore((s) => s.activeCaseId)
   const setActiveCaseId = useUIStore((s) => s.setActiveCaseId)
-  const [caseId, setCaseId] = useState<string | null>(() => useUIStore.getState().activeCaseId)
-  const [packageData, setPackageData] = useState<EvidencePackageResponse | null>(null)
+  const latestEvidencePackage = useUIStore((s) => s.latestEvidencePackage)
+  const setLatestEvidencePackage = useUIStore((s) => s.setLatestEvidencePackage)
+  const caseId = activeCaseId
+  const packageData: EvidencePackageResponse | null =
+    latestEvidencePackage?.case_id === caseId ? latestEvidencePackage : null
   const launchPS3 = useLaunchPS3Scenario()
   const evidence = useCreateEvidencePackage()
   const { data: trace } = useCaseTrace(caseId)
+  const { data: llmStatus, isLoading: llmStatusLoading, isError: llmStatusError } = useLLMStatus()
+  const llmRuntime = resolveLLMRuntime(llmStatus, {
+    loading: llmStatusLoading,
+    error: llmStatusError,
+  })
 
   const typologyLine = trace?.ps3_typologies?.length
     ? trace.ps3_typologies.join(' / ')
-    : 'PS3 fund-flow case'
+    : 'fund-flow case'
 
-  useEffect(() => {
-    if (!activeCaseId || activeCaseId === caseId) return
-    setPackageData(null)
-    setCaseId(activeCaseId)
-  }, [activeCaseId, caseId])
-
-  async function runDemo() {
-    setPackageData(null)
+  async function launchCaseDrill() {
+    if (!access.can('case:launch')) return
+    setLatestEvidencePackage(null)
     const response = await launchPS3.mutateAsync({
       scenario: selectedScenario,
-      intensity: 'demo',
-      seed: 2026,
+      intensity: 'scale',
+      seed: Date.now() % 1_000_000,
     })
     setActiveCaseId(response.primary_case_id)
-    setCaseId(response.primary_case_id)
   }
 
   async function generatePackage() {
-    if (!caseId) return
+    if (!caseId || !access.can('evidence:package')) return
     const pkg = await evidence.mutateAsync(caseId)
-    setPackageData(pkg)
+    setLatestEvidencePackage(pkg)
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-full flex-col">
       <div className="ubi-page-band shrink-0 border-b px-5 py-4">
         <div className="flex items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
@@ -461,15 +457,15 @@ export function InvestigationsPage() {
             </div>
             <div className="min-w-0">
               <h1 className="truncate text-base font-bold tracking-wide text-text-primary">
-                Union Bank PS3 Fund-Flow Case Workbench
+                Union Bank Fund-Flow Case Workbench
               </h1>
-              <p className="mt-0.5 truncate text-[10px] text-text-muted">
-                Trace suspicious movement, prove typology, generate FIU-ready package | {typologyLine} | Qwen 3.5 4B grounded copilot
+              <p className="mt-0.5 truncate text-[10px] text-text-muted" title={`LLM runtime: ${llmRuntime.model} (${llmRuntime.statusLabel})`}>
+                {access.policy.label} scope: {access.policy.escalationScope} | {typologyLine} | {llmRuntime.model} advisory copilot {llmRuntime.statusLabel}
               </p>
             </div>
           </div>
           <div className="hidden items-center gap-2 xl:flex">
-            <StatusBadge status={trace?.status ?? 'ready'} />
+            {trace && <StatusBadge status={trace.status} />}
             <span className="rounded-md border border-border-default px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-text-muted">
               {caseId ?? 'No active case'}
             </span>
@@ -477,27 +473,34 @@ export function InvestigationsPage() {
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto px-5 pb-5 xl:grid-cols-[320px_minmax(0,1fr)_320px]">
-        <div className="min-h-0 space-y-3 overflow-auto">
+      <div className="grid min-h-0 grid-cols-1 gap-3 px-5 pb-5 xl:grid-cols-[320px_minmax(0,1fr)_320px]">
+        <div className="min-h-0 space-y-3">
           <PreFraudIntelBrief variant="case" />
           <ReadinessPanel />
           <ScenarioGallery
             selected={selectedScenario}
             onSelect={setSelectedScenario}
-            onLaunch={() => void runDemo()}
+            onLaunch={() => void launchCaseDrill()}
             launching={launchPS3.isPending}
+            canLaunchRole={access.can('case:launch')}
+            roleLabel={access.policy.label}
           />
         </div>
 
         <CaseTracePanel trace={trace} />
 
-        <div className="min-h-0 space-y-3 overflow-auto">
+        <div className="min-h-0 space-y-3">
           <EvidencePanel
             caseId={caseId}
             packageData={packageData}
             onGenerate={() => void generatePackage()}
             generating={evidence.isPending}
+            canGenerateRole={access.can('evidence:package')}
+            roleLabel={access.policy.label}
           />
+          <section className="h-[360px] overflow-hidden rounded-lg border border-border-subtle bg-bg-deep">
+            <EscalationList />
+          </section>
           <ScalePanel />
         </div>
       </div>

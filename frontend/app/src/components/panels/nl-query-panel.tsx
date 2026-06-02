@@ -5,7 +5,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { MessageSquare, Send, Loader2, Sparkles, Clock, Target, Bot } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useNLQuery } from '@/hooks/use-api'
+import { useLLMStatus, useNLQuery } from '@/hooks/use-api'
+import { resolveLLMRuntime } from '@/lib/llm-runtime'
 import type { NLQueryResponse } from '@/lib/types'
 
 interface ChatMessage {
@@ -37,7 +38,28 @@ export function NLQueryPanel() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const nlQuery = useNLQuery()
+  const {
+    data: llmStatus,
+    isLoading: llmStatusLoading,
+    isError: llmStatusError,
+  } = useLLMStatus()
   const idCounter = useRef(0)
+
+  const runtime = resolveLLMRuntime(llmStatus, {
+    loading: llmStatusLoading,
+    error: llmStatusError,
+  })
+  const runtimeModel = runtime.model
+  const modelStatusLabel = runtime.running ? 'ready' : runtime.statusLabel
+  const modelStatusTone = llmStatusLoading
+    ? 'text-text-muted'
+    : !runtime.reachable
+      ? 'text-alert-high'
+      : runtime.running
+        ? 'text-alert-low'
+        : runtime.installed
+          ? 'text-[#DA251C]'
+          : 'text-text-muted'
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -69,7 +91,7 @@ export function NLQueryPanel() {
             intent: result.intent,
             confidence: result.confidence,
             processing_ms: result.processing_ms,
-            model_used: result.model_used,
+            model_used: result.model_used || runtimeModel,
             sources: result.sources,
           },
           timestamp: idCounter.current,
@@ -87,7 +109,7 @@ export function NLQueryPanel() {
         setMessages((prev) => [...prev, errMsg])
       },
     })
-  }, [input, nlQuery])
+  }, [input, nlQuery, runtimeModel])
 
   return (
     <div className="flex flex-col h-full bg-bg-deep rounded-lg border border-border-subtle overflow-hidden">
@@ -97,8 +119,13 @@ export function NLQueryPanel() {
         <span className="text-xs font-semibold text-text-primary tracking-wide">
           AI Analyst Query
         </span>
-        <Sparkles className="w-3 h-3 text-amber-400/60 ml-auto" />
-        <span className="text-[9px] text-text-muted font-mono">Qwen 3.5</span>
+        <Sparkles className="w-3 h-3 text-[#DA251C]/60 ml-auto" />
+        <span
+          className={cn('text-[9px] font-mono', modelStatusTone)}
+          title={`LLM runtime: ${runtimeModel} (${modelStatusLabel})`}
+        >
+          {runtimeModel} · {modelStatusLabel}
+        </span>
       </div>
 
       {/* Messages area */}
@@ -153,6 +180,9 @@ export function NLQueryPanel() {
                       {msg.meta.processing_ms}ms
                     </span>
                     <span className="text-[8px] text-text-muted font-mono">
+                      {msg.meta.model_used}
+                    </span>
+                    <span className="text-[8px] text-text-muted font-mono">
                       {(msg.meta.confidence * 100).toFixed(0)}% conf
                     </span>
                     {msg.meta.sources.length > 0 && (
@@ -170,7 +200,7 @@ export function NLQueryPanel() {
         {nlQuery.isPending && (
           <div className="flex items-center gap-2 text-[10px] text-text-muted animate-fade-in">
             <Loader2 className="w-3 h-3 animate-spin text-accent-primary" />
-            Analyzing with Qwen 3.5...
+            Analyzing with {runtimeModel}...
           </div>
         )}
       </div>
@@ -184,7 +214,7 @@ export function NLQueryPanel() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
-            placeholder="Ask about fraud patterns, risk levels, accounts..."
+            placeholder="Type a live fraud intelligence question"
             className="flex-1 bg-bg-deep border border-border-subtle rounded-md px-3 py-1.5
               text-[11px] text-text-primary placeholder:text-text-muted/50
               focus:outline-none focus:border-accent-primary/40 transition-colors"

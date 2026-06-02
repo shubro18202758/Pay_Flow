@@ -21,6 +21,8 @@ from collections import defaultdict
 
 from fastapi import APIRouter, Query, Request
 
+from src.api.rbac import require_permission
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
@@ -32,6 +34,7 @@ async def risk_distribution(request: Request):
     Risk score distribution across buckets.
     Returns counts in 10-percentile buckets for dashboard histogram.
     """
+    require_permission(request, "analytics:view")
     orch = request.app.state.orchestrator
     if orch is None:
         return {"buckets": [], "total": 0}
@@ -63,6 +66,7 @@ async def fraud_typology_breakdown(request: Request):
     """
     Count of detected fraud patterns by type from the transaction graph.
     """
+    require_permission(request, "analytics:view")
     orch = request.app.state.orchestrator
     if orch is None:
         return {"typology": {}, "total": 0}
@@ -95,44 +99,76 @@ async def velocity_trends(
     request: Request,
     window_minutes: int = Query(30, ge=5, le=360),
     top_n: int = Query(10, ge=1, le=50),
+    buckets: int = Query(8, ge=2, le=24),
 ):
     """
     Top-N accounts by transaction velocity in the specified time window.
     Returns per-account transaction counts and total volume.
     """
+    require_permission(request, "analytics:view")
     orch = request.app.state.orchestrator
     if orch is None:
         return {"accounts": [], "window_minutes": window_minutes}
 
     graph = getattr(orch, "_graph", None)
     if graph is None:
-        return {"accounts": [], "window_minutes": window_minutes}
+        return {
+            "accounts": [],
+            "window_minutes": window_minutes,
+            "bucket_seconds": int((window_minutes * 60) / buckets),
+            "generated_at": time.time(),
+        }
 
     g = graph._graph
-    cutoff = time.time() - window_minutes * 60
+    now = time.time()
+    window_seconds = window_minutes * 60
+    cutoff = now - window_seconds
+    bucket_seconds = max(1, int(window_seconds / buckets))
 
-    account_stats: dict[str, dict] = defaultdict(lambda: {"count": 0, "volume_paisa": 0, "fraud_count": 0})
+    def _empty_stats() -> dict:
+        return {
+            "count": 0,
+            "volume_paisa": 0,
+            "fraud_count": 0,
+            "sparkline": [0] * buckets,
+            "fraud_sparkline": [0] * buckets,
+        }
+
+    account_stats: dict[str, dict] = defaultdict(_empty_stats)
     for u, v, data in g.edges(data=True):
         ts = data.get("timestamp", 0)
         if ts < cutoff:
             continue
         amount = data.get("amount_paisa", 0)
         fl = data.get("fraud_label", 0)
+        bucket_idx = min(
+            buckets - 1,
+            max(0, int((ts - cutoff) // bucket_seconds)),
+        )
         for acct in (u, v):
             account_stats[acct]["count"] += 1
             account_stats[acct]["volume_paisa"] += amount
+            account_stats[acct]["sparkline"][bucket_idx] += 1
             if fl > 0:
                 account_stats[acct]["fraud_count"] += 1
+                account_stats[acct]["fraud_sparkline"][bucket_idx] += 1
 
     # Sort by count descending
     sorted_accounts = sorted(account_stats.items(), key=lambda x: x[1]["count"], reverse=True)[:top_n]
 
     return {
         "accounts": [
-            {"account_id": acct, **stats}
+            {
+                "account_id": acct,
+                **stats,
+                "latest_bucket_count": stats["sparkline"][-1],
+                "previous_bucket_count": stats["sparkline"][-2] if buckets > 1 else 0,
+            }
             for acct, stats in sorted_accounts
         ],
         "window_minutes": window_minutes,
+        "bucket_seconds": bucket_seconds,
+        "generated_at": now,
     }
 
 
@@ -146,6 +182,7 @@ async def temporal_heatmap(
     Temporal risk concentration — transaction volume and fraud density
     bucketed over time for a heatmap visualization.
     """
+    require_permission(request, "analytics:view")
     orch = request.app.state.orchestrator
     if orch is None:
         return {"buckets": [], "bucket_seconds": bucket_seconds}
@@ -199,9 +236,18 @@ async def threat_summary(request: Request):
     Aggregate threat level assessment — overall system risk posture
     based on real-time metrics.
     """
+    require_permission(request, "analytics:view")
+    generated_at = time.time()
     orch = request.app.state.orchestrator
     if orch is None:
-        return {"threat_level": "unknown", "indicators": []}
+        return {
+            "threat_level": "unknown",
+            "severity_score": 0.0,
+            "frozen_count": 0,
+            "active_attacks": 0,
+            "indicators": [],
+            "generated_at": generated_at,
+        }
 
     # Gather all available metrics
     breaker = getattr(orch, "_breaker", None)
@@ -270,4 +316,5 @@ async def threat_summary(request: Request):
         "frozen_count": frozen_count,
         "active_attacks": active_attacks,
         "indicators": indicators,
+        "generated_at": generated_at,
     }

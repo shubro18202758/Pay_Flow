@@ -3,10 +3,16 @@
 // ============================================================================
 
 import { useDashboardStore } from '@/stores/use-dashboard-store'
-import { useSnapshot } from '@/hooks/use-api'
+import { useCountermeasureProposals, useEscalations, useSnapshot } from '@/hooks/use-api'
 import { MetricCard } from '@/components/shared/metric-card'
 import { fmtNum } from '@/lib/utils'
-import { Gauge, Activity, Cpu, Shield } from 'lucide-react'
+import { Gauge, Activity, Cpu, Shield, UserCheck, ClipboardCheck } from 'lucide-react'
+import type { SystemSnapshot } from '@/lib/types'
+
+function metric(value: number | null | undefined, digits = 0, suffix = ''): string {
+  if (value == null || !Number.isFinite(value)) return 'n/a'
+  return `${digits > 0 ? value.toFixed(digits) : fmtNum(value)}${suffix}`
+}
 
 export function QuickStats() {
   const sseOrchestrator = useDashboardStore((s) => s.orchestrator)
@@ -15,10 +21,21 @@ export function QuickStats() {
   const threatSim       = useDashboardStore((s) => s.threatSimulation)
 
   const { data: snap } = useSnapshot()
+  const { data: escalations } = useEscalations()
+  const { data: countermeasures } = useCountermeasureProposals()
 
   // Use SSE data when live; fall back to latest REST snapshot
-  const orch = sseOrchestrator ?? (snap as any)?.orchestrator ?? null
-  const hw   = sseHardware    ?? (snap as any)?.hardware      ?? null
+  const snapshot = snap as Partial<SystemSnapshot> | undefined
+  const orch = sseOrchestrator ?? snapshot?.orchestrator ?? null
+  const hw   = sseHardware    ?? snapshot?.hardware      ?? null
+  const circuitBreaker = snapshot?.circuit_breaker as { frozen_count?: number } | undefined
+  const snapshotThreatSim = snapshot?.threat_simulation as { active_attacks?: number } | undefined
+  const displayFrozenCount = circuitBreaker?.frozen_count ?? frozenCount
+  const hasFrozenEvidence = circuitBreaker?.frozen_count != null || frozenCount > 0
+  const activeAttacks = threatSim?.active_attacks ?? snapshotThreatSim?.active_attacks
+  const pendingEscalations = (escalations ?? []).filter((item) => item.status === 'pending_review').length
+  const proposals = countermeasures?.proposals
+  const proposedCountermeasures = (proposals ?? []).filter((item) => item.status === 'proposed').length
 
   return (
     <div className="p-2.5">
@@ -28,31 +45,45 @@ export function QuickStats() {
       <div className="grid grid-cols-2 gap-2">
         <MetricCard
           label="Events/sec"
-          value={orch?.events_per_sec != null ? orch.events_per_sec.toFixed(1) : '\u2014'}
-          sub={`${fmtNum(orch?.events_ingested ?? 0)} total`}
+          value={orch?.events_per_sec != null ? orch.events_per_sec.toFixed(1) : 'n/a'}
+          sub={orch ? `${fmtNum(orch.events_ingested)} total` : 'orchestrator syncing'}
           icon={Gauge}
-          accent="accent-primary"
+          accent="text-accent-primary"
         />
         <MetricCard
           label="ML Inferences"
-          value={fmtNum(orch?.ml_inferences ?? 0)}
-          sub={`${fmtNum(orch?.alerts_routed ?? 0)} alerts`}
+          value={metric(orch?.ml_inferences)}
+          sub={orch ? `${fmtNum(orch.alerts_routed)} alerts` : 'orchestrator syncing'}
           icon={Activity}
-          accent="accent-positive"
+          accent="text-alert-low"
         />
         <MetricCard
           label="GPU Util"
-          value={`${(hw?.gpu_utilization_pct ?? 0).toFixed(0)}%`}
-          sub={`${hw?.gpu_vram_used_mb?.toFixed(0) ?? '\u2014'} / ${hw?.gpu_vram_total_mb?.toFixed(0) ?? '\u2014'} MB`}
+          value={hw ? `${hw.gpu_utilization_pct.toFixed(0)}%` : 'n/a'}
+          sub={hw ? `${hw.gpu_vram_used_mb.toFixed(0)} / ${hw.gpu_vram_total_mb.toFixed(0)} MB` : 'hardware telemetry syncing'}
           icon={Cpu}
-          accent="alert-medium"
+          accent="text-alert-medium"
         />
         <MetricCard
           label="Frozen Nodes"
-          value={frozenCount}
-          sub={`${threatSim?.active_attacks ?? 0} active attacks`}
+          value={hasFrozenEvidence ? displayFrozenCount : 'n/a'}
+          sub={activeAttacks != null ? `${activeAttacks} active attacks` : 'threat engine syncing'}
           icon={Shield}
-          accent="alert-critical"
+          accent="text-alert-critical"
+        />
+        <MetricCard
+          label="Analyst Queue"
+          value={escalations ? pendingEscalations : 'n/a'}
+          sub={escalations ? `${escalations.length} total cases` : 'analyst queue syncing'}
+          icon={UserCheck}
+          accent={pendingEscalations > 0 ? 'text-alert-escalated' : 'text-alert-low'}
+        />
+        <MetricCard
+          label="Countermeasures"
+          value={proposals ? proposedCountermeasures : 'n/a'}
+          sub={proposals ? `${proposals.length} proposals` : 'countermeasure sync pending'}
+          icon={ClipboardCheck}
+          accent={proposedCountermeasures > 0 ? 'text-alert-medium' : 'text-alert-low'}
         />
       </div>
     </div>

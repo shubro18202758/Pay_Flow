@@ -10,8 +10,8 @@ arbitration with dynamic KV-cache scaling and automatic CPU fallback.
 Priority order:  LLM (always)  >  GNN (semaphore)  >  ML Training (semaphore)
 
 VRAM pressure levels (with hysteresis):
-    NORMAL   — < 6 500 MB  -> full context (16 384 tokens)
-    HIGH     — 6 500–7 800 MB -> reduced context (8 192 tokens)
+    NORMAL   — < 6 500 MB  -> full context (8 192 tokens)
+    HIGH     — 6 500–7 800 MB -> reduced context (6 144 tokens)
     CRITICAL — ≥ 7 800 MB  -> minimal context (4 096) + GNN -> CPU
 """
 
@@ -57,7 +57,7 @@ class GPUConcurrencyMetrics:
     kv_cache_reductions: int = 0
     kv_cache_restorations: int = 0
     current_pressure: str = "normal"
-    current_num_ctx: int = 16384
+    current_num_ctx: int = 8192
 
 
 # ── GPU Priority Queue ───────────────────────────────────────────────────────

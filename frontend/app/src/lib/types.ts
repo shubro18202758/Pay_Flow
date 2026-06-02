@@ -83,6 +83,10 @@ export interface CytoEdge {
     fraud_label_name?: string
     timestamp: number
     device_fingerprint: string
+    sender_geo_lat?: number
+    sender_geo_lon?: number
+    receiver_geo_lat?: number
+    receiver_geo_lon?: number
   }
 }
 
@@ -133,6 +137,9 @@ export interface VerdictPayload {
   thinking_steps?: number
   tools_used?: string[]
   total_duration_ms?: number
+  confidence_source?: string
+  llm_parse_status?: string
+  model_used?: string | null
 }
 
 export interface VerdictBlock {
@@ -314,10 +321,30 @@ export interface EventLabRequest {
   mode?: EventLabMode | null
   intensity?: EventLabIntensity
   seed?: number | null
+  controls?: EventLabControls | null
 }
 
 export interface EventLabRunRequest extends EventLabRequest {
   analyst_required?: boolean
+}
+
+export type EventLabRiskBias = 'balanced' | 'stealth' | 'aggressive'
+
+export interface EventLabControls {
+  event_count?: number | null
+  min_amount_inr?: number | null
+  max_amount_inr?: number | null
+  primary_channel?: string | null
+  secondary_channel?: string | null
+  origin_region?: string | null
+  destination_region?: string | null
+  velocity_minutes?: number | null
+  mule_depth?: number | null
+  device_reuse?: boolean | null
+  include_auth_signal?: boolean | null
+  include_interbank_leg?: boolean | null
+  customer_profile?: string | null
+  risk_bias?: EventLabRiskBias | null
 }
 
 export interface EventLabGeneratedEvent {
@@ -336,9 +363,55 @@ export interface EventLabGeneratedEvent {
   success?: boolean
   ip?: string
   device_fingerprint?: string
+  geo_lat?: number
+  geo_lon?: number
+  sender_ifsc?: string
+  receiver_ifsc?: string
+  message_type?: string
   counterparty_role?: string
   narrative: string
   [key: string]: unknown
+}
+
+export interface EventLabAnalysisReport {
+  verdict: string
+  risk_score: number
+  risk_tier: string
+  confidence: number
+  total_exposure_paisa: number
+  event_count: number
+  transaction_count: number
+  auth_event_count: number
+  interbank_count: number
+  unique_account_count: number
+  channel_mix: Record<string, number>
+  channel_amount_mix?: Record<string, number>
+  account_role_mix?: Record<string, number>
+  typology_mix: Record<string, number>
+  risk_flags: Record<string, number>
+  amount_series: Array<Record<string, unknown>>
+  velocity_series: Array<Record<string, unknown>>
+  geo_path: Array<Record<string, unknown>>
+  route_segments?: Array<Record<string, unknown>>
+  geo_bounds?: Record<string, unknown>
+  route_label: string
+  controls: Record<string, unknown>
+  stage_coverage: Record<string, number>
+  stage_timeline?: Array<Record<string, unknown>>
+  risk_score_components?: Record<string, number>
+  timeline_buckets?: Array<Record<string, unknown>>
+  route_stats?: Record<string, unknown>
+  countermeasure_matrix?: Array<Record<string, unknown>>
+  evidence_matrix?: Array<Record<string, unknown>>
+  countermeasure_status: {
+    pending: number
+    executed: number
+    rejected: number
+  }
+  evidence_strengths: Record<string, number>
+  forensic_summary: string
+  recommended_next_steps: string[]
+  generated_at: number
 }
 
 export interface EventLabStage {
@@ -361,11 +434,13 @@ export interface EventLabRunResponse {
   analyst_required: boolean
   linked_intel: Record<string, unknown>
   expected_indicators: string[]
+  controls: EventLabControls & Record<string, unknown>
   event_ids: string[]
   events: EventLabGeneratedEvent[]
   proposal_ids: string[]
   stages: EventLabStage[]
   qwen_explanation: string
+  analysis_report: EventLabAnalysisReport
   decision_authority: string
   audit_hash: string
   countermeasure_proposals: CountermeasureProposal[]
@@ -389,11 +464,13 @@ export interface EventLabPreviewResponse {
     correlation_id: string
     mode: EventLabMode
     intensity: EventLabIntensity
+    controls: EventLabControls & Record<string, unknown>
     event_ids: string[]
     events: EventLabGeneratedEvent[]
     expected_indicators: string[]
     countermeasure_policy: EventLabRunResponse['countermeasure_policy']
     qwen_explanation: string
+    analysis_report: EventLabAnalysisReport
   }
   generated_at: number
 }
@@ -523,6 +600,34 @@ export interface HistoryResponse {
 
 export interface Escalation {
   ack_id: string
+  case_id?: string
+  escalation_id?: string
+  status?: 'pending_review' | 'approved' | 'rejected' | 'escalated' | string
+  priority?: 'critical' | 'high' | 'medium' | 'low' | string
+  txn_id?: string
+  node_id?: string
+  detected_typology?: string | null
+  agent_confidence?: number
+  confidence_threshold?: number
+  ml_score?: number
+  gnn_score?: number
+  recommended_action?: string
+  evidence_summary?: {
+    reasoning_steps?: number
+    evidence_keys?: string[]
+    graph_available?: boolean
+    subgraph_nodes?: number
+    subgraph_edges?: number
+    mule_network_detected?: boolean
+    cycles_found?: number
+  }
+  received_at?: number
+  updated_at?: number
+  sla_seconds?: number
+  analyst?: string | null
+  analyst_reason?: string | null
+  audit_hash?: string
+  decision_history?: Array<Record<string, unknown>>
   payload: Record<string, unknown>
 }
 
@@ -539,6 +644,7 @@ export type SSEChannel =
   | 'intel'
   | 'event_lab'
   | 'countermeasure'
+  | 'analyst'
   | 'transaction_decision'
 
 export interface SSEEnvelope {
@@ -569,6 +675,7 @@ export interface SSEAgentThinking {
   iteration: number
   max_iterations?: number
   content: string
+  public_content?: string
   elapsed_ms?: number
 }
 
@@ -579,7 +686,7 @@ export interface SSEAgentToolCall {
   tool_name: string
   tool_args?: unknown
   success: boolean
-  duration_ms: number
+  duration_ms?: number | null
   output_summary?: string
   result_summary?: string
 }
@@ -597,9 +704,12 @@ export interface SSEAgentVerdict {
   recommended_action: string
   thinking_steps: number
   tools_used: string[]
-  total_duration_ms: number
+  total_duration_ms?: number | null
   nlu_findings_count?: number
   nlu_escalated?: boolean
+  confidence_source?: string
+  llm_parse_status?: string
+  model_used?: string | null
 }
 
 export type SSEAgentData = SSEAgentThinking | SSEAgentToolCall | SSEAgentVerdict
@@ -690,7 +800,7 @@ export interface SSESimulationLifecycle {
 
 export type SSESimulationData = SSESimulationAttackEvent | SSESimulationLifecycle
 
-// -- Agent CoT log entry (for Zustand store) --
+// -- Agent investigation trace log entry (for Zustand store) --
 export interface AgentLogEntry {
   id: string
   timestamp: number
@@ -747,6 +857,7 @@ export interface SSEPipelineBatchDispatched {
   auth_events: number
   interbank_messages: number
   consumers: SSEPipelineConsumerResult[]
+  txn_ids?: string[]
 }
 
 export interface SSEPipelineStageComplete {
@@ -825,11 +936,17 @@ export interface VelocityAccount {
   count: number
   volume_paisa: number
   fraud_count: number
+  sparkline?: number[]
+  fraud_sparkline?: number[]
+  latest_bucket_count?: number
+  previous_bucket_count?: number
 }
 
 export interface VelocityTrendsResponse {
   accounts: VelocityAccount[]
   window_minutes: number
+  bucket_seconds?: number
+  generated_at?: number
 }
 
 export interface TemporalBucket {
@@ -859,6 +976,7 @@ export interface ThreatSummaryResponse {
   frozen_count: number
   active_attacks: number
   indicators: ThreatIndicator[]
+  generated_at?: number
 }
 
 // === Intelligence Endpoints ===
@@ -874,15 +992,36 @@ export interface FeatureContribution {
 }
 
 export interface ExplainResponse {
+  error?: string
   txn_id: string
   risk_score: number
   verdict: string
   narrative: string
+  attribution_method?: string
+  base_value?: number | null
+  explanation_ms?: number | null
+  feature_source?: 'request' | 'feature_cache'
+  feature_count?: number
+  domain_feature_count?: number
+  domain_features?: Record<string, number>
+  domain_controls?: string[]
+  model_reasoning?: {
+    source: string
+    classifier: string
+    attribution_method: string
+    risk_score: number
+    verdict: string
+    risk_drivers: string[]
+    protective_factors: string[]
+    heuristic_control_count: number
+    summary: string
+  }
   top_features: FeatureContribution[]
 }
 
 export interface GlobalImportanceResponse {
   feature_importance: Record<string, number>
+  feature_details?: Array<{ feature: string; importance: number; description?: string }>
   snapshot: Record<string, unknown>
 }
 
@@ -898,6 +1037,8 @@ export interface FeatureDrift {
 }
 
 export interface DriftResponse {
+  status?: 'ready' | 'warming' | 'no_reference'
+  message?: string
   severity: DriftSeverity
   psi: number
   ks_statistic: number
@@ -905,6 +1046,7 @@ export interface DriftResponse {
   js_divergence: number
   reference_size: number
   current_size: number
+  required_current_size?: number
   recommendation: string
   feature_drift: FeatureDrift[]
   snapshot: Record<string, unknown>
@@ -920,6 +1062,21 @@ export interface NLQueryResponse {
   confidence: number
   processing_ms: number
   model_used: string
+}
+
+export interface LLMStatusResponse {
+  target_model?: string
+  model?: string
+  ollama_url?: string
+  target_installed?: boolean
+  target_running?: boolean
+  running?: boolean
+  reachable?: boolean
+  installed_models?: string[]
+  running_models?: string[]
+  required_model_prefix?: string
+  error?: string
+  [key: string]: unknown
 }
 
 // -- Consortium Intelligence --
@@ -940,10 +1097,18 @@ export interface ConsortiumAlertData {
 export interface ConsortiumStatusResponse {
   member_count?: number
   member_banks: number
-  members: Record<string, { joined: number; alerts_published: number; trust_score: number }>
+  members: Record<string, {
+    joined?: number
+    name?: string
+    alerts_published?: number
+    alerts_shared?: number
+    alerts_received?: number
+    trust_score: number
+  }>
   total_alerts: number
   active_alerts: number
-  verified_proofs: number
+  verified_proofs?: number
+  verified_alerts?: number
   rejected_proofs: number
   alerts_by_type: Record<string, number>
 }
@@ -972,10 +1137,11 @@ export interface ConsortiumCheckResponse {
 
 export interface RuleInfo {
   rule_id: string
+  id?: string
   name: string
   description: string
   enabled: boolean
-  threshold: number
+  threshold: number | string
   category: string
 }
 
@@ -1034,13 +1200,23 @@ export interface CFRStatsResponse {
 
 export interface AMLStatsResponse {
   placement?: {
-    total_evaluations: number
-    alerts_raised: number
+    total_evaluations?: number
+    evaluations?: number
+    alerts_raised?: number
+    cash_alerts?: number
+    structuring_alerts?: number
+    multi_channel_alerts?: number
+    round_amount_alerts?: number
     [key: string]: unknown
   }
   integration?: {
-    total_evaluations: number
-    alerts_raised: number
+    total_evaluations?: number
+    evaluations?: number
+    alerts_raised?: number
+    asset_purchase_alerts?: number
+    investment_alerts?: number
+    rapid_withdrawal_alerts?: number
+    round_trip_alerts?: number
     [key: string]: unknown
   }
   error?: string

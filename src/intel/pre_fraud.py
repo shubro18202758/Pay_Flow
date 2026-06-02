@@ -46,7 +46,7 @@ REAL_VIDEO_ORIGINS = {"real_video_embed"}
 SOURCE_CARD_STATUSES = {"source_card", "publisher_logo_only"}
 
 HTTP_USER_AGENT = (
-    "PayFlow-UnionBank-PS3-PoC/1.0 "
+    "PayFlow-UnionBank-FundFlow/1.0 "
     "(bounded public OSINT media resolver; no private scraping)"
 )
 
@@ -270,7 +270,7 @@ class AdaptivePlaybook:
 
 
 class PreFraudIntelService:
-    """In-memory prototype service for preventive fraud intelligence."""
+    """In-memory service for preventive fraud intelligence."""
 
     def __init__(self) -> None:
         self._sources = self._default_sources()

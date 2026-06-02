@@ -20,6 +20,11 @@ export function fmtDuration(sec: number): string {
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
 }
 
+export function fmtOptionalMs(ms: number | null | undefined, decimals = 0): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return 'n/a'
+  return `${ms.toFixed(decimals)}ms`
+}
+
 export function fmtTimestamp(unix: number): string {
   return new Date(unix * 1000).toLocaleTimeString('en-IN', {
     hour: '2-digit',
@@ -27,6 +32,11 @@ export function fmtTimestamp(unix: number): string {
     second: '2-digit',
     hour12: false,
   })
+}
+
+export function fmtOptionalTimestamp(unix: number | null | undefined): string {
+  if (typeof unix !== 'number' || !Number.isFinite(unix) || unix <= 0) return 'n/a'
+  return fmtTimestamp(unix)
 }
 
 export function truncId(id: string, len = 12): string {

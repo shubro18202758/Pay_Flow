@@ -5,7 +5,7 @@
 import { cn } from '@/lib/utils'
 
 interface Props {
-  value: number // 0-100
+  value: number | null | undefined // 0-100, null when telemetry is unavailable
   max?: number
   label?: string
   color?: 'accent' | 'critical' | 'high' | 'medium' | 'low'
@@ -29,15 +29,19 @@ const glowMap = {
 }
 
 export function GaugeBar({ value, max = 100, label, color = 'accent', className }: Props) {
-  const pct = Math.min(100, Math.max(0, (value / max) * 100))
+  const hasValue = typeof value === 'number' && Number.isFinite(value)
+  const pct = hasValue ? Math.min(100, Math.max(0, (value / max) * 100)) : 0
 
   return (
     <div className={cn('space-y-1.5', className)}>
       {label && (
         <div className="flex justify-between text-[9px]">
           <span className="text-text-secondary font-medium uppercase tracking-wider">{label}</span>
-          <span className="font-mono font-semibold text-text-primary tabular-nums">
-            {value.toFixed(1)}%
+          <span className={cn(
+            'font-mono font-semibold tabular-nums',
+            hasValue ? 'text-text-primary' : 'text-text-muted',
+          )}>
+            {hasValue ? `${value.toFixed(1)}%` : 'n/a'}
           </span>
         </div>
       )}

@@ -41,6 +41,7 @@ import type {
   GlobalImportanceResponse,
   DriftResponse,
   NLQueryResponse,
+  LLMStatusResponse,
   ConsortiumStatusResponse,
   ConsortiumAlertsResponse,
   ConsortiumPublishResponse,
@@ -75,6 +76,7 @@ import type {
   ClustersResponse,
   IntermediariesResponse,
 } from './types'
+import { roleRequestHeaders } from './rbac'
 
 class ApiError extends Error {
   status: number
@@ -86,7 +88,9 @@ class ApiError extends Error {
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init)
+  const headers = new Headers(init?.headers)
+  Object.entries(roleRequestHeaders()).forEach(([key, value]) => headers.set(key, value))
+  const res = await fetch(url, { ...init, headers })
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
     throw new ApiError(res.status, text)
@@ -119,11 +123,11 @@ export function fetchAttackTypes(): Promise<AttackTypesResponse> {
 }
 
 export function fetchPS3Scenarios(): Promise<PS3ScenariosResponse> {
-  return fetchJson('/api/v1/simulation/ps3/scenarios')
+  return fetchJson('/api/v1/simulation/fund-flow/scenarios')
 }
 
 export function launchPS3Scenario(body: PS3LaunchRequest): Promise<PS3LaunchResponse> {
-  return fetchJson('/api/v1/simulation/ps3/launch', {
+  return fetchJson('/api/v1/simulation/fund-flow/launch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -162,6 +166,21 @@ export function fetchHistory(): Promise<HistoryResponse> {
 
 export function fetchEscalations(): Promise<Escalation[]> {
   return fetchJson('/api/v1/analyst/escalations')
+}
+
+export function decideEscalation(
+  ackId: string,
+  body: { decision: 'approve' | 'reject' | 'escalate'; analyst?: string; reason?: string },
+): Promise<Escalation> {
+  return fetchJson(`/api/v1/analyst/escalations/${ackId}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      decision: body.decision,
+      analyst: body.analyst ?? 'union_bank_analyst',
+      reason: body.reason ?? `analyst_${body.decision}`,
+    }),
+  })
 }
 
 // -- Enum / Custom Event endpoints --
@@ -278,12 +297,19 @@ export function fetchThreatSummary(): Promise<ThreatSummaryResponse> {
 
 // -- Intelligence endpoints --
 
-export function fetchExplanation(features: number[], txnId = 'unknown'): Promise<ExplainResponse> {
+export function fetchExplanation(features: number[] | null, txnId = 'unknown'): Promise<ExplainResponse> {
   return fetchJson('/api/v1/intelligence/explain', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ features, txn_id: txnId }),
+    body: JSON.stringify({
+      ...(features?.length ? { features } : {}),
+      txn_id: txnId,
+    }),
   })
+}
+
+export function fetchTransactionExplanation(txnId: string): Promise<ExplainResponse> {
+  return fetchExplanation(null, txnId)
 }
 
 export function fetchGlobalImportance(): Promise<GlobalImportanceResponse> {
@@ -300,6 +326,10 @@ export function fetchNLQuery(question: string): Promise<NLQueryResponse> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question }),
   })
+}
+
+export function fetchLLMStatus(): Promise<LLMStatusResponse> {
+  return fetchJson('/api/v1/llm/status')
 }
 
 export function fetchConsortiumStatus(): Promise<ConsortiumStatusResponse> {
@@ -406,7 +436,7 @@ export function createEvidencePackage(caseId: string): Promise<EvidencePackageRe
 }
 
 export function fetchPS3Readiness(): Promise<PS3ReadinessResponse> {
-  return fetchJson('/api/v1/readiness/ps3')
+  return fetchJson('/api/v1/readiness/fund-flow')
 }
 
 // -- Pre-Fraud Intelligence endpoints --

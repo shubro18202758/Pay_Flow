@@ -6,14 +6,32 @@ import { useEffect, useMemo, useState } from 'react'
 import { useActivityStore } from '@/stores/use-activity-store'
 import { useUIStore } from '@/stores/use-ui-store'
 import { PipelineStageBar } from '@/components/panels/pipeline-stage-bar'
-import { SeverityBadge, verdictToSeverity } from '@/components/shared/severity-badge'
+import { SeverityBadge } from '@/components/shared/severity-badge'
+import { verdictToSeverity } from '@/lib/severity'
 import { fmtPaisa, truncId, cn } from '@/lib/utils'
 import { FRAUD_PATTERN_LABELS } from '@/lib/types'
+import { riskTierBadgeClass, UBI_CONSENSUS_SERIES } from '@/lib/union-bank-theme'
 import { Activity, ArrowRight, Clock, Shield, Filter } from 'lucide-react'
 import type { EventLifecycle } from '@/stores/use-activity-store'
 
 type RiskFilter = 'all' | 'critical' | 'high' | 'medium' | 'low'
 type VerdictFilter = 'all' | 'fraudulent' | 'suspicious' | 'legitimate'
+
+function formatConsensusScore(score: number | null | undefined): string {
+  return typeof score === 'number' && Number.isFinite(score) && score >= 0
+    ? `${(score * 100).toFixed(0)}%`
+    : 'N/A'
+}
+
+function isFallbackLifecycle(lifecycle: EventLifecycle): boolean {
+  return (
+    lifecycle.confidenceSource === 'deterministic_evidence_fallback' ||
+    lifecycle.llmParseStatus?.includes('fallback') ||
+    (lifecycle.confidence === 0.5 &&
+      (lifecycle.evidenceCited?.length ?? 0) === 0 &&
+      Boolean(lifecycle.reasoningSummary?.includes('Unable to reach definitive conclusion')))
+  )
+}
 
 export function LiveActivityFeed() {
   const events = useActivityStore((s) => s.events)
@@ -32,16 +50,28 @@ export function LiveActivityFeed() {
   }, [])
 
   const filteredIds = useMemo(() => {
-    return orderedIds.filter((id) => {
-      const lc = events.get(id)
-      if (!lc) return false
-      if (riskFilter !== 'all' && lc.riskTier !== riskFilter) return false
-      if (verdictFilter !== 'all') {
-        const v = lc.verdict?.toLowerCase()
-        if (!v || !v.includes(verdictFilter)) return false
-      }
-      return true
-    }).slice(0, 28)
+    return orderedIds
+      .filter((id) => {
+        const lc = events.get(id)
+        if (!lc) return false
+        if (riskFilter !== 'all' && lc.riskTier !== riskFilter) return false
+        if (verdictFilter !== 'all') {
+          const v = lc.verdict?.toLowerCase()
+          if (!v || !v.includes(verdictFilter)) return false
+        }
+        return true
+      })
+      .sort((a, b) => {
+        const aEvent = events.get(a)
+        const bEvent = events.get(b)
+        const aHitl = aEvent?.analystStatus ? 1 : 0
+        const bHitl = bEvent?.analystStatus ? 1 : 0
+        if (aHitl !== bHitl) return bHitl - aHitl
+        const aSeen = aEvent?.analystUpdatedAt ?? aEvent?.firstSeen ?? 0
+        const bSeen = bEvent?.analystUpdatedAt ?? bEvent?.firstSeen ?? 0
+        return bSeen - aSeen
+      })
+      .slice(0, 28)
   }, [orderedIds, events, riskFilter, verdictFilter])
 
   const RISK_OPTIONS: RiskFilter[] = ['all', 'critical', 'high', 'medium', 'low']
@@ -114,7 +144,7 @@ export function LiveActivityFeed() {
             <Shield className="w-6 h-6 text-text-muted/30" />
             <p className="text-[10px] text-text-muted">
               {orderedIds.length === 0
-                ? 'No events tracked yet. Launch a simulation to see pipeline activity.'
+                ? 'No events tracked yet. Launch an event drill or inject a transaction to see pipeline activity.'
                 : 'No events match the current filters.'}
             </p>
           </div>
@@ -146,7 +176,8 @@ function EventCard({
   nowSec: number
   onClick: () => void
 }) {
-  const elapsed = Math.max(0, Math.round(nowSec - lifecycle.firstSeen))
+  const hasFirstSeen = Number.isFinite(lifecycle.firstSeen) && lifecycle.firstSeen > 0
+  const elapsed = hasFirstSeen ? Math.max(0, Math.round(nowSec - lifecycle.firstSeen)) : null
   const hasVerdict = !!lifecycle.verdict
   const isFraud = (lifecycle.fraudLabel ?? 0) > 0
   const stageKeys = lifecycle.stages.map((s) => s.stage)
@@ -163,7 +194,7 @@ function EventCard({
         </span>
         <ArrowRight className="w-2.5 h-2.5 text-text-muted shrink-0" />
         <span className="text-[9px] font-mono text-text-primary truncate max-w-[70px]">
-          {truncId(lifecycle.receiver || '???', 8)}
+          {lifecycle.receiver ? truncId(lifecycle.receiver, 8) : 'receiver pending'}
         </span>
         {lifecycle.amountPaisa > 0 && (
           <span className="ml-auto text-[9px] font-mono tabular-nums text-text-secondary">
@@ -180,17 +211,28 @@ function EventCard({
       {/* Bottom row: risk/verdict + timing */}
       <div className="flex items-center gap-1.5 flex-wrap">
         {lifecycle.riskScore != null && (
-          <span className={`text-[8px] font-mono px-1 py-0.5 rounded border ${
-            lifecycle.riskTier === 'critical' ? 'bg-red-500/15 text-red-400 border-red-500/30'
-            : lifecycle.riskTier === 'high' ? 'bg-orange-500/15 text-orange-400 border-orange-500/30'
-            : 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30'
-          }`}>
+          <span className={cn('rounded border px-1 py-0.5 font-mono text-[8px]', riskTierBadgeClass(lifecycle.riskTier))}>
             ML {(lifecycle.riskScore * 100).toFixed(0)}%
           </span>
         )}
 
         {hasVerdict && (
           <SeverityBadge severity={verdictToSeverity(lifecycle.verdict!)} />
+        )}
+
+        {lifecycle.analystStatus && (
+          <span className={cn(
+            'text-[8px] font-mono px-1 py-0.5 rounded border uppercase',
+            lifecycle.analystStatus === 'approved'
+              ? 'bg-alert-low/10 text-alert-low border-alert-low/30'
+              : lifecycle.analystStatus === 'rejected'
+                ? 'bg-text-muted/10 text-text-muted border-border-subtle'
+                : lifecycle.analystStatus === 'escalated'
+                  ? 'bg-alert-escalated/10 text-alert-escalated border-alert-escalated/30'
+                  : 'bg-alert-medium/10 text-alert-medium border-alert-medium/30',
+          )}>
+            HITL {lifecycle.analystStatus.replace(/_/g, ' ')}
+          </span>
         )}
 
         {isFraud && lifecycle.fraudLabel > 0 && (
@@ -201,13 +243,13 @@ function EventCard({
 
         {lifecycle.confidence != null && (
           <span className="text-[8px] font-mono tabular-nums text-text-muted">
-            {(lifecycle.confidence * 100).toFixed(0)}%
+            {isFallbackLifecycle(lifecycle) ? 'n/a' : `${(lifecycle.confidence * 100).toFixed(0)}%`}
           </span>
         )}
 
         <span className="ml-auto flex items-center gap-0.5 text-[8px] font-mono tabular-nums text-text-muted">
           <Clock className="w-2.5 h-2.5" />
-          {elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m`}
+          {elapsed == null ? 'n/a' : elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m`}
         </span>
       </div>
 
@@ -215,9 +257,11 @@ function EventCard({
       {lifecycle.consensusScores && (
         <div className="mt-1.5 pt-1.5 border-t border-border-subtle">
           <div className="flex gap-2 text-[8px] font-mono tabular-nums">
-            <span className="text-blue-400">ML {(lifecycle.consensusScores.ml * 100).toFixed(0)}%</span>
-            <span className="text-purple-400">GNN {(lifecycle.consensusScores.gnn * 100).toFixed(0)}%</span>
-            <span className="text-green-400">Graph {(lifecycle.consensusScores.graph * 100).toFixed(0)}%</span>
+            {UBI_CONSENSUS_SERIES.map((item) => (
+              <span key={item.key} className={lifecycle.consensusScores?.[item.key] == null ? 'text-text-muted' : item.text}>
+                {item.label} {formatConsensusScore(lifecycle.consensusScores?.[item.key])}
+              </span>
+            ))}
           </div>
         </div>
       )}
@@ -226,6 +270,12 @@ function EventCard({
       {lifecycle.reasoningSummary && (
         <div className="mt-1 text-[8px] leading-relaxed text-text-muted line-clamp-2">
           {lifecycle.reasoningSummary}
+        </div>
+      )}
+
+      {lifecycle.analystReason && (
+        <div className="mt-1 text-[8px] leading-relaxed text-text-muted line-clamp-2">
+          Analyst note: {lifecycle.analystReason}
         </div>
       )}
     </div>

@@ -122,7 +122,7 @@ pip install -e "${PROJECT_ROOT}[dev]" --quiet
 
 if command -v ollama &>/dev/null; then
     log "Pulling Qwen-3.5 4B model (this may take a while on first run)..."
-    ollama pull qwen3.5:4b-q4_K_M || warn "Could not pull model. Ensure Ollama daemon is running."
+    ollama pull qwen3.5:4b || warn "Could not pull model. Ensure Ollama daemon is running."
 else
     warn "Skipping model pull (Ollama not installed)."
 fi

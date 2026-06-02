@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import os
 from contextlib import contextmanager
 from typing import Generator
 
@@ -25,6 +26,10 @@ class GPUMode(enum.Enum):
 _current_mode: GPUMode = GPUMode.IDLE
 
 
+def _default_ollama_model() -> str:
+    return os.getenv("PAYFLOW_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL") or "qwen3.5:4b"
+
+
 def _flush_torch_cache() -> None:
     """Release all cached PyTorch CUDA memory back to the driver."""
     try:
@@ -38,22 +43,23 @@ def _flush_torch_cache() -> None:
         pass
 
 
-def _unload_ollama_model(model: str = "payflow-qwen") -> None:
+def _unload_ollama_model(model: str | None = None) -> None:
     """No-op — LLM stays permanently resident in cooperative mode (Phase 15)."""
     logger.debug("_unload_ollama_model() called but skipped (cooperative mode).")
 
 
-def _unload_ollama_model_forced(model: str = "payflow-qwen") -> None:
+def _unload_ollama_model_forced(model: str | None = None) -> None:
     """Force-unload Ollama model from VRAM.  Used only by finetuning_mode()."""
     try:
         import httpx
+        target_model = model or _default_ollama_model()
         resp = httpx.post(
             "http://localhost:11434/api/generate",
-            json={"model": model, "keep_alive": 0},
+            json={"model": target_model, "keep_alive": 0},
             timeout=10.0,
         )
         if resp.status_code == 200:
-            logger.info("Ollama model '%s' force-unloaded from VRAM.", model)
+            logger.info("Ollama model '%s' force-unloaded from VRAM.", target_model)
     except Exception as exc:
         logger.warning("Could not force-unload Ollama model: %s", exc)
 
@@ -95,7 +101,7 @@ def assistant_mode() -> Generator[None, None, None]:
 
     Usage:
         with assistant_mode():
-            response = ollama.chat(model="payflow-qwen", ...)
+            response = ollama.chat(model="qwen3.5:4b", ...)
     """
     global _current_mode
 

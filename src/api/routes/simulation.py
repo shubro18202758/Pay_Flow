@@ -2,7 +2,7 @@
 PayFlow -- Threat Simulation API Routes
 =========================================
 REST endpoints for controlling the Threat Simulation Engine during
-live hackathon demos. Allows launching, stopping, and monitoring
+live analyst drills. Allows launching, stopping, and monitoring
 attack scenarios.
 
 Routes:
@@ -23,6 +23,8 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+
+from src.api.rbac import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +99,30 @@ class PS3LaunchResponse(BaseModel):
     expected_indicators: list[str]
 
 
+class EventLabControls(BaseModel):
+    event_count: int | None = None
+    min_amount_inr: int | None = None
+    max_amount_inr: int | None = None
+    primary_channel: str | None = None
+    secondary_channel: str | None = None
+    origin_region: str | None = None
+    destination_region: str | None = None
+    velocity_minutes: int | None = None
+    mule_depth: int | None = None
+    device_reuse: bool | None = None
+    include_auth_signal: bool | None = None
+    include_interbank_leg: bool | None = None
+    customer_profile: str | None = None
+    risk_bias: Literal["balanced", "stealth", "aggressive"] | None = None
+
+
 class EventLabPreviewRequest(BaseModel):
     template_id: str
     playbook_id: str | None = None
     mode: Literal["single", "burst", "chain"] | None = None
     intensity: Literal["demo", "scale"] = "demo"
     seed: int | None = None
+    controls: EventLabControls | None = None
 
 
 class EventLabRunRequest(EventLabPreviewRequest):
@@ -131,9 +151,10 @@ async def list_attacks(request: Request):
     return {"attacks": engine.available_attacks_detailed()}
 
 
-@router.get("/ps3/scenarios")
+@router.get("/fund-flow/scenarios")
+@router.get("/ps3/scenarios", include_in_schema=False)
 async def list_ps3_scenarios():
-    """List deterministic iDEA 2.0 PS3 scenarios for judge demo mode."""
+    """List deterministic fund-flow case drills."""
     from src.simulation.attack_generators import PS3_SCENARIO_DETAILS
     return {
         "scenarios": [
@@ -143,9 +164,11 @@ async def list_ps3_scenarios():
     }
 
 
-@router.post("/ps3/launch", response_model=PS3LaunchResponse)
+@router.post("/fund-flow/launch", response_model=PS3LaunchResponse)
+@router.post("/ps3/launch", response_model=PS3LaunchResponse, include_in_schema=False)
 async def launch_ps3_scenario(request: Request, body: PS3LaunchRequest):
-    """Launch a deterministic PS3 fund-flow case replay."""
+    """Launch a deterministic fund-flow case replay."""
+    require_permission(request, "case:launch")
     engine = _get_engine(request)
     try:
         metadata = await engine.launch_ps3_scenario(
@@ -170,6 +193,7 @@ async def launch_ps3_scenario(request: Request, body: PS3LaunchRequest):
 @router.post("/launch", response_model=LaunchResponse)
 async def launch_attack(request: Request, body: LaunchRequest):
     """Launch a named attack scenario."""
+    require_permission(request, "simulation:write")
     engine = _get_engine(request)
 
     try:
@@ -193,6 +217,7 @@ async def launch_attack(request: Request, body: LaunchRequest):
 @router.post("/stop/{scenario_id}", response_model=StopResponse)
 async def stop_attack(request: Request, scenario_id: str):
     """Stop a running attack by scenario ID."""
+    require_permission(request, "simulation:write")
     engine = _get_engine(request)
     stopped = await engine.stop_attack(scenario_id)
     if not stopped:
@@ -207,6 +232,7 @@ async def stop_attack(request: Request, scenario_id: str):
 @router.post("/stop-all", response_model=StopAllResponse)
 async def stop_all(request: Request):
     """Stop all running attack scenarios."""
+    require_permission(request, "simulation:write")
     engine = _get_engine(request)
     count = await engine.stop_all()
     return StopAllResponse(
@@ -265,8 +291,9 @@ async def event_lab_templates():
 
 
 @router.post("/event-lab/preview")
-async def event_lab_preview(body: EventLabPreviewRequest):
+async def event_lab_preview(request: Request, body: EventLabPreviewRequest):
     """Generate a deterministic adaptive event chain without injecting it."""
+    require_permission(request, "simulation:write")
     from src.simulation import get_event_lab_service
 
     try:
@@ -276,6 +303,7 @@ async def event_lab_preview(body: EventLabPreviewRequest):
             mode=body.mode,
             intensity=body.intensity,
             seed=body.seed,
+            controls=body.controls.model_dump(exclude_none=True) if body.controls else None,
         )
     except KeyError as exc:
         raise HTTPException(404, f"Unknown event-lab template or playbook: {exc}") from exc
@@ -284,6 +312,7 @@ async def event_lab_preview(body: EventLabPreviewRequest):
 @router.post("/event-lab/runs")
 async def event_lab_launch(request: Request, body: EventLabRunRequest):
     """Create and inject an intel-linked adaptive event chain."""
+    require_permission(request, "simulation:write")
     from src.simulation import get_event_lab_service
 
     try:
@@ -295,6 +324,7 @@ async def event_lab_launch(request: Request, body: EventLabRunRequest):
             intensity=body.intensity,
             seed=body.seed,
             analyst_required=body.analyst_required,
+            controls=body.controls.model_dump(exclude_none=True) if body.controls else None,
         )
     except KeyError as exc:
         raise HTTPException(404, f"Unknown event-lab template or playbook: {exc}") from exc
@@ -303,8 +333,9 @@ async def event_lab_launch(request: Request, body: EventLabRunRequest):
 
 
 @router.get("/event-lab/runs/{run_id}")
-async def event_lab_run(run_id: str):
+async def event_lab_run(request: Request, run_id: str):
     """Return a run timeline, generated events, and linked countermeasures."""
+    require_permission(request, "simulation:write")
     from src.simulation import get_event_lab_service
 
     try:
@@ -314,8 +345,9 @@ async def event_lab_run(run_id: str):
 
 
 @router.get("/event-lab/runs/{run_id}/explainability")
-async def event_lab_run_explainability(run_id: str):
+async def event_lab_run_explainability(request: Request, run_id: str):
     """Return grouped backend visibility for event-lab countermeasure decisions."""
+    require_permission(request, "simulation:write")
     from src.simulation import get_event_lab_service
 
     try:
@@ -327,6 +359,7 @@ async def event_lab_run_explainability(run_id: str):
 @router.post("/inject-event")
 async def inject_event(request: Request, body: InjectEventRequest):
     """Inject a custom event into the pipeline for real-time processing."""
+    require_permission(request, "simulation:write")
     import time as _time
     import random as _random
     import hashlib as _hashlib
@@ -348,9 +381,36 @@ async def inject_event(request: Request, body: InjectEventRequest):
         raise HTTPException(503, "Pipeline not initialized")
 
     ts = int(_time.time())
-    fp = body.device_fingerprint or _hashlib.sha256(f"custom-{ts}-{_random.randint(0,999999)}".encode()).hexdigest()[:16]
+
+    def _enum_by_name(enum_cls, raw: str | None, default, field: str):
+        if raw is None:
+            return default
+        try:
+            return enum_cls[str(raw).upper()]
+        except KeyError as exc:
+            raise HTTPException(400, f"Invalid {field}: {raw}") from exc
+
+    def _enum_by_value(enum_cls, raw: int, field: str):
+        try:
+            return enum_cls(raw)
+        except ValueError as exc:
+            raise HTTPException(400, f"Invalid {field}: {raw}") from exc
+
+    def _device_fingerprint(raw: str | None) -> tuple[str, bool, bool]:
+        candidate = (raw or "").strip().lower()
+        if len(candidate) == 16 and all(ch in "0123456789abcdef" for ch in candidate):
+            return candidate, False, False
+        seed = candidate or f"custom-{ts}-{_random.randint(0,999999)}"
+        return _hashlib.sha256(seed.encode()).hexdigest()[:16], bool(candidate), not bool(candidate)
+
+    fp, fp_normalized, fp_generated = _device_fingerprint(body.device_fingerprint)
     geo_lat = body.geo_lat if body.geo_lat is not None else round(_random.uniform(8.0, 35.0), 6)
     geo_lon = body.geo_lon if body.geo_lon is not None else round(_random.uniform(69.0, 97.0), 6)
+    device_meta = {
+        "device_fingerprint": fp,
+        "device_fingerprint_normalized": fp_normalized,
+        "device_fingerprint_generated": fp_generated,
+    }
 
     def _hex_id(prefix: str) -> str:
         return f"{prefix}{_hashlib.sha256(f'{ts}-{_random.randint(0,999999)}'.encode()).hexdigest()[:12].upper()}"
@@ -359,12 +419,12 @@ async def inject_event(request: Request, body: InjectEventRequest):
         if not body.sender_id or not body.receiver_id or not body.amount_inr:
             raise HTTPException(400, "Transaction requires sender_id, receiver_id, and amount_inr")
 
-        channel_val = Channel[body.channel.upper()] if body.channel else Channel.UPI
+        channel_val = _enum_by_name(Channel, body.channel, Channel.UPI, "channel")
         amount_paisa = int(body.amount_inr * 100)
         txn_id = _hex_id("TXN")
-        sender_acct_type = AccountType[body.sender_account_type.upper()] if body.sender_account_type else AccountType.SAVINGS
-        receiver_acct_type = AccountType[body.receiver_account_type.upper()] if body.receiver_account_type else AccountType.SAVINGS
-        fraud = FraudPattern(body.fraud_label)
+        sender_acct_type = _enum_by_name(AccountType, body.sender_account_type, AccountType.SAVINGS, "sender_account_type")
+        receiver_acct_type = _enum_by_name(AccountType, body.receiver_account_type, AccountType.SAVINGS, "receiver_account_type")
+        fraud = _enum_by_value(FraudPattern, body.fraud_label, "fraud_label")
 
         cs = compute_transaction_checksum(txn_id, ts, body.sender_id, body.receiver_id, amount_paisa, int(channel_val))
 
@@ -384,13 +444,13 @@ async def inject_event(request: Request, body: InjectEventRequest):
         )
         await pipeline.ingest(event)
 
-        summary = {"type": "transaction", "txn_id": txn_id, "sender": body.sender_id, "receiver": body.receiver_id, "amount_paisa": amount_paisa, "channel": channel_val.name, "fraud_label": fraud.name}
+        summary = {"type": "transaction", "txn_id": txn_id, "sender": body.sender_id, "receiver": body.receiver_id, "amount_paisa": amount_paisa, "channel": channel_val.name, "fraud_label": fraud.name, **device_meta}
 
     elif body.event_type == "auth":
         if not body.account_id:
             raise HTTPException(400, "Auth event requires account_id")
 
-        action_val = AuthAction[body.action.upper()] if body.action else AuthAction.LOGIN
+        action_val = _enum_by_name(AuthAction, body.action, AuthAction.LOGIN, "action")
         ip = body.ip_address or f"182.{_random.randint(0,255)}.{_random.randint(0,255)}.{_random.randint(1,254)}"
         success = body.success if body.success is not None else True
         eid = _hex_id("AUTH")
@@ -407,13 +467,13 @@ async def inject_event(request: Request, body: InjectEventRequest):
         )
         await pipeline.ingest(event)
 
-        summary = {"type": "auth", "event_id": eid, "account": body.account_id, "action": action_val.name, "success": success, "ip": ip}
+        summary = {"type": "auth", "event_id": eid, "account": body.account_id, "action": action_val.name, "success": success, "ip": ip, **device_meta}
 
     elif body.event_type == "interbank":
         if not body.sender_ifsc or not body.receiver_ifsc:
             raise HTTPException(400, "Interbank message requires sender_ifsc and receiver_ifsc")
 
-        channel_val = Channel[body.channel.upper()] if body.channel else Channel.NEFT
+        channel_val = _enum_by_name(Channel, body.channel, Channel.NEFT, "channel")
         amount_paisa = int((body.amount_inr or 100000) * 100)
         msg_id = _hex_id("MSG")
         sender_acct = body.sender_id or f"SHELL{_random.randint(1000000000, 9999999999)}"
@@ -433,7 +493,7 @@ async def inject_event(request: Request, body: InjectEventRequest):
         )
         await pipeline.ingest(event)
 
-        summary = {"type": "interbank", "msg_id": msg_id, "sender_ifsc": body.sender_ifsc, "receiver_ifsc": body.receiver_ifsc, "amount_paisa": amount_paisa, "channel": channel_val.name}
+        summary = {"type": "interbank", "msg_id": msg_id, "sender_ifsc": body.sender_ifsc, "receiver_ifsc": body.receiver_ifsc, "amount_paisa": amount_paisa, "channel": channel_val.name, **device_meta}
 
     else:
         raise HTTPException(400, f"Unknown event_type: {body.event_type}. Must be 'transaction', 'auth', or 'interbank'.")

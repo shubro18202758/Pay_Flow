@@ -1,30 +1,42 @@
 // ============================================================================
-// Trigger Feed -- Live verdict feed with typology clustering + simulation fallback
+// Verdict Feed -- Live verdict stream with backend event-lab trace fallback
 // ============================================================================
 
 import { useDashboardStore } from '@/stores/use-dashboard-store'
 import { useSimulationStore } from '@/stores/use-simulation-store'
 import { useFraudTypology } from '@/hooks/use-api'
-import { SeverityBadge, verdictToSeverity } from '@/components/shared/severity-badge'
-import { fmtPaisa, fmtTimestamp, truncId, cn } from '@/lib/utils'
+import { SeverityBadge } from '@/components/shared/severity-badge'
+import { verdictToSeverity } from '@/lib/severity'
+import { fmtOptionalTimestamp, fmtPaisa, truncId, cn } from '@/lib/utils'
 import { Bell, Inbox, Filter, Tag } from 'lucide-react'
 import { useState, useMemo } from 'react'
-import type { SSEAgentVerdict, AgentLogEntry } from '@/lib/types'
+import type { SSEAgentVerdict } from '@/lib/types'
 
 const TYPOLOGY_COLORS: Record<string, string> = {
-  layering: 'bg-red-500/20 text-red-400 border-red-500/30',
-  'round-tripping': 'bg-orange-500/20 text-orange-400 border-orange-500/30',
-  structuring: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-  'dormant activation': 'bg-purple-500/20 text-purple-400 border-purple-500/30',
-  'profile mismatch': 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  'upi mule network': 'bg-rose-500/20 text-rose-400 border-rose-500/30',
-  'circular laundering': 'bg-pink-500/20 text-pink-400 border-pink-500/30',
-  'velocity phishing': 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+  layering: 'bg-[#DA251C]/20 text-[#DA251C] border-[#DA251C]/30',
+  'round-tripping': 'bg-[#DA251C]/20 text-[#DA251C] border-[#DA251C]/30',
+  structuring: 'bg-[#DA251C]/20 text-[#DA251C] border-[#DA251C]/30',
+  'dormant activation': 'bg-[#00579C]/20 text-[#00579C] border-[#00579C]/30',
+  'profile mismatch': 'bg-[#00579C]/20 text-[#00579C] border-[#00579C]/30',
+  'upi mule network': 'bg-[#DA251C]/20 text-[#DA251C] border-[#DA251C]/30',
+  'circular laundering': 'bg-[#DA251C]/20 text-[#DA251C] border-[#DA251C]/30',
+  'velocity phishing': 'bg-[#00579C]/20 text-[#00579C] border-[#00579C]/30',
 }
 
 function getTypologyColor(typology: string): string {
   const key = typology.toLowerCase().replace(/_/g, ' ')
   return TYPOLOGY_COLORS[key] ?? 'bg-zinc-500/20 text-zinc-400 border-zinc-500/30'
+}
+
+function isFallbackVerdict(v: SSEAgentVerdict): boolean {
+  const evidenceCount = (v.evidence_cited?.length ?? v.evidence?.length ?? 0)
+  return (
+    v.confidence_source === 'deterministic_evidence_fallback' ||
+    v.llm_parse_status?.includes('fallback') ||
+    (v.confidence === 0.5 &&
+      evidenceCount === 0 &&
+      Boolean(v.reasoning_summary?.includes('Unable to reach definitive conclusion')))
+  )
 }
 
 export function AlertFeed() {
@@ -48,7 +60,7 @@ export function AlertFeed() {
       .slice(0, 24)
   }, [allVerdicts, filterTypology])
 
-  const traceFallback = recentEvents.slice(-12).reverse()
+  const eventLabTrace = recentEvents.slice(-12).reverse()
   const hasVerdicts = allVerdicts.length > 0
 
   // Collect active typologies for filter chips
@@ -71,11 +83,11 @@ export function AlertFeed() {
         <div className="flex items-center gap-1.5">
           <Bell className="w-3.5 h-3.5 text-accent-primary" />
           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
-            {hasVerdicts ? 'Trigger Feed' : 'Injected Triggers'}
+            {hasVerdicts ? 'Verdict Feed' : 'Event-Lab Trace'}
           </span>
         </div>
         <span className="text-[10px] font-mono tabular-nums text-text-muted">
-          {hasVerdicts ? `${verdicts.length} verdicts` : `${traceFallback.length} events`}
+          {hasVerdicts ? `${verdicts.length} verdicts` : `${eventLabTrace.length} backend events`}
         </span>
       </div>
 
@@ -132,15 +144,15 @@ export function AlertFeed() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
-        {!hasVerdicts && traceFallback.length === 0 ? (
+        {!hasVerdicts && eventLabTrace.length === 0 ? (
           /* Empty state */
           <div className="flex flex-col items-center justify-center h-full gap-2.5 animate-fade-in">
             <Inbox className="w-6 h-6 text-text-muted/50" />
             <p className="text-text-muted text-[10px] uppercase tracking-[0.12em]">
-              No triggers yet
+              No backend event traces yet
             </p>
             <p className="text-text-muted/60 text-[9px] px-6 text-center leading-relaxed">
-              Launch a simulation to see live events stream in
+              Launch an event drill or inject a transaction to see backend event traces stream in
             </p>
           </div>
         ) : hasVerdicts ? (
@@ -149,6 +161,7 @@ export function AlertFeed() {
             {verdicts.map((entry, idx) => {
               const v = entry.data as SSEAgentVerdict
               const severity = verdictToSeverity(v.verdict)
+              const fallback = isFallbackVerdict(v)
               return (
                 <div
                   key={entry.id}
@@ -161,7 +174,7 @@ export function AlertFeed() {
                       {truncId(v.txn_id)}
                     </span>
                     <span className="text-[9px] font-mono tabular-nums text-text-muted shrink-0">
-                      {(v.confidence * 100).toFixed(0)}%
+                      {fallback ? 'n/a' : `${(v.confidence * 100).toFixed(0)}%`}
                     </span>
                   </div>
                   {v.fraud_typology && (
@@ -186,16 +199,16 @@ export function AlertFeed() {
                     </span>
                     <span className="tabular-nums">{v.thinking_steps} steps</span>
                     <span className="tabular-nums">{v.tools_used?.length ?? 0} tools</span>
-                    <span className="ml-auto tabular-nums">{fmtTimestamp(entry.timestamp)}</span>
+                    <span className="ml-auto tabular-nums">{fmtOptionalTimestamp(entry.timestamp)}</span>
                   </div>
                 </div>
               )
             })}
           </div>
         ) : (
-          /* Trace fallback cards */
+          /* Backend event-lab trace cards */
           <div className="p-2 space-y-1.5">
-            {traceFallback.map((entry, idx) => (
+            {eventLabTrace.map((entry, idx) => (
               <div
                 key={entry.id}
                 className="rounded-md bg-bg-elevated/60 border border-border-subtle/50 p-2.5 card-hover transition-all duration-200 animate-fade-in"
@@ -207,7 +220,7 @@ export function AlertFeed() {
                   </span>
                   <span className="truncate text-text-primary">{entry.attackLabel}</span>
                   <span className="ml-auto font-mono tabular-nums text-text-muted">
-                    {fmtTimestamp(entry.timestamp)}
+                    {fmtOptionalTimestamp(entry.timestamp)}
                   </span>
                 </div>
                 <div className="mt-1.5 text-[9px] leading-relaxed text-text-secondary font-mono">
@@ -228,7 +241,7 @@ export function AlertFeed() {
                   )}
                 </div>
                 <div className="mt-1.5 text-[8px] font-mono tabular-nums text-text-muted">
-                  progress {entry.progressPct.toFixed(0)}%
+                  event-lab progress {entry.progressPct.toFixed(0)}%
                 </div>
               </div>
             ))}

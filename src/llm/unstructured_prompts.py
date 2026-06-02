@@ -278,7 +278,7 @@ def build_consensus_injection_prompt(
 ) -> str:
     """
     Build a prompt that injects the NLU sub-agent's findings into the main
-    Investigator Agent's reasoning loop for risk consensus.
+    Investigator Agent's evidence-rationale loop for risk consensus.
 
     This prompt bridges the qualitative NLU findings with the quantitative
     ML/GNN evidence already collected by the main agent.
@@ -289,7 +289,6 @@ def build_consensus_injection_prompt(
     da_score = unstructured_result.get("device_anomaly_score", 0.0)
 
     parts = [
-        "/think\n",
         "## NLU SUB-AGENT FINDINGS (Unstructured Data Analysis)\n\n",
         "The NLU sub-agent has completed its analysis of the unstructured "
         "textual data associated with this transaction. Integrate these "

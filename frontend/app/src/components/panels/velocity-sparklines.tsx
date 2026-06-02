@@ -2,9 +2,12 @@
 // Velocity Sparklines — Per-account transaction velocity with inline SVG sparklines
 // ============================================================================
 
+import { useMemo } from 'react'
 import { useVelocityTrends } from '@/hooks/use-api'
+import { useActivityStore } from '@/stores/use-activity-store'
 import { cn, fmtNum, truncId } from '@/lib/utils'
 import { Activity, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
+import type { EventLifecycle } from '@/stores/use-activity-store'
 import type { VelocityAccount } from '@/lib/types'
 
 const VELOCITY_THRESHOLDS = {
@@ -55,12 +58,36 @@ function VelocityTrend({ current, previous }: { current: number; previous: numbe
   return (
     <div className={cn(
       'flex items-center gap-0.5 text-[8px] font-mono tabular-nums',
-      isUp ? 'text-red-400' : 'text-emerald-400',
+      isUp ? 'text-[#DA251C]' : 'text-[#00579C]',
     )}>
       {isUp ? <TrendingUp className="w-2.5 h-2.5" /> : <TrendingDown className="w-2.5 h-2.5" />}
       <span>{isUp ? '+' : ''}{change.toFixed(0)}%</span>
     </div>
   )
+}
+
+function buildObservedSparkline(
+  accountId: string,
+  events: Map<string, EventLifecycle>,
+  windowMinutes: number,
+  steps = 8,
+): number[] {
+  const now = Date.now() / 1000
+  const windowSeconds = Math.max(60, windowMinutes * 60)
+  const start = now - windowSeconds
+  const bucketSize = windowSeconds / steps
+  const values = Array.from({ length: steps }, () => 0)
+
+  for (const lifecycle of events.values()) {
+    if (lifecycle.sender !== accountId && lifecycle.receiver !== accountId) continue
+    const ts = lifecycle.firstSeen
+    if (!Number.isFinite(ts) || ts <= 0) continue
+    if (ts < start || ts > now) continue
+    const idx = Math.min(steps - 1, Math.max(0, Math.floor((ts - start) / bucketSize)))
+    values[idx] += 1
+  }
+
+  return values.some((value) => value > 0) ? values : []
 }
 
 export function VelocitySparklines({
@@ -71,18 +98,34 @@ export function VelocitySparklines({
   topN?: number
 }) {
   const { data, isLoading } = useVelocityTrends(windowMinutes, topN)
+  const lifecycleEvents = useActivityStore((s) => s.events)
 
-  const accounts = data?.accounts ?? []
+  const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts])
+  const sparklineByAccount = useMemo(() => {
+    const byAccount = new Map<string, number[]>()
+    for (const acct of accounts) {
+      const backendSeries = Array.isArray(acct.sparkline)
+        ? acct.sparkline.map((value) => Number(value) || 0)
+        : []
+      byAccount.set(
+        acct.account_id,
+        backendSeries.length > 1
+          ? backendSeries
+          : buildObservedSparkline(acct.account_id, lifecycleEvents, windowMinutes),
+      )
+    }
+    return byAccount
+  }, [accounts, lifecycleEvents, windowMinutes])
 
   return (
-    <div className="rounded-lg border border-border-subtle bg-bg-card p-3">
+    <div className="rounded-lg border border-border-subtle bg-bg-deep p-3">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
           <Activity className="w-3.5 h-3.5 text-accent-primary/70" />
           <span>Velocity Trends</span>
         </div>
         <span className="text-[8px] font-mono text-text-muted">
-          Top {topN} | {windowMinutes}m
+              Top {topN} | {windowMinutes}m{data?.bucket_seconds ? ` | ${data.bucket_seconds}s bins` : ''}
         </span>
       </div>
 
@@ -104,22 +147,21 @@ export function VelocitySparklines({
           {accounts.map((acct: VelocityAccount) => {
             const color = velocityColor(acct.count)
             const fraudRatio = acct.count > 0 ? acct.fraud_count / acct.count : 0
-            // Simulated sparkline from count (show a progression)
-            const sparkValues = generateSparkValues(acct.count, 8)
+            const sparkValues = sparklineByAccount.get(acct.account_id) ?? []
             const prevVal = sparkValues.length > 1 ? sparkValues[sparkValues.length - 2] : 0
-            const curVal = sparkValues[sparkValues.length - 1]
+            const curVal = sparkValues[sparkValues.length - 1] ?? 0
 
             return (
               <div
                 key={acct.account_id}
                 className={cn(
                   'flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors',
-                  fraudRatio > 0.3 ? 'bg-red-500/5 hover:bg-red-500/10' : 'hover:bg-bg-elevated/50',
+                  fraudRatio > 0.3 ? 'bg-[#DA251C]/5 hover:bg-[#DA251C]/10' : 'hover:bg-bg-elevated/50',
                 )}
               >
                 <div className="w-20 flex items-center gap-1">
                   {fraudRatio > 0.3 && (
-                    <AlertTriangle className="w-2.5 h-2.5 text-red-400 shrink-0" />
+                    <AlertTriangle className="w-2.5 h-2.5 text-[#DA251C] shrink-0" />
                   )}
                   <span className="text-[9px] font-mono text-text-primary truncate">
                     {truncId(acct.account_id, 10)}
@@ -130,12 +172,16 @@ export function VelocitySparklines({
                 </span>
                 <span className={cn(
                   'w-10 text-right text-[9px] font-mono tabular-nums',
-                  acct.fraud_count > 0 ? 'text-red-400' : 'text-text-muted',
+                  acct.fraud_count > 0 ? 'text-[#DA251C]' : 'text-text-muted',
                 )}>
                   {acct.fraud_count}
                 </span>
                 <div className="flex-1 flex justify-center">
-                  <Sparkline values={sparkValues} color={color} />
+                  {sparkValues.length > 1 ? (
+                    <Sparkline values={sparkValues} color={color} />
+                  ) : (
+                    <span className="text-[8px] font-mono text-text-muted">insufficient backend window</span>
+                  )}
                 </div>
                 <div className="w-10 flex justify-end">
                   <VelocityTrend current={curVal} previous={prevVal} />
@@ -147,17 +193,4 @@ export function VelocitySparklines({
       )}
     </div>
   )
-}
-
-/** Generate synthetic sparkline values based on final count (for visual effect) */
-function generateSparkValues(finalCount: number, steps: number): number[] {
-  const values: number[] = []
-  const base = Math.max(finalCount * 0.3, 1)
-  for (let i = 0; i < steps; i++) {
-    const progress = i / (steps - 1)
-    const val = base + (finalCount - base) * progress + (Math.sin(i * 1.7) * finalCount * 0.15)
-    values.push(Math.max(0, Math.round(val)))
-  }
-  values[steps - 1] = finalCount
-  return values
 }

@@ -111,7 +111,7 @@ class SHAPExplainer:
         self._explainer = None
         self._feature_names = feature_names or []
         self._metrics = ExplainabilityMetrics()
-        self._global_importance: Optional[np.ndarray] = None
+        self._global_importance: Optional[dict[str, float]] = None
 
     def attach_model(self, classifier) -> None:
         """Attach a trained XGBoost classifier for SHAP computation."""
@@ -134,12 +134,26 @@ class SHAPExplainer:
     def _attach_fallback(self, classifier) -> None:
         """Use XGBoost's built-in feature importance as fallback."""
         try:
+            if hasattr(classifier, "feature_importance"):
+                importance = classifier.feature_importance("gain")
+                self._global_importance = dict(importance)
+                logger.info(
+                    "Fallback feature importance attached (%d features)",
+                    len(self._global_importance),
+                )
+                return
+
             model = classifier._model
             if model is not None:
-                importance = model.get_score(importance_type="gain")
+                booster = model.get_booster() if hasattr(model, "get_booster") else model
+                importance = booster.get_score(importance_type="gain")
                 self._global_importance = importance
-        except Exception:
-            pass
+                logger.info(
+                    "Fallback feature importance attached (%d features)",
+                    len(self._global_importance),
+                )
+        except Exception as exc:
+            logger.debug("Fallback feature importance unavailable: %s", exc)
 
     def explain_transaction(
         self,
@@ -289,15 +303,23 @@ class SHAPExplainer:
                 logger.debug("Global SHAP failed: %s", e)
 
         # Fallback: use stored importance
-        if self._global_importance:
+        if self._global_importance is not None and len(self._global_importance) > 0:
             result = []
-            for fname, imp in self._global_importance.items():
+            for raw_name, imp in self._global_importance.items():
+                fname = raw_name
+                if raw_name.startswith("f") and raw_name[1:].isdigit():
+                    idx = int(raw_name[1:])
+                    if idx < len(names):
+                        fname = names[idx]
                 result.append({
                     "feature": fname,
                     "importance": round(float(imp), 6),
                     "description": self.FEATURE_DESCRIPTIONS.get(fname, fname),
                 })
             result.sort(key=lambda x: x["importance"], reverse=True)
+            self._metrics.top_global_features = [
+                r["feature"] for r in result[:10]
+            ]
             return result
 
         return []
@@ -355,9 +377,17 @@ class SHAPExplainer:
         return " ".join(parts)
 
     def snapshot(self) -> dict:
+        method = "TreeSHAP" if self._explainer is not None else "XGBoost gain fallback"
+        global_feature_count = (
+            len(self._global_importance)
+            if self._global_importance is not None
+            else 0
+        )
         return {
             "explanations_generated": self._metrics.explanations_generated,
             "avg_explanation_ms": round(self._metrics.avg_explanation_ms, 2),
             "shap_available": self._explainer is not None,
+            "method": method,
+            "global_feature_count": global_feature_count,
             "top_global_features": self._metrics.top_global_features[:10],
         }

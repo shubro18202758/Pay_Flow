@@ -49,12 +49,12 @@ export function RightSidebar() {
 
       {!collapsed && (
         <div className="flex flex-col flex-1 min-h-0 animate-fade-in">
-          <div className="shrink-0 p-3 pb-2">
+          <div className="shrink-0 p-3 pb-3">
             <PreFraudIntelBrief variant="sidebar" />
           </div>
 
           {/* Live Activity Feed */}
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-[180px] border-t border-border-subtle">
             <LiveActivityFeed />
           </div>
 

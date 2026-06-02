@@ -11,6 +11,28 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return int(raw)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return float(raw)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ── Project Paths ──────────────────────────────────────────────────────────────
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -53,7 +75,7 @@ class VRAMBudget:
 
     # Mode B: Assistant (LLM loaded)
     llm_model_mb: int = 3400        # Qwen-3.5-4B Q4_K_M local model footprint
-    llm_kv_cache_mb: int = 768      # KV cache at q8_0 quant, 16K context
+    llm_kv_cache_mb: int = 768      # conservative KV cache budget at q8_0, 8K context
     llm_cuda_overhead_mb: int = 400 # CUDA context + compute buffers
     assistant_reserve_mb: int = 4868 # includes safety headroom for prompt spikes
 
@@ -103,21 +125,41 @@ class OllamaConfig:
     custom_model: str = field(
         default_factory=lambda: os.getenv(
             "PAYFLOW_OLLAMA_MODEL",
-            os.getenv("OLLAMA_MODEL", "payflow-qwen"),
+            os.getenv("OLLAMA_MODEL", "qwen3.5:4b"),
         )
-    )  # built via scripts/deploy_ollama.sh unless overridden by deployment env
+    )  # optional custom tag built via scripts/deploy_ollama.sh
     base_url: str = field(
         default_factory=lambda: os.getenv(
             "OLLAMA_URL",
             os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         )
     )
-    keep_alive: str = "-1"        # permanent residency — never unload from VRAM
-    temperature: float = 0.3      # low temp for deterministic fraud analysis
-    num_ctx: int = 16384          # context window (tokens) — capped for 8 GB VRAM
-    top_p: float = 0.9
-    num_batch: int = 256          # smaller prefill batches to limit VRAM spikes
-    kv_cache_type: str = "q8_0"   # halves KV cache memory for the 16K context
+    required_model_prefix: str = field(default_factory=lambda: os.getenv("PAYFLOW_REQUIRED_OLLAMA_PREFIX", "qwen3.5"))
+    strict_model_family: bool = field(default_factory=lambda: _env_bool("PAYFLOW_STRICT_OLLAMA_MODEL", True))
+    keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "30m"))
+    temperature: float = field(default_factory=lambda: _env_float("OLLAMA_TEMPERATURE", 0.2))
+    intent_temperature: float = field(default_factory=lambda: _env_float("PAYFLOW_INTENT_TEMPERATURE", 0.05))
+    answer_temperature: float = field(default_factory=lambda: _env_float("PAYFLOW_ANSWER_TEMPERATURE", 0.2))
+    verdict_temperature: float = field(default_factory=lambda: _env_float("PAYFLOW_VERDICT_TEMPERATURE", 0.08))
+    num_ctx: int = field(default_factory=lambda: _env_int("OLLAMA_NUM_CTX", 8192))
+    num_ctx_interactive: int = field(default_factory=lambda: _env_int("PAYFLOW_INTERACTIVE_NUM_CTX", 4096))
+    num_ctx_status: int = field(default_factory=lambda: _env_int("PAYFLOW_STATUS_NUM_CTX", 2048))
+    max_predict_tokens: int = field(default_factory=lambda: _env_int("OLLAMA_NUM_PREDICT", 768))
+    intent_max_tokens: int = field(default_factory=lambda: _env_int("PAYFLOW_INTENT_MAX_TOKENS", 192))
+    answer_max_tokens: int = field(default_factory=lambda: _env_int("PAYFLOW_ANSWER_MAX_TOKENS", 640))
+    agent_max_tokens: int = field(default_factory=lambda: _env_int("PAYFLOW_AGENT_MAX_TOKENS", 384))
+    nlu_max_tokens: int = field(default_factory=lambda: _env_int("PAYFLOW_NLU_MAX_TOKENS", 384))
+    agent_num_ctx: int = field(default_factory=lambda: _env_int("PAYFLOW_AGENT_NUM_CTX", 4096))
+    nlu_num_ctx: int = field(default_factory=lambda: _env_int("PAYFLOW_NLU_NUM_CTX", 3072))
+    top_k: int = field(default_factory=lambda: _env_int("OLLAMA_TOP_K", 40))
+    top_p: float = field(default_factory=lambda: _env_float("OLLAMA_TOP_P", 0.9))
+    repeat_penalty: float = field(default_factory=lambda: _env_float("OLLAMA_REPEAT_PENALTY", 1.08))
+    num_batch: int = field(default_factory=lambda: _env_int("OLLAMA_NUM_BATCH", 128))
+    seed: int = field(default_factory=lambda: _env_int("OLLAMA_SEED", 42))
+    request_timeout_sec: float = field(default_factory=lambda: _env_float("OLLAMA_REQUEST_TIMEOUT_SEC", 120.0))
+    max_parallel_requests: int = field(default_factory=lambda: _env_int("PAYFLOW_LLM_MAX_PARALLEL", 1))
+    context_chars: int = field(default_factory=lambda: _env_int("PAYFLOW_LLM_CONTEXT_CHARS", 6000))
+    kv_cache_type: str = field(default_factory=lambda: os.getenv("OLLAMA_KV_CACHE_TYPE", "q8_0"))
 
 
 # ── Fraud Detection Thresholds ────────────────────────────────────────────────
@@ -186,11 +228,13 @@ CIRCUIT_BREAKER_CFG = CircuitBreakerConfig()
 @dataclass(frozen=True)
 class InvestigatorAgentConfig:
     """LangGraph investigator agent configuration."""
-    max_iterations: int = 1              # max think-act-observe loops
-    thinking_temperature: float = 0.3    # low temp for deterministic CoT reasoning
-    verdict_temperature: float = 0.1     # even lower for final verdict
-    max_thinking_tokens: int = 256       # token budget per thinking step
-    max_verdict_tokens: int = 256        # token budget for final verdict
+    max_iterations: int = field(
+        default_factory=lambda: _env_int("PAYFLOW_AGENT_MAX_ITERATIONS", 2)
+    )                                    # max think-act-observe loops
+    thinking_temperature: float = 0.2    # low temp for deterministic analysis
+    verdict_temperature: float = 0.08    # even lower for final verdict
+    max_thinking_tokens: int = 384       # token budget per analysis step
+    max_verdict_tokens: int = 384        # token budget for final verdict
     tool_timeout_seconds: int = 30       # per-tool execution timeout
     enable_cot_trace: bool = True        # log full CoT trace for audit
 
@@ -204,9 +248,11 @@ INVESTIGATOR_CFG = InvestigatorAgentConfig()
 class UnstructuredAgentConfig:
     """NLU sub-agent configuration for unstructured data analysis."""
     analysis_temperature: float = 0.2    # lower than main agent for precision
+    max_analysis_tokens: int = 384       # bounded JSON findings budget
     max_findings_to_report: int = 15     # cap findings per analysis
     risk_modifier_ceiling: float = 0.30  # max positive risk adjustment
     risk_modifier_floor: float = -0.05   # risk reduction when no findings
+    risk_modifier_scale: float = 0.35    # converts weighted anomaly score to risk modifier
     se_weight: float = 0.40              # social engineering weight
     la_weight: float = 0.35              # linguistic anomaly weight
     da_weight: float = 0.25              # device anomaly weight
@@ -222,7 +268,7 @@ class FineTuningConfig:
     """
     QLoRA + GRPO fine-tuning configuration for 8 GB VRAM.
 
-    The Qwen 3.5 9B model is loaded in 4-bit NormalFloat (NF4) quantization
+    The Qwen 3.5 4B model is loaded in 4-bit NormalFloat (NF4) quantization
     via bitsandbytes. LoRA adapters target the attention projection matrices
     (q_proj, k_proj, v_proj, o_proj) with a small rank to keep trainable
     parameters under ~50 MB. Gradient checkpointing offloads activation
@@ -234,7 +280,7 @@ class FineTuningConfig:
     """
 
     # ── QLoRA Adapter ──────────────────────────────────────────────────────
-    base_model: str = "Qwen/Qwen3.5-9B"
+    base_model: str = field(default_factory=lambda: os.getenv("PAYFLOW_FINETUNE_BASE_MODEL", "Qwen/Qwen3.5-4B"))
     lora_r: int = 16                      # LoRA rank (16 strikes rank vs. VRAM)
     lora_alpha: int = 32                  # scaling factor = alpha / r = 2.0
     lora_dropout: float = 0.05
@@ -412,8 +458,8 @@ class GPUConcurrencyConfig:
     vram_normal_threshold_mb: float = 6500.0     # clear pressure (resume)
 
     # Dynamic context window scaling for LLM KV cache
-    num_ctx_full: int = 16384        # normal pressure: full context
-    num_ctx_medium: int = 8192       # high pressure: halved context
+    num_ctx_full: int = 8192         # normal pressure: tuned for 8 GB Qwen 4B
+    num_ctx_medium: int = 6144       # high pressure: reduced KV cache
     num_ctx_minimal: int = 4096      # critical: minimal context
 
     # Concurrency limits

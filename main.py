@@ -735,15 +735,16 @@ class PayFlowOrchestrator:
 
         # 10. AlertRouter
         from src.ml.models.alert_router import AlertRouter
-        max_agent_tasks = int(os.getenv("PAYFLOW_MAX_AGENT_TASKS", "2"))
+        max_agent_tasks = int(os.getenv("PAYFLOW_MAX_AGENT_TASKS", "1"))
         self._router = AlertRouter(max_agent_tasks=max_agent_tasks)
         self._router.register_graph_consumer(self._graph.investigate)
         self._router.register_ledger_consumer(self._ledger.anchor_alert)
         self._router.register_circuit_breaker_consumer(self._breaker.on_alert)
         if self._agent:
             self._router.register_agent_consumer(self._agent.on_alert)
+        self._router.start_worker()
         logger.info(
-            "AlertRouter wired (%d consumer groups, max_agent_tasks=%d)",
+            "AlertRouter wired (%d consumer groups, max_agent_tasks=%d, worker=enabled)",
             3 + (1 if self._agent else 0),
             max_agent_tasks,
         )
@@ -1052,13 +1053,18 @@ class PayFlowOrchestrator:
 
         # Set drift detector reference distribution
         if self._drift_detector:
-            import numpy as _np
+            reference_features = X_eval if X_eval.shape[0] else features
+            reference_result = self._classifier.predict(reference_features)
             self._drift_detector.set_reference(
-                pred_result.risk_scores
-                if hasattr(self, '_last_train_scores') else
-                _np.random.default_rng(42).uniform(0, 0.4, size=n).astype(_np.float32)
+                reference_result.risk_scores,
+                reference_features,
             )
-            logger.info("DriftDetector reference distribution set (%d samples)", n)
+            logger.info(
+                "DriftDetector reference distribution set from validation scores "
+                "(%d samples, mean=%.4f)",
+                reference_features.shape[0],
+                float(reference_result.risk_scores.mean()),
+            )
 
     async def _phase_inference(self) -> None:
         """Phase C: run inference, threshold, and route alerts."""
@@ -1087,6 +1093,8 @@ class PayFlowOrchestrator:
             pred_result = self._classifier.predict(features)
             elapsed = time.monotonic() - t0
             self.metrics.ml_inferences = n
+            if self._drift_detector:
+                self._drift_detector.record_batch(pred_result.risk_scores, features)
             logger.info(
                 "Inference complete in %.1fms — %d flagged (>0.5)",
                 pred_result.inference_ms,
@@ -1229,6 +1237,11 @@ class PayFlowOrchestrator:
                 )
                 ml_elapsed_ms = (time.monotonic() - t_ml) * 1000
                 self.metrics.ml_inferences += n
+                if self._drift_detector:
+                    self._drift_detector.record_batch(
+                        pred_result.risk_scores,
+                        all_features,
+                    )
 
                 # Broadcast per-batch ML scoring stage to frontend
                 try:
@@ -1354,9 +1367,21 @@ class PayFlowOrchestrator:
                         len(payloads), high_count, med_count, n,
                     )
 
-                    # Route alerts through the full pipeline
-                    for payload in payloads:
-                        await self._router.route(payload)
+                    route_limit = int(os.getenv("PAYFLOW_LIVE_ALERT_ROUTE_LIMIT", "8"))
+                    route_payloads = payloads[:route_limit]
+                    if len(payloads) > route_limit:
+                        logger.info(
+                            "Live inference: routing first %d/%d alerts this cycle "
+                            "(remaining alerts counted in ML/gate metrics).",
+                            route_limit,
+                            len(payloads),
+                        )
+
+                    # Queue alerts through the full pipeline.  The router worker
+                    # keeps graph/ledger/circuit-breaker/Qwen work from blocking
+                    # the asyncio loop that serves the dashboard.
+                    for payload in route_payloads:
+                        await self._router.enqueue(payload)
                         self.metrics.alerts_routed += 1
 
                 # Update orchestrator metrics for dashboard (accumulate, don't overwrite)
@@ -1431,7 +1456,7 @@ class PayFlowOrchestrator:
 
         while True:
             try:
-                await asyncio.sleep(1.35 if burst % 3 else 1.8)
+                await asyncio.sleep(2.6 if burst % 3 else 3.2)
 
                 if self._world is None or self._pipeline is None:
                     continue
@@ -1442,7 +1467,7 @@ class PayFlowOrchestrator:
                 mode = scenario_cycle[burst % len(scenario_cycle)]
                 events = []
 
-                normal_count = 10 + (burst % 4) * 2
+                normal_count = 4 + (burst % 3)
                 for _ in range(normal_count):
                     events.append(gen._generate_normal_transaction(self._world, now - 120))
 
@@ -1450,24 +1475,24 @@ class PayFlowOrchestrator:
                     events.extend(gen.generate_structuring_burst(
                         self._world,
                         now - 20,
-                        num_transactions=5,
+                        num_transactions=3,
                     ))
                 elif mode == "layering":
                     events.extend(gen.generate_layering_chain(
                         self._world,
                         now - 18,
-                        chain_length=4,
+                        chain_length=3,
                     ))
                 elif mode == "profile":
                     events.extend(gen.generate_profile_mismatch(self._world, now - 15))
 
                 emitted = 0
-                for idx, event in enumerate(events[:24]):
-                    live_ts = now + min(idx // 8, 2)
+                for idx, event in enumerate(events[:10]):
+                    live_ts = now + min(idx // 5, 2)
                     await self._pipeline.ingest(self._retime_live_event(event, live_ts))
                     emitted += 1
-                    if emitted % 8 == 0:
-                        await asyncio.sleep(0.04)
+                    if emitted % 5 == 0:
+                        await asyncio.sleep(0.05)
 
                 burst += 1
                 if burst % 10 == 0:
@@ -1621,6 +1646,8 @@ class PayFlowOrchestrator:
             snap["cfr_scorer"] = self._cfr_scorer.snapshot()
         if self._investigation_mgr:
             snap["investigation"] = self._investigation_mgr.snapshot()
+        if self._classifier and self._classifier.is_fitted:
+            snap["xgboost"] = self._classifier.training_info
         if self._rf_classifier and self._rf_classifier.is_fitted:
             snap["random_forest"] = self._rf_classifier.training_info
         if self._lr_classifier and self._lr_classifier.is_fitted:
@@ -1718,7 +1745,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--serve", action="store_true",
-        help="Keep dashboard server alive after pipeline completes (demo mode)",
+        help="Keep dashboard server alive after pipeline completes",
     )
     return p
 

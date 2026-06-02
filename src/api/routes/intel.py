@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
+from src.api.rbac import require_permission
 from src.intel import get_pre_fraud_intel_service
 
 router = APIRouter(prefix="/api/v1/intel", tags=["pre-fraud-intelligence"])
@@ -35,8 +36,9 @@ async def list_intel_sources() -> dict:
 
 
 @router.post("/refresh")
-async def refresh_pre_fraud_intel(body: RefreshRequest | None = None) -> dict:
-    """Run a bounded prototype refresh across enabled public-source adapters."""
+async def refresh_pre_fraud_intel(request: Request, body: RefreshRequest | None = None) -> dict:
+    """Run a bounded refresh across enabled public-source adapters."""
+    require_permission(request, "intel:write")
     service = get_pre_fraud_intel_service()
     result = service.refresh(seed=body.seed if body else None)
     await _publish_intel_event(
@@ -105,8 +107,9 @@ async def pre_fraud_tuning_status() -> dict:
 
 
 @router.post("/simulate-signal")
-async def simulate_intel_signal(body: SimulateSignalRequest) -> dict:
-    """Inject a deterministic judge-demo external fraud signal."""
+async def simulate_intel_signal(body: SimulateSignalRequest, request: Request) -> dict:
+    """Inject a deterministic external fraud signal for analyst drill flows."""
+    require_permission(request, "intel:write")
     service = get_pre_fraud_intel_service()
     result = service.simulate_signal(body.scenario)
     await _publish_intel_event(

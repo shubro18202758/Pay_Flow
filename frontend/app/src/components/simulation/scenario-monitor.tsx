@@ -4,11 +4,13 @@
 
 import { useSimulationStore } from '@/stores/use-simulation-store'
 import { useStopAttack, useStopAllAttacks } from '@/hooks/use-api'
+import { useRoleAccess } from '@/hooks/use-rbac'
 import { GaugeBar } from '@/components/shared/gauge-bar'
 import { cn, fmtDuration } from '@/lib/utils'
 import { Activity, Play, Square, OctagonX } from 'lucide-react'
 
 export function ScenarioMonitor() {
+  const access = useRoleAccess()
   const scenarios = useSimulationStore((s) => s.scenarios)
   const selectedScenarioId = useSimulationStore((s) => s.selectedScenarioId)
   const setSelectedScenario = useSimulationStore((s) => s.setSelectedScenario)
@@ -35,7 +37,8 @@ export function ScenarioMonitor() {
         {active.length > 1 && (
           <button
             onClick={() => void stopAll.mutateAsync()}
-            disabled={stopAll.isPending}
+            disabled={stopAll.isPending || !access.can('simulation:write')}
+            title={!access.can('simulation:write') ? `${access.policy.label} cannot stop simulations` : 'Stop all simulations'}
             className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-alert-critical hover:text-alert-critical/80 transition-colors"
           >
             <OctagonX className="w-3 h-3" />
@@ -72,9 +75,11 @@ export function ScenarioMonitor() {
                 type="button"
                 onClick={(event) => {
                   event.stopPropagation()
+                  if (!access.can('simulation:write')) return
                   void stopAttack.mutateAsync(s.scenario_id)
                 }}
-                disabled={stopAttack.isPending}
+                disabled={stopAttack.isPending || !access.can('simulation:write')}
+                title={!access.can('simulation:write') ? `${access.policy.label} cannot stop simulations` : 'Stop simulation'}
                 className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-alert-high hover:text-alert-critical transition-colors"
               >
                 <Square className="w-2.5 h-2.5 fill-current" />

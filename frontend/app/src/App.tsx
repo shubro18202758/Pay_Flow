@@ -8,8 +8,10 @@ import { RootLayout } from '@/components/layout/root-layout'
 import { useSSE } from '@/hooks/use-sse'
 import { useDashboardHydration } from '@/hooks/use-dashboard-hydration'
 import { useUIStore, type TabId } from '@/stores/use-ui-store'
+import { LandingPage } from '@/pages/landing'
 import { PreFraudIntelPage } from '@/pages/pre-fraud-intel'
-import { useLaunchPS3Scenario, useRefreshIntel } from '@/hooks/use-api'
+import { useCreateEvidencePackage, useLaunchPS3Scenario, useRefreshIntel } from '@/hooks/use-api'
+import { hasPermission } from '@/lib/rbac'
 
 const loadOverviewPage = () => import('@/pages/overview')
 const loadThreatSimPage = () => import('@/pages/threat-sim')
@@ -43,10 +45,14 @@ function AppContent() {
 
   const activeTab = useUIStore((s) => s.activeTab)
   const setActiveTab = useUIStore((s) => s.setActiveTab)
+  const currentRole = useUIStore((s) => s.currentRole)
   const setActiveCaseId = useUIStore((s) => s.setActiveCaseId)
+  const setLatestEvidencePackage = useUIStore((s) => s.setLatestEvidencePackage)
   const refreshIntel = useRefreshIntel()
   const launchPS3 = useLaunchPS3Scenario()
+  const evidencePackage = useCreateEvidencePackage()
   const handledDeepLink = useRef(false)
+  const lastSyncedRole = useRef(currentRole)
 
   useEffect(() => {
     if (handledDeepLink.current) return
@@ -58,20 +64,42 @@ function AppContent() {
     if (tab && validTabs.includes(tab)) {
       setActiveTab(tab)
     }
-    if (action === 'refresh_intel') {
+    if (action === 'refresh_intel' && hasPermission(currentRole, 'intel:write')) {
       setActiveTab('pre-fraud-intel')
       void refreshIntel.mutateAsync(undefined)
     }
-    if (action === 'launch_ps3_case' || action === 'open_evidence') {
+    if (action === 'launch_fund_flow_case' && hasPermission(currentRole, 'case:launch')) {
       setActiveTab('investigations')
       void launchPS3
-        .mutateAsync({ scenario: 'rapid_layering', intensity: 'demo', seed: 2026 })
+        .mutateAsync({ scenario: 'rapid_layering', intensity: 'scale', seed: Date.now() % 1_000_000 })
         .then((response) => setActiveCaseId(response.primary_case_id))
+    }
+    if (
+      action === 'open_evidence' &&
+      hasPermission(currentRole, 'case:launch') &&
+      hasPermission(currentRole, 'evidence:package')
+    ) {
+      setActiveTab('investigations')
+      setLatestEvidencePackage(null)
+      void launchPS3
+        .mutateAsync({ scenario: 'round_tripping', intensity: 'scale', seed: Date.now() % 1_000_000 })
+        .then(async (response) => {
+          setActiveCaseId(response.primary_case_id)
+          const pkg = await evidencePackage.mutateAsync(response.primary_case_id)
+          setLatestEvidencePackage(pkg)
+        })
     }
     if (tab || action) {
       window.history.replaceState(null, '', '/app')
     }
-  }, [launchPS3, refreshIntel, setActiveCaseId, setActiveTab])
+  }, [currentRole, evidencePackage, launchPS3, refreshIntel, setActiveCaseId, setActiveTab, setLatestEvidencePackage])
+
+  useEffect(() => {
+    document.documentElement.dataset.payflowRole = currentRole
+    if (lastSyncedRole.current === currentRole) return
+    lastSyncedRole.current = currentRole
+    void queryClient.invalidateQueries()
+  }, [currentRole])
 
   useEffect(() => {
     if (activeTab !== 'pre-fraud-intel') return
@@ -137,6 +165,12 @@ function TabLoadingFallback() {
 }
 
 export default function App() {
+  const appPath = window.location.pathname === '/app' || window.location.pathname.startsWith('/app/')
+
+  if (!appPath) {
+    return <LandingPage />
+  }
+
   return (
     <QueryClientProvider client={queryClient}>
       <AppContent />

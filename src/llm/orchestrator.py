@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 import ollama
 
 from config.settings import OLLAMA_CFG
-from config.vram_manager import assistant_mode
+from config.vram_manager import assistant_mode, _flush_torch_cache
 from src.llm.health_check import check_vram_for_llm
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,11 @@ class PayFlowLLM:
         self._skip_health_check = skip_health_check
         self._client = ollama.Client(host=OLLAMA_CFG.base_url)
         self._gpu_queue = None  # set via set_priority_queue()
+        self._resolved_model: str | None = None
+        self._model_checked_at: float = 0.0
+        self._request_gate = threading.BoundedSemaphore(
+            max(1, OLLAMA_CFG.max_parallel_requests)
+        )
 
     def set_priority_queue(self, queue) -> None:
         """Wire the GPU priority queue for dynamic num_ctx."""
@@ -78,8 +85,34 @@ class PayFlowLLM:
             return self._gpu_queue.current_num_ctx
         return OLLAMA_CFG.num_ctx
 
-    def _ensure_model_available(self) -> str:
+    def _model_family_allowed(self, model_name: str) -> bool:
+        """Return whether a model satisfies the configured Qwen family pin."""
+        if not OLLAMA_CFG.strict_model_family:
+            return True
+        required = OLLAMA_CFG.required_model_prefix.strip().lower()
+        if not required:
+            return True
+        return model_name.strip().lower().startswith(required)
+
+    def _require_allowed_model(self, model_name: str) -> str:
+        if self._model_family_allowed(model_name):
+            return model_name
+        raise RuntimeError(
+            "Configured Ollama model "
+            f"'{model_name}' violates PAYFLOW_REQUIRED_OLLAMA_PREFIX="
+            f"'{OLLAMA_CFG.required_model_prefix}'. Install/use qwen3.5:4b "
+            "or set PAYFLOW_STRICT_OLLAMA_MODEL=0 only for explicit tests."
+        )
+
+    def _ensure_model_available(self, *, force_refresh: bool = False) -> str:
         """Check if the custom model exists, fall back to base if not."""
+        if (
+            not force_refresh
+            and self._resolved_model is not None
+            and time.monotonic() - self._model_checked_at < 60.0
+        ):
+            return self._resolved_model
+
         try:
             models = self._client.list()
             if isinstance(models, dict):
@@ -98,48 +131,163 @@ class PayFlowLLM:
 
             # Try exact match first, then prefix match for the custom model.
             if self._model in available:
-                return self._model
+                self._resolved_model = self._require_allowed_model(self._model)
+                self._model_checked_at = time.monotonic()
+                return self._resolved_model
             for name in available:
-                if name.startswith(self._model):
-                    return name
+                if name.startswith(self._model) and self._model_family_allowed(name):
+                    self._resolved_model = self._require_allowed_model(name)
+                    self._model_checked_at = time.monotonic()
+                    return self._resolved_model
 
             # Fall back to the configured base model, also allowing prefix matches
             # because local Ollama installs often expose quantized suffix variants.
             if self._fallback_model in available:
-                return self._fallback_model
+                self._resolved_model = self._require_allowed_model(self._fallback_model)
+                self._model_checked_at = time.monotonic()
+                return self._resolved_model
             for name in available:
-                if name.startswith(self._fallback_model):
+                if name.startswith(self._fallback_model) and self._model_family_allowed(name):
                     logger.warning(
                         "Custom model '%s' not found. Using compatible local model '%s'.",
                         self._model, name,
                     )
-                    return name
+                    self._resolved_model = self._require_allowed_model(name)
+                    self._model_checked_at = time.monotonic()
+                    return self._resolved_model
 
+            if not self._model_family_allowed(self._fallback_model):
+                raise RuntimeError(
+                    "No acceptable Qwen 3.5 Ollama model was found. "
+                    f"Installed models: {sorted(available)}"
+                )
             logger.warning(
                 "Custom model '%s' not found. Falling back to '%s'.",
                 self._model, self._fallback_model,
             )
-            return self._fallback_model
+            self._resolved_model = self._require_allowed_model(self._fallback_model)
+            self._model_checked_at = time.monotonic()
+            return self._resolved_model
+        except RuntimeError:
+            raise
         except Exception as exc:
             logger.error("Failed to list Ollama models: %s", exc)
-            return self._fallback_model
+            return self._require_allowed_model(self._fallback_model)
 
     def _pre_flight(self) -> str:
         """Run VRAM health check and resolve model name."""
         if not self._skip_health_check:
-            result = check_vram_for_llm()
-            if not result.passed:
-                raise VRAMInsufficientError(result.message)
-            logger.info("VRAM health check passed: %s", result.message)
+            last_result = None
+            for attempt in range(3):
+                result = check_vram_for_llm()
+                last_result = result
+                if result.passed:
+                    logger.info("VRAM health check passed: %s", result.message)
+                    break
+                if attempt < 2:
+                    logger.warning(
+                        "VRAM health check failed before LLM call (attempt %d/3): %s",
+                        attempt + 1,
+                        result.message,
+                    )
+                    _flush_torch_cache()
+                    time.sleep(1.5 * (attempt + 1))
+            else:
+                message = last_result.message if last_result else "Unknown VRAM health check failure"
+                raise VRAMInsufficientError(message)
 
         return self._ensure_model_available()
+
+    def _options(
+        self,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        num_ctx: int | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "temperature": OLLAMA_CFG.temperature if temperature is None else temperature,
+            "num_predict": max_tokens or OLLAMA_CFG.max_predict_tokens,
+            "num_ctx": num_ctx or self._get_num_ctx(),
+            "top_k": OLLAMA_CFG.top_k,
+            "top_p": OLLAMA_CFG.top_p,
+            "repeat_penalty": OLLAMA_CFG.repeat_penalty,
+            "num_batch": OLLAMA_CFG.num_batch,
+            "seed": OLLAMA_CFG.seed,
+        }
+
+    def status(self) -> dict[str, Any]:
+        """Return Ollama reachability and model installation/runtime status."""
+        target = self._model
+        status: dict[str, Any] = {
+            "base_url": OLLAMA_CFG.base_url,
+            "target_model": target,
+            "fallback_model": self._fallback_model,
+            "resolved_model": self._resolved_model,
+            "required_model_prefix": OLLAMA_CFG.required_model_prefix,
+            "strict_model_family": OLLAMA_CFG.strict_model_family,
+            "reachable": False,
+            "target_installed": False,
+            "target_running": False,
+            "target_family_ok": self._model_family_allowed(target),
+            "installed_models": [],
+            "running_models": [],
+        }
+        try:
+            tags = httpx.get(f"{OLLAMA_CFG.base_url}/api/tags", timeout=5.0)
+            tags.raise_for_status()
+            status["reachable"] = True
+            installed = [
+                row.get("model") or row.get("name")
+                for row in tags.json().get("models", [])
+                if isinstance(row, dict) and (row.get("model") or row.get("name"))
+            ]
+            status["installed_models"] = installed
+            status["target_installed"] = any(
+                name == target or name.startswith(target)
+                for name in installed
+            )
+            status["acceptable_installed"] = [
+                name for name in installed if self._model_family_allowed(name)
+            ]
+        except Exception as exc:
+            status["error"] = str(exc)
+            return status
+
+        try:
+            ps = httpx.get(f"{OLLAMA_CFG.base_url}/api/ps", timeout=5.0)
+            ps.raise_for_status()
+            running = [
+                row.get("model") or row.get("name")
+                for row in ps.json().get("models", [])
+                if isinstance(row, dict) and (row.get("model") or row.get("name"))
+            ]
+            status["running_models"] = running
+            status["target_running"] = any(
+                name == target or name.startswith(target)
+                for name in running
+            )
+        except Exception:
+            pass
+
+        return status
+
+    def warmup(self) -> LLMResponse:
+        """Load Qwen with a tiny deterministic request so the first UI query is not cold."""
+        return self.query(
+            "Reply with exactly: ready",
+            temperature=0.0,
+            max_tokens=8,
+            num_ctx=OLLAMA_CFG.num_ctx_status,
+        )
 
     def query(
         self,
         prompt: str,
         system: str | None = None,
         temperature: float | None = None,
-        max_tokens: int = 2048,
+        max_tokens: int | None = None,
+        num_ctx: int | None = None,
     ) -> LLMResponse:
         """
         Single-turn synchronous query with VRAM lifecycle management.
@@ -152,32 +300,49 @@ class PayFlowLLM:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        with assistant_mode():
-            response = self._client.chat(
-                model=model,
-                messages=messages,
-                think=False,
-                options={
-                    "temperature": temperature or OLLAMA_CFG.temperature,
-                    "num_predict": max_tokens,
-                    "num_ctx": self._get_num_ctx(),
-                    "top_p": OLLAMA_CFG.top_p,
-                },
-            )
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "keep_alive": OLLAMA_CFG.keep_alive,
+            "options": self._options(
+                temperature=temperature,
+                max_tokens=max_tokens,
+                num_ctx=num_ctx,
+            ),
+        }
+
+        with self._request_gate:
+            with assistant_mode():
+                response = httpx.post(
+                    f"{OLLAMA_CFG.base_url}/api/chat",
+                    json=payload,
+                    timeout=OLLAMA_CFG.request_timeout_sec,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+        message = data.get("message", {}) if isinstance(data, dict) else {}
+        content = message.get("content", "") if isinstance(message, dict) else ""
+        prompt_tokens = data.get("prompt_eval_count") or 0
+        completion_tokens = data.get("eval_count") or 0
+        total_duration = data.get("total_duration") or 0
 
         return LLMResponse(
-            content=response.message.content,
+            content=content,
             model=model,
-            prompt_tokens=response.prompt_eval_count or 0,
-            completion_tokens=response.eval_count or 0,
-            total_duration_ms=(response.total_duration or 0) / 1_000_000,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_duration_ms=total_duration / 1_000_000,
         )
 
     async def generate(
         self,
         prompt: str,
         temperature: float | None = None,
-        max_tokens: int = 2048,
+        max_tokens: int | None = None,
+        num_ctx: int | None = None,
     ) -> str:
         """Async text-generation adapter used by dashboard NL query routes."""
         response = await asyncio.to_thread(
@@ -185,14 +350,89 @@ class PayFlowLLM:
             prompt,
             temperature=temperature,
             max_tokens=max_tokens,
+            num_ctx=num_ctx,
         )
         return response.content
+
+    def chat(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        num_ctx: int | None = None,
+        timeout: float | None = None,
+        response_format: str | dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Shared non-streaming chat path for agents and API workflows."""
+        model = self._pre_flight()
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "keep_alive": OLLAMA_CFG.keep_alive,
+            "options": self._options(
+                temperature=temperature,
+                max_tokens=max_tokens,
+                num_ctx=num_ctx,
+            ),
+        }
+        if tools:
+            payload["tools"] = tools
+        if response_format:
+            payload["format"] = response_format
+
+        with self._request_gate:
+            with assistant_mode():
+                try:
+                    response = httpx.post(
+                        f"{OLLAMA_CFG.base_url}/api/chat",
+                        json=payload,
+                        timeout=timeout or OLLAMA_CFG.request_timeout_sec,
+                    )
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    if isinstance(response_format, dict) and exc.response.status_code == 400:
+                        payload["format"] = "json"
+                        response = httpx.post(
+                            f"{OLLAMA_CFG.base_url}/api/chat",
+                            json=payload,
+                            timeout=timeout or OLLAMA_CFG.request_timeout_sec,
+                        )
+                        response.raise_for_status()
+                    else:
+                        raise
+                data = response.json()
+
+        message = data.get("message", {}) if isinstance(data, dict) else {}
+        raw_tool_calls = message.get("tool_calls", []) if isinstance(message, dict) else []
+        parsed_calls: list[dict[str, Any]] = []
+        for tc in raw_tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            function_data = tc.get("function", {})
+            if not isinstance(function_data, dict):
+                continue
+            arguments = function_data.get("arguments", {})
+            parsed_calls.append({
+                "name": function_data.get("name", ""),
+                "arguments": arguments,
+            })
+
+        return {
+            "content": message.get("content", "") if isinstance(message, dict) else "",
+            "tool_calls": parsed_calls,
+            "model": model,
+            "raw": data,
+        }
 
     def analyze_fraud(
         self,
         context: dict,
         question: str,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """
         Structured fraud analysis query. Injects transaction context into
@@ -212,7 +452,8 @@ class PayFlowLLM:
         return self.query(
             prompt=question,
             system=system_prompt,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens or OLLAMA_CFG.max_predict_tokens,
+            num_ctx=OLLAMA_CFG.num_ctx_interactive,
         )
 
     def stream_query(
@@ -237,15 +478,16 @@ class PayFlowLLM:
             model=model,
             messages=messages,
             stream=True,
-            think=False,
-            options={
-                "temperature": OLLAMA_CFG.temperature,
-                "num_ctx": OLLAMA_CFG.num_ctx,
-            },
+            keep_alive=OLLAMA_CFG.keep_alive,
+            options=self._options(max_tokens=OLLAMA_CFG.max_predict_tokens),
         )
 
         for chunk in stream:
-            token = chunk.message.content
+            if isinstance(chunk, dict):
+                message = chunk.get("message", {})
+                token = message.get("content", "") if isinstance(message, dict) else ""
+            else:
+                token = chunk.message.content
             if token:
                 yield token
 

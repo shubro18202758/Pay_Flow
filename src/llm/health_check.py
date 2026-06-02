@@ -93,7 +93,7 @@ def _load_nvml() -> Optional[ctypes.CDLL]:
                 return ctypes.CDLL(lib_path)
             except OSError:
                 pass
-        # Fallback hardcoded paths
+        # Fallback common library paths.
         for path in ["/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1", "libnvidia-ml.so.1"]:
             try:
                 return ctypes.CDLL(path)
@@ -200,7 +200,7 @@ def query_gpu(device_index: int = 0) -> Optional[GPUDeviceInfo]:
 
 # ── Health Gate ──────────────────────────────────────────────────────────────
 
-# VRAM requirements for Qwen-3.5-4B at Q4_K_M + q8_0 KV cache + 16K context
+# VRAM requirements for Qwen-3.5-4B at Q4_K_M + q8_0 KV cache + 8K context
 LLM_MODEL_WEIGHT_MB = 3400.0
 LLM_KV_CACHE_16K_Q8_MB = 768.0
 CUDA_OVERHEAD_MB = 400.0
@@ -214,8 +214,6 @@ OLLAMA_MODEL_ALIASES = tuple(
         (
             os.getenv("PAYFLOW_OLLAMA_MODEL", ""),
             os.getenv("OLLAMA_MODEL", ""),
-            "payflow-qwen",
-            "qwen3.5:4b-q4_K_M",
             "qwen3.5:4b",
         )
     )
@@ -243,7 +241,7 @@ def _target_ollama_model_loaded() -> bool:
 
     for row in payload.get("models", []):
         name = str(row.get("model") or row.get("name") or "")
-        if any(name == alias or name.startswith(f"{alias}:") for alias in OLLAMA_MODEL_ALIASES):
+        if any(alias and (name == alias or name.startswith(alias)) for alias in OLLAMA_MODEL_ALIASES):
             return True
     return False
 

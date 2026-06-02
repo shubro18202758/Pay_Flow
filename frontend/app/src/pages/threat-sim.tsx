@@ -23,10 +23,10 @@ const STEPS = [
 
 export function ThreatSimPage() {
   const trackedEventId = useActivityStore((s) => s.trackedEventId)
-  const [showLegacyTools, setShowLegacyTools] = useState(false)
+  const [showManualControls, setShowManualControls] = useState(false)
 
   return (
-    <div className="h-full overflow-y-auto p-4 space-y-4">
+    <div className="min-h-full p-4 space-y-4">
       {/* ── Hero header ── */}
       <section className="animate-fade-in rounded-md border border-border-default bg-bg-elevated/95 p-5 backdrop-blur-sm shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)]">
         <div className="flex items-center gap-2 text-[10px] text-accent-primary uppercase tracking-[0.12em] font-semibold">
@@ -86,22 +86,22 @@ export function ThreatSimPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-text-primary">
-              Secondary simulation tools
+              Manual event controls
             </div>
             <p className="mt-1 text-[10px] text-text-secondary">
-              Kept available for engineering checks, but collapsed so the judge path stays focused on intel-driven countermeasures.
+              Launch bounded scenarios, inject a single backend-validated event, and inspect traces when an analyst needs a precise pipeline probe.
             </p>
           </div>
           <button
             type="button"
-            onClick={() => setShowLegacyTools((value) => !value)}
+            onClick={() => setShowManualControls((value) => !value)}
             className="rounded-md border border-accent-primary/30 bg-bg-surface px-3 py-2 text-[10px] font-bold uppercase tracking-[0.12em] text-accent-primary hover:bg-accent-muted"
           >
-            {showLegacyTools ? 'Hide tools' : 'Show tools'}
+            {showManualControls ? 'Hide controls' : 'Show controls'}
           </button>
         </div>
 
-        {showLegacyTools && (
+        {showManualControls && (
           <div className="mt-4 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
             <div className="space-y-4">
               <AttackLauncher />

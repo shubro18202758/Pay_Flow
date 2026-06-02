@@ -59,6 +59,11 @@ import networkx as nx
 from src.ml.behavioral import BehavioralAnalyzer, BehavioralFeatures
 from src.ml.text_anomaly import TextAnomalyAnalyzer, TextAnomalyFeatures
 from src.ml.velocity import VelocityFeatures, VelocityTracker
+from src.domain.union_bank import (
+    DOMAIN_FEATURE_COLUMNS,
+    domain_controls_for_flags,
+    domain_feature_flags,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +184,7 @@ class FeatureEngine:
 
         # Per-txn feature cache for tool lookups (txn_id -> (features, names))
         self._feature_cache: dict[str, tuple[np.ndarray, list[str]]] = {}
+        self._domain_feature_cache: dict[str, tuple[dict[str, float], list[str]]] = {}
 
         # Optional graph reference for network-derived features
         self._graph: nx.MultiDiGraph | None = None
@@ -326,6 +332,19 @@ class FeatureEngine:
 
         # Extended build-prompt features (6)
         ext = self._compute_extended_features(txn)
+        domain_flags = domain_feature_flags(
+            txn,
+            geo_distance_km=float(beh[2]),
+            off_hours=bool(beh[1]),
+            cfr_match=bool(ext[1]),
+            prior_fraud_reports=float(ext[2]),
+            pass_through_detected=bool(ext[4]),
+            dormant_activation=bool(ext[5]),
+        )
+        self._domain_feature_cache[txn.txn_id] = (
+            domain_flags,
+            domain_controls_for_flags(domain_flags),
+        )
 
         # Stack into flat float32 row (36 base elements)
         base = list(vel) + list(beh) + list(txt) + ext
@@ -606,6 +625,7 @@ class FeatureEngine:
             "total_rows": n_rows,
             "feature_dim": self.active_feature_dim,
             "feature_columns": len(self.active_feature_columns),
+            "domain_feature_columns": len(DOMAIN_FEATURE_COLUMNS),
             "graph_attached": self._graph is not None,
             "velocity_accounts": self.velocity.account_count(),
             "behavioral_accounts": self.behavioral.account_count(),

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from src.api.rbac import require_permission
 from src.simulation import get_event_lab_service
 
 router = APIRouter(prefix="/api/v1/countermeasures", tags=["countermeasures"])
@@ -31,6 +32,7 @@ async def approve_countermeasure(
     body: CountermeasureDecisionRequest | None = None,
 ) -> dict:
     """Approve and execute a proposed adaptive countermeasure."""
+    require_permission(request, "countermeasure:decide")
     decision = body or CountermeasureDecisionRequest()
     try:
         return await get_event_lab_service().approve_proposal(
@@ -52,9 +54,11 @@ async def approve_countermeasure(
 @router.post("/proposals/{proposal_id}/reject")
 async def reject_countermeasure(
     proposal_id: str,
+    request: Request,
     body: CountermeasureDecisionRequest | None = None,
 ) -> dict:
     """Reject a proposed adaptive countermeasure and retain the audit trail."""
+    require_permission(request, "countermeasure:reject")
     decision = body or CountermeasureDecisionRequest(reason="analyst_rejected")
     try:
         return await get_event_lab_service().reject_proposal(

@@ -5,17 +5,17 @@
 import { useRef, useEffect, useState, useMemo } from 'react'
 import { Lock, Check, KeyRound, GitMerge, ChevronDown, Blocks } from 'lucide-react'
 import { useRecentBlocks } from '@/hooks/use-api'
-import { cn, fmtTimestamp, fmtNum } from '@/lib/utils'
+import { cn, fmtOptionalTimestamp, fmtNum } from '@/lib/utils'
 import type { LedgerBlock } from '@/lib/types'
 
 const EVENT_TYPE_STYLES: Record<string, { label: string; color: string }> = {
-  SYSTEM_STATE:     { label: 'SYSTEM',   color: 'text-blue-400'    },
-  ALERT:            { label: 'ALERT',    color: 'text-red-400'     },
-  INVESTIGATION:    { label: 'INVEST',   color: 'text-amber-400'   },
-  MODEL_UPDATE:     { label: 'MODEL',    color: 'text-violet-400'  },
-  ZKP_VERIFICATION: { label: 'ZKP',      color: 'text-emerald-400' },
-  CIRCUIT_BREAKER:  { label: 'BREAKER',  color: 'text-orange-400'  },
-  AGENT_VERDICT:    { label: 'VERDICT',  color: 'text-cyan-400'    },
+  SYSTEM_STATE:     { label: 'SYSTEM',   color: 'text-[#00579C]'    },
+  ALERT:            { label: 'ALERT',    color: 'text-[#DA251C]'     },
+  INVESTIGATION:    { label: 'INVEST',   color: 'text-[#DA251C]'   },
+  MODEL_UPDATE:     { label: 'MODEL',    color: 'text-[#00579C]'  },
+  ZKP_VERIFICATION: { label: 'ZKP',      color: 'text-[#00579C]' },
+  CIRCUIT_BREAKER:  { label: 'BREAKER',  color: 'text-[#DA251C]'  },
+  AGENT_VERDICT:    { label: 'VERDICT',  color: 'text-[#00579C]'    },
 }
 
 export function CryptographicAuditTrail() {
@@ -47,7 +47,7 @@ export function CryptographicAuditTrail() {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-subtle shrink-0 bg-bg-surface">
         <div className="flex items-center gap-2.5">
-          <Lock className="w-3.5 h-3.5 text-emerald-400" />
+          <Lock className="w-3.5 h-3.5 text-[#00579C]" />
           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
             Cryptographic Audit Trail
           </span>
@@ -104,10 +104,10 @@ export function CryptographicAuditTrail() {
         <div className="flex items-center justify-between px-4 py-2 border-t border-border-subtle bg-bg-surface shrink-0">
           <div className="flex items-center gap-2">
             <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-50 animate-ping" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+              <span className="absolute inline-flex h-full w-full rounded-full bg-[#00579C] opacity-50 animate-ping" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00579C]" />
             </span>
-            <span className="text-[9px] text-emerald-400 font-semibold uppercase tracking-[0.12em]">
+            <span className="text-[9px] text-[#00579C] font-semibold uppercase tracking-[0.12em]">
               Chain Intact
             </span>
           </div>
@@ -126,14 +126,14 @@ function BlockCard({ block }: { block: LedgerBlock }) {
   const [expanded, setExpanded] = useState(false)
   const evtStyle = EVENT_TYPE_STYLES[block.event_type] ?? { label: block.event_type, color: 'text-text-muted' }
   const isZkp = block.event_type === 'ZKP_VERIFICATION'
-  const isHighConfidence = block.event_type === 'AGENT_VERDICT' || block.event_type === 'CIRCUIT_BREAKER'
+  const isPriorityEvent = block.event_type === 'AGENT_VERDICT' || block.event_type === 'CIRCUIT_BREAKER'
 
   return (
     <div
       onClick={() => setExpanded(!expanded)}
       className={cn(
         'card-hover rounded-lg border px-3 py-2 cursor-pointer transition-all',
-        isHighConfidence
+        isPriorityEvent
           ? 'border-accent-primary/30 bg-accent-primary/[0.04]'
           : 'border-border-subtle/50 bg-bg-surface/50',
       )}
@@ -145,12 +145,12 @@ function BlockCard({ block }: { block: LedgerBlock }) {
           <span className={cn('text-[10px] font-bold uppercase tracking-wider', evtStyle.color)}>
             {evtStyle.label}
           </span>
-          {(isZkp || isHighConfidence) && <ZKPBadge />}
+          {isZkp && <ZKPBadge />}
           {block.has_signature && <SigBadge />}
           {block.merkle_root && <MerkleBadge />}
         </div>
         <span className="text-[9px] text-text-muted/50 font-mono tabular-nums">
-          {fmtTimestamp(block.timestamp)}
+          {fmtOptionalTimestamp(block.timestamp)}
         </span>
       </div>
 
@@ -186,9 +186,9 @@ function BlockCard({ block }: { block: LedgerBlock }) {
 
 function ZKPBadge() {
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30">
-      <Check className="w-2.5 h-2.5 text-emerald-400" strokeWidth={3} />
-      <span className="text-[8px] font-bold text-emerald-400 uppercase tracking-wider">
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#00579C]/15 border border-[#00579C]/30">
+      <Check className="w-2.5 h-2.5 text-[#00579C]" strokeWidth={3} />
+      <span className="text-[8px] font-bold text-[#00579C] uppercase tracking-wider">
         ZKP Verified
       </span>
     </span>
@@ -197,9 +197,9 @@ function ZKPBadge() {
 
 function SigBadge() {
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20">
-      <KeyRound className="w-2.5 h-2.5 text-blue-400" strokeWidth={2.5} />
-      <span className="text-[8px] font-bold text-blue-400 uppercase tracking-wider">
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#00579C]/10 border border-[#00579C]/20">
+      <KeyRound className="w-2.5 h-2.5 text-[#00579C]" strokeWidth={2.5} />
+      <span className="text-[8px] font-bold text-[#00579C] uppercase tracking-wider">
         Ed25519
       </span>
     </span>
@@ -208,9 +208,9 @@ function SigBadge() {
 
 function MerkleBadge() {
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-violet-500/10 border border-violet-500/20">
-      <GitMerge className="w-2.5 h-2.5 text-violet-400" strokeWidth={2.5} />
-      <span className="text-[8px] font-bold text-violet-400 uppercase tracking-wider">
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#00579C]/10 border border-[#00579C]/20">
+      <GitMerge className="w-2.5 h-2.5 text-[#00579C]" strokeWidth={2.5} />
+      <span className="text-[8px] font-bold text-[#00579C] uppercase tracking-wider">
         Merkle
       </span>
     </span>

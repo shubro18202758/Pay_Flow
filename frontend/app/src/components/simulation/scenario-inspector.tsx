@@ -12,7 +12,6 @@ import {
   Cog,
   Users,
   AlertTriangle,
-  Monitor,
   FileSearch,
   ListOrdered,
 } from 'lucide-react'

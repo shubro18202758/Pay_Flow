@@ -4,7 +4,7 @@
 
 import { useSimulationStore } from '@/stores/use-simulation-store'
 import { SeverityBadge } from '@/components/shared/severity-badge'
-import { cn, fmtDuration, fmtTimestamp, truncId } from '@/lib/utils'
+import { cn, fmtDuration, fmtOptionalTimestamp, truncId } from '@/lib/utils'
 import { History, Inbox } from 'lucide-react'
 import type { ScenarioStatusValue } from '@/lib/types'
 
@@ -87,7 +87,7 @@ export function ScenarioHistory() {
                     </td>
                     <td className="py-2 px-3 text-text-muted tabular-nums">{fmtDuration(s.elapsed_sec)}</td>
                     <td className="py-2 px-3 text-text-muted tabular-nums">
-                      {s.stopped_at ? fmtTimestamp(s.stopped_at) : '--'}
+                      {fmtOptionalTimestamp(s.stopped_at)}
                     </td>
                   </tr>
                 )

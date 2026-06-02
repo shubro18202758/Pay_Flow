@@ -98,7 +98,7 @@ def _metadata_transactions(meta: dict[str, Any] | None) -> list[dict[str, Any]]:
             "amount_paisa": int(item.get("amount_paisa", 0) or 0),
             "channel": item.get("channel", "UNKNOWN"),
             "fraud_label": -1,
-            "fraud_label_name": item.get("fraud_label", "PS3_PREVIEW"),
+            "fraud_label_name": item.get("fraud_label", "FUND_FLOW_PREVIEW"),
             "timestamp": base_ts + idx,
             "device_fingerprint": "",
             "evidence_id": f"SIM:{item.get('txn_id', idx)}",
@@ -191,7 +191,7 @@ def build_case_trace(orch: Any, case_id: str) -> dict[str, Any]:
         "case_id": case_id,
         "scenario_id": meta.get("scenario_id", ""),
         "scenario": scenario,
-        "scenario_label": meta.get("scenario_label") or details.get("label", "Ad-hoc PS3 Case"),
+        "scenario_label": meta.get("scenario_label") or details.get("label", "Ad-hoc Fund-Flow Case"),
         "status": case_status,
         "focus_account_id": focus_account,
         "focus_txn_id": meta.get("focus_txn_id", transactions[0]["txn_id"] if transactions else ""),
@@ -218,7 +218,7 @@ def build_case_trace(orch: Any, case_id: str) -> dict[str, Any]:
         "pre_fraud_intelligence": pre_fraud_intelligence,
         "narrative": (
             f"{len(transactions)} linked fund-flow events were assembled for "
-            f"{meta.get('scenario_label') or details.get('label', 'PS3 tracing')}."
+            f"{meta.get('scenario_label') or details.get('label', 'fund-flow tracing')}."
         ),
         "generated_at": _now(),
     }
@@ -341,7 +341,7 @@ async def build_evidence_package(orch: Any, case_id: str) -> dict[str, Any]:
             latest_hash = ""
             latest_index = None
 
-    typologies = ", ".join(trace.get("ps3_typologies") or ["PS3 fund-flow anomaly"])
+    typologies = ", ".join(trace.get("ps3_typologies") or ["fund-flow anomaly"])
     summary = (
         f"Case {case_id} identifies {typologies} across "
         f"{trace['risk_scores']['transaction_count']} transaction events, total "
@@ -456,7 +456,7 @@ def build_ps3_readiness(orch: Any) -> dict[str, Any]:
         },
         {
             "id": "ps3_typologies",
-            "label": "PS3 typology coverage",
+            "label": "Fund-flow typology coverage",
             "status": "ready",
             "evidence": "Layering, round-tripping, structuring, dormant activation, profile mismatch",
         },
@@ -475,14 +475,14 @@ def build_ps3_readiness(orch: Any) -> dict[str, Any]:
     ]
 
     return {
-        "title": "Union Bank iDEA 2.0 PS3 Readiness",
+        "title": "Union Bank Fund-Flow Readiness",
         "requirements": requirements,
         "runtime_health": {
             "orchestrator": orch is not None,
             "graph": bool(graph),
             "simulation": bool(simulation) or orch is not None,
             "qwen_model": OLLAMA_CFG.model,
-            "single_port_app": "http://localhost:8010/app",
+            "single_port_app": "/app",
             "pre_fraud_intel": bool(intel_status),
             "active_intel_playbooks": intel_status.get("active_playbooks", 0),
         },

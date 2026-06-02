@@ -19,11 +19,14 @@ import {
   useIntelSources,
   useIntelTrends,
   useIntelTuningStatus,
+  useLLMStatus,
   useRefreshIntel,
   useSimulateIntelSignal,
 } from '@/hooks/use-api'
+import { useRoleAccess } from '@/hooks/use-rbac'
 import { useUIStore } from '@/stores/use-ui-store'
 import { cn } from '@/lib/utils'
+import { resolveLLMRuntime } from '@/lib/llm-runtime'
 import type { PreFraudEvidenceContext } from '@/lib/types'
 
 type Variant = 'overview' | 'sidebar' | 'drawer' | 'case' | 'evidence'
@@ -59,11 +62,13 @@ export function PreFraudIntelBrief({
   className?: string
 }) {
   const setActiveTab = useUIStore((s) => s.setActiveTab)
+  const access = useRoleAccess()
   const { data: sources } = useIntelSources()
   const { data: signals } = useIntelSignals()
   const { data: trends } = useIntelTrends()
   const { data: playbooks } = useIntelPlaybooks()
   const { data: tuning } = useIntelTuningStatus()
+  const { data: llmStatus, isLoading: llmStatusLoading, isError: llmStatusError } = useLLMStatus()
   const refresh = useRefreshIntel()
   const simulate = useSimulateIntelSignal()
 
@@ -73,14 +78,20 @@ export function PreFraudIntelBrief({
     ? evidence.playbooks
     : (playbooks?.playbooks ?? []).filter((p) => p.promotion_status === 'applied')
   const status = evidence.status ?? playbooks?.tuning_status ?? tuning ?? null
-  const sourceCount = context?.source_count ?? sources?.sources.length ?? 0
+  const sourceCount = context?.source_count ?? sources?.sources?.length ?? 0
   const signalCount = context?.signal_count ?? signals?.count ?? 0
-  const activeCount = context?.active_playbooks.length ?? status?.active_playbooks ?? activePlaybooks.length
+  const activeCount = context?.active_playbooks?.length ?? status?.active_playbooks ?? activePlaybooks.length
   const compact = variant === 'sidebar' || variant === 'evidence'
   const dense = variant === 'overview'
   const busy = refresh.isPending || simulate.isPending
+  const llmRuntime = resolveLLMRuntime(llmStatus, {
+    loading: llmStatusLoading,
+    error: llmStatusError,
+    fallbackModel: status?.qwen_model,
+  })
 
   async function primeIntel() {
+    if (!access.can('intel:write')) return
     await refresh.mutateAsync(undefined)
     await simulate.mutateAsync('digital_arrest_mule')
   }
@@ -113,12 +124,13 @@ export function PreFraudIntelBrief({
             <MiniMetric label="trust" value={pct(topTrend?.trust_score)} />
             <MiniMetric label="india fit" value={pct(topTrend?.india_relevance_score)} />
             <MiniMetric label="bounded tuning" value={status?.rollback_available ? 'audited' : 'shadow'} />
-            <MiniMetric label="qwen" value={status?.qwen_model ?? 'qwen3.5:4b'} />
+            <MiniMetric label="llm" value={`${llmRuntime.model} ${llmRuntime.statusLabel}`} />
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={() => void primeIntel()}
-              disabled={busy}
+              disabled={busy || !access.can('intel:write')}
+              title={!access.can('intel:write') ? `${access.policy.label} cannot refresh preventive intelligence` : 'Prime preventive intelligence'}
               className="inline-flex items-center gap-1.5 rounded-md border border-accent-primary/40 bg-bg-surface px-2.5 py-1.5 text-[9px] font-bold uppercase tracking-[0.12em] text-accent-primary transition-colors hover:bg-accent-primary hover:text-white disabled:opacity-50"
             >
               <Sparkles className="h-3.5 w-3.5" />
@@ -210,9 +222,9 @@ export function PreFraudIntelBrief({
 
       {!compact && (
         <div className="mt-2 grid grid-cols-2 gap-2">
-          <Guardrail icon={BrainCircuit} label="Qwen context tuned" />
+          <Guardrail icon={BrainCircuit} label="LLM context bounded" />
           <Guardrail icon={ShieldCheck} label="Evidence remains authoritative" />
-          <Guardrail icon={Activity} label="Bounded tuning" value={`${status?.bounded_queue.depth ?? 0}/${status?.bounded_queue.max_depth ?? 64}`} />
+          <Guardrail icon={Activity} label="Bounded tuning" value={`${status?.bounded_queue?.depth ?? 0}/${status?.bounded_queue?.max_depth ?? 64}`} />
           <Guardrail icon={RefreshCw} label="Rollback ready" value={status?.rollback_available ? 'yes' : 'no'} />
         </div>
       )}
@@ -222,7 +234,7 @@ export function PreFraudIntelBrief({
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-md border border-border-subtle bg-bg-elevated/55 p-1.5">
+    <div className="min-w-16 rounded-md border border-border-subtle bg-bg-elevated/55 p-1.5">
       <div className="truncate text-[7px] font-bold uppercase tracking-[0.12em] text-text-muted">{label}</div>
       <div className="truncate font-mono text-[10px] font-semibold text-text-primary" title={value}>
         {value}

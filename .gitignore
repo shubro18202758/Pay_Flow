@@ -10,6 +10,8 @@ __pycache__/
 dist/
 build/
 *.egg
+.pytest_cache/
+.mypy_cache/
 
 # Virtual environment
 .venv/
@@ -33,13 +35,24 @@ data/raw/*
 data/processed/*
 data/synthetic/*
 data/*.db
+data/*.db-shm
+data/*.db-wal
+*.mp4
 !data/**/.gitkeep
 
 # Artifacts
 artifacts/models/*
 artifacts/evidence/*
 artifacts/reports/*
+artifacts/*.err.log
+artifacts/*.out.log
+artifacts/*.log
+artifacts/*.png
+artifacts/smoke/
+frontend/app/artifacts/
+frontend/app/test-results/
 !artifacts/**/.gitkeep
+!docs/assets/**
 logs/*
 !logs/.gitkeep
 

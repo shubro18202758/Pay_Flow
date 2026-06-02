@@ -6,13 +6,24 @@ import { useState } from 'react'
 import { Scale, Inbox, ChevronDown, ChevronUp, Eye, Network, Clock, Wrench, Brain, FileText } from 'lucide-react'
 import { useDashboardStore } from '@/stores/use-dashboard-store'
 import { useUIStore } from '@/stores/use-ui-store'
-import { SeverityBadge, verdictToSeverity } from '@/components/shared/severity-badge'
-import { truncId, fmtTimestamp } from '@/lib/utils'
-import { cn } from '@/lib/utils'
+import { SeverityBadge } from '@/components/shared/severity-badge'
+import { verdictToSeverity } from '@/lib/severity'
+import { cn, fmtOptionalMs, fmtOptionalTimestamp, truncId } from '@/lib/utils'
 import type { SSEAgentVerdict } from '@/lib/types'
 
 const FILTERS = ['all', 'fraudulent', 'suspicious', 'legitimate', 'escalated'] as const
 type Filter = (typeof FILTERS)[number]
+
+function isFallbackVerdict(v: SSEAgentVerdict): boolean {
+  const evidenceCount = (v.evidence_cited?.length ?? v.evidence?.length ?? 0)
+  return (
+    v.confidence_source === 'deterministic_evidence_fallback' ||
+    v.llm_parse_status?.includes('fallback') ||
+    (v.confidence === 0.5 &&
+      evidenceCount === 0 &&
+      Boolean(v.reasoning_summary?.includes('Unable to reach definitive conclusion')))
+  )
+}
 
 function VerdictCard({ entry }: { entry: { id: string; timestamp: number; data: SSEAgentVerdict } }) {
   const [expanded, setExpanded] = useState(false)
@@ -21,6 +32,7 @@ function VerdictCard({ entry }: { entry: { id: string; timestamp: number; data: 
   const v = entry.data
 
   const severity = verdictToSeverity(v.verdict)
+  const fallback = isFallbackVerdict(v)
 
   const handleViewInGraph = () => {
     if (v.node_id) {
@@ -47,8 +59,11 @@ function VerdictCard({ entry }: { entry: { id: string; timestamp: number; data: 
             </span>
           )}
           <span className="text-[9px] font-mono text-text-muted ml-auto tabular-nums">
-            {(v.confidence * 100).toFixed(1)}%
+            {fallback ? 'n/a' : `${(v.confidence * 100).toFixed(1)}%`}
           </span>
+          {fallback && (
+            <span className="text-[8px] text-text-muted">fallback</span>
+          )}
           {expanded ? <ChevronUp className="w-3 h-3 text-text-muted" /> : <ChevronDown className="w-3 h-3 text-text-muted" />}
         </div>
 
@@ -67,24 +82,24 @@ function VerdictCard({ entry }: { entry: { id: string; timestamp: number; data: 
 
         <div className="flex items-center gap-3 mt-2 pt-1.5 border-t border-border-subtle/30 text-[8px] text-text-muted/60 font-mono tabular-nums">
           <span>{v.recommended_action}</span>
-          <span>{v.thinking_steps} steps</span>
-          <span>{v.total_duration_ms?.toFixed(0)}ms</span>
+          <span>{v.thinking_steps} rationale steps</span>
+          <span>{fmtOptionalMs(v.total_duration_ms)}</span>
           {(v as unknown as { nlu_findings_count?: number }).nlu_findings_count ? (
-            <span className="text-amber-400">NLU:{(v as unknown as { nlu_findings_count: number }).nlu_findings_count}</span>
+            <span className="text-[#DA251C]">NLU:{(v as unknown as { nlu_findings_count: number }).nlu_findings_count}</span>
           ) : null}
-          <span className="ml-auto">{fmtTimestamp(entry.timestamp)}</span>
+          <span className="ml-auto">{fmtOptionalTimestamp(entry.timestamp)}</span>
         </div>
       </button>
 
       {/* Expanded detail */}
       {expanded && (
         <div className="px-3 pb-3 pt-0 border-t border-border-subtle space-y-3 animate-fade-in">
-          {/* Full reasoning */}
+          {/* Full rationale */}
           {v.reasoning_summary && (
             <div>
               <div className="flex items-center gap-1.5 mb-1">
                 <Brain className="w-3 h-3 text-accent-primary" />
-                <span className="text-[8px] font-semibold uppercase tracking-wider text-text-muted">Reasoning</span>
+                <span className="text-[8px] font-semibold uppercase tracking-wider text-text-muted">Rationale</span>
               </div>
               <p className="text-[9px] text-text-secondary leading-relaxed bg-bg-overlay/40 rounded p-2 border border-border-subtle">
                 {v.reasoning_summary}
@@ -133,8 +148,8 @@ function VerdictCard({ entry }: { entry: { id: string; timestamp: number; data: 
           {/* Duration breakdown */}
           <div className="flex items-center gap-3 text-[8px] font-mono text-text-muted">
             <Clock className="w-3 h-3" />
-            <span>Total: {v.total_duration_ms?.toFixed(0)}ms</span>
-            <span>Steps: {v.thinking_steps}</span>
+            <span>Total: {fmtOptionalMs(v.total_duration_ms)}</span>
+            <span>Rationale steps: {v.thinking_steps}</span>
           </div>
 
           {/* Cross-navigation buttons */}

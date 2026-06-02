@@ -46,6 +46,8 @@ from typing import Any
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
+from src.api.rbac import require_any_permission, require_permission
+
 router = APIRouter(prefix="/api/v1/fraud", tags=["fraud-intelligence"])
 
 
@@ -77,6 +79,8 @@ class GateEvalRequest(BaseModel):
 
 class DeviceVerifyRequest(BaseModel):
     account_id: str
+    device_fingerprint: str = ""
+    timestamp: int = Field(default_factory=lambda: int(time.time()))
 
 
 class AnomalyScoreRequest(BaseModel):
@@ -175,8 +179,9 @@ def _get_device_verifier():
 # ── Risk Scoring ───────────────────────────────────────────────────────────────
 
 @router.post("/risk/score")
-async def score_risk(req: RiskScoreRequest) -> dict[str, Any]:
+async def score_risk(req: RiskScoreRequest, request: Request) -> dict[str, Any]:
     """Compute weighted composite risk score for a transaction."""
+    require_any_permission(request, ("case:view", "analytics:view", "risk:view", "alert:hold"))
     scorer = _get_risk_scorer()
     result = scorer.score(
         amount_paisa=req.amount_paisa,
@@ -208,6 +213,7 @@ async def evaluate_gate(req: GateEvalRequest, request: Request) -> dict[str, Any
     Pre-authorisation fraud check — returns APPROVE / HOLD / BLOCK decision.
     Requires orchestrator attached to app.state for full pipeline access.
     """
+    require_any_permission(request, ("alert:hold", "case:decide", "case:launch"))
     orch = request.app.state.orchestrator
     if orch is None:
         return {"error": "Orchestrator not attached — gate unavailable", "decision": "APPROVE"}
@@ -238,8 +244,9 @@ async def evaluate_gate(req: GateEvalRequest, request: Request) -> dict[str, Any
 # ── Device Verification ───────────────────────────────────────────────────────
 
 @router.post("/device/verify")
-async def verify_device(req: DeviceVerifyRequest) -> dict[str, Any]:
+async def verify_device(req: DeviceVerifyRequest, request: Request) -> dict[str, Any]:
     """Verify a device fingerprint against account history."""
+    require_any_permission(request, ("soc:monitor", "customer:contact", "alert:hold", "case:view"))
     verifier = _get_device_verifier()
     result = verifier.verify(
         account_id=req.account_id,
@@ -259,8 +266,9 @@ async def verify_device(req: DeviceVerifyRequest) -> dict[str, Any]:
 
 
 @router.get("/device/{account_id}")
-async def get_known_devices(account_id: str) -> dict[str, Any]:
+async def get_known_devices(account_id: str, request: Request) -> dict[str, Any]:
     """List known device fingerprints for an account."""
+    require_any_permission(request, ("soc:monitor", "customer:contact", "alert:hold", "case:view"))
     verifier = _get_device_verifier()
     return {
         "account_id": account_id,
@@ -271,8 +279,9 @@ async def get_known_devices(account_id: str) -> dict[str, Any]:
 # ── Regulatory Reports ────────────────────────────────────────────────────────
 
 @router.post("/reports/str")
-async def file_str_report(req: STRRequest) -> dict[str, Any]:
+async def file_str_report(req: STRRequest, request: Request) -> dict[str, Any]:
     """File a Suspicious Transaction Report (STR) for FIU-IND."""
+    require_permission(request, "regulatory:file")
     reporter = _get_reporter()
     report = reporter.file_str(
         account_id=req.account_id,
@@ -292,8 +301,9 @@ async def file_str_report(req: STRRequest) -> dict[str, Any]:
 
 
 @router.post("/reports/ctr")
-async def file_ctr_report(req: CTRRequest) -> dict[str, Any]:
+async def file_ctr_report(req: CTRRequest, request: Request) -> dict[str, Any]:
     """File a Cash Transaction Report (CTR) for amounts ≥ ₹10 lakh."""
+    require_permission(request, "regulatory:file")
     reporter = _get_reporter()
     report = reporter.file_ctr(
         account_id=req.account_id,
@@ -311,8 +321,9 @@ async def file_ctr_report(req: CTRRequest) -> dict[str, Any]:
 
 
 @router.get("/reports")
-async def list_reports() -> dict[str, Any]:
+async def list_reports(request: Request) -> dict[str, Any]:
     """List all filed regulatory reports."""
+    require_any_permission(request, ("regulatory:file", "audit:review", "fraud:fmr:file"))
     reporter = _get_reporter()
     reports = reporter.filed_reports
     return {
@@ -401,9 +412,14 @@ class RuleEvalRequest(BaseModel):
     hour_of_day: int = -1
 
 
+class ToggleRuleRequest(BaseModel):
+    enabled: bool = True
+
+
 @router.post("/rules/evaluate")
 async def evaluate_rules(req: RuleEvalRequest, request: Request) -> dict[str, Any]:
     """Evaluate a transaction against all enabled rules."""
+    require_any_permission(request, ("rules:toggle", "case:view", "analytics:view"))
     # Prefer orchestrator's engine (has learned beneficiaries) over standalone
     orch = getattr(request.app.state, "orchestrator", None)
     engine = getattr(orch, "_rule_engine", None) if orch else None
@@ -428,20 +444,33 @@ async def evaluate_rules(req: RuleEvalRequest, request: Request) -> dict[str, An
 @router.get("/rules")
 async def list_rules(request: Request) -> dict[str, Any]:
     """List all available detection rules with their thresholds and status."""
+    require_any_permission(request, ("rules:toggle", "analytics:view", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     engine = getattr(orch, "_rule_engine", None) if orch else None
     if engine is None:
         engine = _get_rule_engine()
 
+    rules = []
+    for raw in engine.list_rules():
+        rule_id = str(raw.get("rule_id") or raw.get("id") or "")
+        threshold = raw.get("threshold", "")
+        rules.append({
+            **raw,
+            "rule_id": rule_id,
+            "description": raw.get("description") or f"Threshold: {threshold}",
+            "enabled": bool(raw.get("enabled", True)),
+            "threshold": threshold,
+        })
     return {
-        "rules": engine.list_rules(),
-        "total": len(engine.list_rules()),
+        "rules": rules,
+        "total": len(rules),
     }
 
 
 @router.get("/rules/stats")
 async def rule_stats(request: Request) -> dict[str, Any]:
     """Get rule engine evaluation statistics."""
+    require_any_permission(request, ("rules:toggle", "analytics:view", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     engine = getattr(orch, "_rule_engine", None) if orch else None
     if engine is None:
@@ -451,28 +480,30 @@ async def rule_stats(request: Request) -> dict[str, Any]:
 
 
 @router.post("/rules/{rule_id}/toggle")
-async def toggle_rule(rule_id: str, enable: bool = True, request: Request = None) -> dict[str, Any]:
+async def toggle_rule(rule_id: str, body: ToggleRuleRequest, request: Request) -> dict[str, Any]:
     """Enable or disable a specific rule by ID."""
-    orch = getattr(request.app.state, "orchestrator", None) if request else None
+    require_permission(request, "rules:toggle")
+    orch = getattr(request.app.state, "orchestrator", None)
     engine = getattr(orch, "_rule_engine", None) if orch else None
     if engine is None:
         engine = _get_rule_engine()
 
-    if enable:
+    if body.enabled:
         engine.enable_rule(rule_id)
     else:
         engine.disable_rule(rule_id)
 
     return {
         "rule_id": rule_id,
-        "enabled": enable,
-        "message": f"Rule {rule_id} {'enabled' if enable else 'disabled'}",
+        "enabled": body.enabled,
+        "message": f"Rule {rule_id} {'enabled' if body.enabled else 'disabled'}",
     }
 
 
 @router.get("/gate/stats")
 async def gate_stats(request: Request) -> dict[str, Any]:
     """Get pre-approval gate evaluation statistics."""
+    require_any_permission(request, ("alert:hold", "analytics:view", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     gate = getattr(orch, "_pre_approval_gate", None) if orch else None
     if gate is None:
@@ -494,6 +525,7 @@ async def get_intermediaries(request: Request) -> dict[str, Any]:
     Nodes with high betweenness sit on many shortest paths between other
     accounts, indicating they serve as bridges or layering conduits.
     """
+    require_any_permission(request, ("case:view", "analytics:view", "aml:cdd"))
     orch = getattr(request.app.state, "orchestrator", None)
     graph_obj = getattr(orch, "_graph", None) if orch else None
     if graph_obj is None:
@@ -523,6 +555,7 @@ async def get_intermediaries(request: Request) -> dict[str, Any]:
 @router.get("/centrality/node/{node_id}")
 async def get_node_centrality(node_id: str, request: Request) -> dict[str, Any]:
     """Get betweenness centrality and graph metrics for a specific account."""
+    require_any_permission(request, ("case:view", "analytics:view", "aml:cdd"))
     orch = getattr(request.app.state, "orchestrator", None)
     graph_obj = getattr(orch, "_graph", None) if orch else None
     if graph_obj is None:
@@ -561,6 +594,7 @@ async def get_node_centrality(node_id: str, request: Request) -> dict[str, Any]:
 @router.post("/anomaly/isolation/score")
 async def score_isolation(req: AnomalyScoreRequest, request: Request) -> dict[str, Any]:
     """Score feature vectors through the Isolation Forest anomaly detector."""
+    require_any_permission(request, ("model:feedback", "analytics:view", "risk:view"))
     orch = getattr(request.app.state, "orchestrator", None)
     detector = getattr(orch, "_isolation_detector", None) if orch else None
     if detector is None or not detector._fitted:
@@ -585,6 +619,7 @@ async def score_isolation(req: AnomalyScoreRequest, request: Request) -> dict[st
 @router.post("/anomaly/autoencoder/score")
 async def score_autoencoder(req: AnomalyScoreRequest, request: Request) -> dict[str, Any]:
     """Score feature vectors through the Autoencoder reconstruction detector."""
+    require_any_permission(request, ("model:feedback", "analytics:view", "risk:view"))
     orch = getattr(request.app.state, "orchestrator", None)
     detector = getattr(orch, "_autoencoder_detector", None) if orch else None
     if detector is None or not detector._fitted:
@@ -609,6 +644,7 @@ async def score_autoencoder(req: AnomalyScoreRequest, request: Request) -> dict[
 @router.get("/anomaly/stats")
 async def anomaly_stats(request: Request) -> dict[str, Any]:
     """Get metrics from both anomaly detectors."""
+    require_any_permission(request, ("model:feedback", "analytics:view", "risk:view", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     result: dict[str, Any] = {}
 
@@ -630,6 +666,7 @@ async def anomaly_stats(request: Request) -> dict[str, Any]:
 @router.post("/cfr/report")
 async def cfr_report_fraud(body: CFRReportRequest, request: Request) -> dict[str, Any]:
     """Report a fraud case to the Central Fraud Registry."""
+    require_permission(request, "cfr:report")
     orch = getattr(request.app.state, "orchestrator", None)
     registry = getattr(orch, "_fraud_registry", None) if orch else None
     if registry is None:
@@ -657,6 +694,7 @@ async def cfr_report_fraud(body: CFRReportRequest, request: Request) -> dict[str
 @router.get("/cfr/query/{account_id}")
 async def cfr_query_account(account_id: str, request: Request) -> dict[str, Any]:
     """Query an account against the Central Fraud Registry."""
+    require_permission(request, "cfr:check")
     orch = getattr(request.app.state, "orchestrator", None)
     registry = getattr(orch, "_fraud_registry", None) if orch else None
     if registry is None:
@@ -682,6 +720,7 @@ async def cfr_kyc_check(body: CFRCheckRequest, request: Request) -> dict[str, An
     KYC verification — check account and/or entity against CFR
     before account opening or onboarding.
     """
+    require_permission(request, "cfr:check")
     orch = getattr(request.app.state, "orchestrator", None)
     registry = getattr(orch, "_fraud_registry", None) if orch else None
     if registry is None:
@@ -721,6 +760,7 @@ async def cfr_kyc_check(body: CFRCheckRequest, request: Request) -> dict[str, An
 @router.post("/cfr/score")
 async def cfr_risk_score(body: CFRScoreRequest, request: Request) -> dict[str, Any]:
     """Score a transaction using CFR-aware 40/30/20/10 weights."""
+    require_permission(request, "cfr:check")
     orch = getattr(request.app.state, "orchestrator", None)
     cfr_scorer = getattr(orch, "_cfr_scorer", None) if orch else None
     if cfr_scorer is None:
@@ -748,6 +788,7 @@ async def cfr_risk_score(body: CFRScoreRequest, request: Request) -> dict[str, A
 @router.get("/cfr/stats")
 async def cfr_stats(request: Request) -> dict[str, Any]:
     """Get Central Fraud Registry metrics."""
+    require_any_permission(request, ("cfr:check", "regulatory:file", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     result: dict[str, Any] = {}
 
@@ -788,6 +829,7 @@ class FMRRequest(BaseModel):
 @router.post("/reports/fmr")
 async def generate_fmr(body: FMRRequest, request: Request) -> dict[str, Any]:
     """Generate a Fraud Monitoring Return (FMR) for RBI submission."""
+    require_permission(request, "regulatory:file")
     orch = getattr(request.app.state, "orchestrator", None)
     reporter = getattr(orch, "_reporter", None) if orch else None
     if reporter is None:
@@ -849,6 +891,7 @@ async def open_investigation(
     body: InvestigationOpenRequest, request: Request,
 ) -> dict[str, Any]:
     """Open a new investigation case for a detected fraud."""
+    require_permission(request, "case:decide")
     orch = getattr(request.app.state, "orchestrator", None)
     mgr = getattr(orch, "_investigation_mgr", None) if orch else None
     if mgr is None:
@@ -873,6 +916,7 @@ async def refer_to_law_enforcement(
     body: ReferralRequest, request: Request,
 ) -> dict[str, Any]:
     """Refer a case to a law enforcement agency."""
+    require_permission(request, "regulatory:file")
     orch = getattr(request.app.state, "orchestrator", None)
     mgr = getattr(orch, "_investigation_mgr", None) if orch else None
     if mgr is None:
@@ -894,6 +938,7 @@ async def file_legal_proceeding(
     body: LegalProceedingRequest, request: Request,
 ) -> dict[str, Any]:
     """File a legal proceeding for a case."""
+    require_permission(request, "regulatory:file")
     orch = getattr(request.app.state, "orchestrator", None)
     mgr = getattr(orch, "_investigation_mgr", None) if orch else None
     if mgr is None:
@@ -941,7 +986,7 @@ async def get_investigation_case(
 async def get_investigation_case_trace(
     case_id: str, request: Request,
 ) -> dict[str, Any]:
-    """Build a PS3-ready fund-flow trace for an investigation case."""
+    """Build a fund-flow trace for an investigation case."""
     from src.api.ps3_case import build_case_trace
 
     orch = getattr(request.app.state, "orchestrator", None)
@@ -953,6 +998,7 @@ async def create_investigation_evidence_package(
     case_id: str, request: Request,
 ) -> dict[str, Any]:
     """Generate a FIU-ready evidence package for the case workbench."""
+    require_permission(request, "evidence:package")
     from src.api.ps3_case import build_evidence_package
 
     orch = getattr(request.app.state, "orchestrator", None)
@@ -996,6 +1042,7 @@ class IntegrationInflowRequest(BaseModel):
 @router.post("/aml/placement/evaluate")
 async def aml_placement_evaluate(body: PlacementEvalRequest, request: Request) -> dict[str, Any]:
     """Evaluate a deposit transaction for placement-stage ML indicators."""
+    require_any_permission(request, ("aml:cdd", "aml:str:draft", "regulatory:file"))
     orch = getattr(request.app.state, "orchestrator", None)
     detector = getattr(orch, "_placement_detector", None) if orch else None
     if detector is None:
@@ -1027,6 +1074,7 @@ async def aml_placement_evaluate(body: PlacementEvalRequest, request: Request) -
 @router.post("/aml/integration/evaluate")
 async def aml_integration_evaluate(body: IntegrationEvalRequest, request: Request) -> dict[str, Any]:
     """Evaluate an outgoing transaction for integration-stage ML indicators."""
+    require_any_permission(request, ("aml:cdd", "aml:str:draft", "regulatory:file"))
     orch = getattr(request.app.state, "orchestrator", None)
     detector = getattr(orch, "_integration_detector", None) if orch else None
     if detector is None:
@@ -1058,6 +1106,7 @@ async def aml_integration_evaluate(body: IntegrationEvalRequest, request: Reques
 @router.post("/aml/integration/inflow")
 async def aml_integration_inflow(body: IntegrationInflowRequest, request: Request) -> dict[str, Any]:
     """Record an inflow for integration-stage round-trip/withdrawal detection."""
+    require_any_permission(request, ("aml:cdd", "aml:str:draft", "regulatory:file"))
     orch = getattr(request.app.state, "orchestrator", None)
     detector = getattr(orch, "_integration_detector", None) if orch else None
     if detector is None:
@@ -1073,6 +1122,7 @@ async def aml_integration_inflow(body: IntegrationInflowRequest, request: Reques
 @router.get("/aml/stats")
 async def aml_stats(request: Request) -> dict[str, Any]:
     """Get AML stage detection statistics."""
+    require_any_permission(request, ("aml:cdd", "aml:str:draft", "regulatory:file", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     result: dict[str, Any] = {}
     placement = getattr(orch, "_placement_detector", None) if orch else None
@@ -1109,6 +1159,7 @@ class FIUCollectAlertRequest(BaseModel):
 @router.post("/fiu/collect/str")
 async def fiu_collect_str(body: FIUCollectSTRRequest, request: Request) -> dict[str, Any]:
     """Collect a Suspicious Transaction Report into FIU intelligence."""
+    require_permission(request, "regulatory:file")
     orch = getattr(request.app.state, "orchestrator", None)
     fiu = getattr(orch, "_fiu_intelligence", None) if orch else None
     if fiu is None:
@@ -1127,6 +1178,7 @@ async def fiu_collect_str(body: FIUCollectSTRRequest, request: Request) -> dict[
 @router.post("/fiu/collect/alert")
 async def fiu_collect_alert(body: FIUCollectAlertRequest, request: Request) -> dict[str, Any]:
     """Collect an ML / graph / AML-stage alert into FIU intelligence."""
+    require_permission(request, "regulatory:file")
     from src.ml.fiu_intelligence import IntelligenceType
     orch = getattr(request.app.state, "orchestrator", None)
     fiu = getattr(orch, "_fiu_intelligence", None) if orch else None
@@ -1150,6 +1202,7 @@ async def fiu_collect_alert(body: FIUCollectAlertRequest, request: Request) -> d
 @router.get("/fiu/intelligence/{account_id}")
 async def fiu_get_intelligence(account_id: str, request: Request) -> dict[str, Any]:
     """Prepare and return an intelligence package for an account."""
+    require_any_permission(request, ("regulatory:file", "fiu:disseminate", "aml:str:authorize", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     fiu = getattr(orch, "_fiu_intelligence", None) if orch else None
     if fiu is None:
@@ -1161,6 +1214,7 @@ async def fiu_get_intelligence(account_id: str, request: Request) -> dict[str, A
 @router.get("/fiu/dossier/{account_id}")
 async def fiu_get_dossier(account_id: str, request: Request) -> dict[str, Any]:
     """Return raw intelligence dossier (all entries) for an account."""
+    require_any_permission(request, ("regulatory:file", "fiu:disseminate", "aml:str:authorize", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     fiu = getattr(orch, "_fiu_intelligence", None) if orch else None
     if fiu is None:
@@ -1172,6 +1226,7 @@ async def fiu_get_dossier(account_id: str, request: Request) -> dict[str, Any]:
 @router.get("/fiu/high-risk")
 async def fiu_high_risk_accounts(request: Request) -> dict[str, Any]:
     """List accounts flagged as high-risk by the FIU intelligence unit."""
+    require_any_permission(request, ("regulatory:file", "fiu:disseminate", "aml:str:authorize", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     fiu = getattr(orch, "_fiu_intelligence", None) if orch else None
     if fiu is None:
@@ -1183,6 +1238,7 @@ async def fiu_high_risk_accounts(request: Request) -> dict[str, Any]:
 @router.post("/fiu/disseminate/{package_id}")
 async def fiu_mark_disseminated(package_id: str, request: Request) -> dict[str, Any]:
     """Mark an intelligence package as disseminated to law enforcement."""
+    require_permission(request, "fiu:disseminate")
     orch = getattr(request.app.state, "orchestrator", None)
     fiu = getattr(orch, "_fiu_intelligence", None) if orch else None
     if fiu is None:
@@ -1196,6 +1252,7 @@ async def fiu_mark_disseminated(package_id: str, request: Request) -> dict[str, 
 @router.get("/fiu/stats")
 async def fiu_stats(request: Request) -> dict[str, Any]:
     """Get FIU intelligence unit statistics."""
+    require_any_permission(request, ("regulatory:file", "fiu:disseminate", "aml:str:authorize", "audit:review"))
     orch = getattr(request.app.state, "orchestrator", None)
     fiu = getattr(orch, "_fiu_intelligence", None) if orch else None
     if fiu is None:
@@ -1212,6 +1269,7 @@ async def detect_mule_chains(request: Request) -> dict[str, Any]:
     Detect multi-hop mule layering chains (Carbanak pattern):
     Source → Mule₁ → Mule₂ → … → Terminal (Cash-Out).
     """
+    require_any_permission(request, ("case:view", "aml:cdd", "analytics:view"))
     orch = getattr(request.app.state, "orchestrator", None)
     detector = getattr(orch, "_mule_chain_detector", None) if orch else None
     graph_obj = getattr(orch, "_graph", None) if orch else None
@@ -1245,6 +1303,7 @@ async def trace_mule_chain_from_node(
     Trace forward mule layering chains from a specific account.
     Used during investigation to map onward fund flow.
     """
+    require_any_permission(request, ("case:view", "aml:cdd", "analytics:view"))
     orch = getattr(request.app.state, "orchestrator", None)
     detector = getattr(orch, "_mule_chain_detector", None) if orch else None
     graph_obj = getattr(orch, "_graph", None) if orch else None
@@ -1291,6 +1350,7 @@ async def score_mule_account(
     Score an account on the 4 Carbanak mule indicators:
     25% Newly Opened + 25% High Frequency + 25% Rapid Forward + 25% Large Cash-Out.
     """
+    require_any_permission(request, ("case:view", "aml:cdd", "analytics:view"))
     orch = getattr(request.app.state, "orchestrator", None)
     scorer = getattr(orch, "_mule_scorer", None) if orch else None
     if scorer is None:
@@ -1321,6 +1381,7 @@ async def score_mule_account(
 @router.get("/mule/suspected")
 async def get_suspected_mules(request: Request) -> dict[str, Any]:
     """List all accounts previously scored as suspected mules."""
+    require_any_permission(request, ("case:view", "aml:cdd", "analytics:view"))
     orch = getattr(request.app.state, "orchestrator", None)
     scorer = getattr(orch, "_mule_scorer", None) if orch else None
     if scorer is None:
@@ -1349,6 +1410,7 @@ async def get_suspected_mules(request: Request) -> dict[str, Any]:
 @router.get("/mule/stats")
 async def mule_stats(request: Request) -> dict[str, Any]:
     """Get mule detection statistics (chain detector + account scorer)."""
+    require_any_permission(request, ("case:view", "aml:cdd", "analytics:view"))
     orch = getattr(request.app.state, "orchestrator", None)
     chain_det = getattr(orch, "_mule_chain_detector", None) if orch else None
     scorer = getattr(orch, "_mule_scorer", None) if orch else None
@@ -1371,6 +1433,7 @@ async def trace_victim_funds(
     victim_id: str, request: Request,
 ) -> dict[str, Any]:
     """Trace the complete downstream fund flow from a reported victim."""
+    require_any_permission(request, ("case:view", "customer:contact", "regulatory:file"))
     orch = getattr(request.app.state, "orchestrator", None)
     tracer = getattr(orch, "_victim_tracer", None) if orch else None
     graph_obj = getattr(orch, "_graph", None) if orch else None
@@ -1390,6 +1453,7 @@ async def trace_victim_funds(
 @router.get("/victim/traces")
 async def list_victim_traces(request: Request) -> dict[str, Any]:
     """List all victim IDs that have been traced."""
+    require_any_permission(request, ("case:view", "customer:contact", "regulatory:file"))
     orch = getattr(request.app.state, "orchestrator", None)
     tracer = getattr(orch, "_victim_tracer", None) if orch else None
 
@@ -1406,6 +1470,7 @@ async def list_victim_traces(request: Request) -> dict[str, Any]:
 @router.get("/victim/stats")
 async def victim_tracer_stats(request: Request) -> dict[str, Any]:
     """Get victim fund tracer statistics."""
+    require_any_permission(request, ("case:view", "customer:contact", "regulatory:file", "analytics:view"))
     orch = getattr(request.app.state, "orchestrator", None)
     tracer = getattr(orch, "_victim_tracer", None) if orch else None
 
@@ -1437,6 +1502,7 @@ async def analyze_transaction(req: TransactionAnalyzeRequest, request: Request) 
     Full pipeline analysis: feature extraction → ensemble scoring →
     graph analysis → point-based risk scoring → verdict + evidence.
     """
+    require_any_permission(request, ("case:view", "analytics:view", "risk:view"))
     orch = getattr(request.app.state, "orchestrator", None)
     if not orch:
         return {"error": "Orchestrator not attached"}
@@ -1532,6 +1598,7 @@ async def get_subgraph(account_id: str, request: Request, hops: int = 2) -> dict
     Extract 2-hop ego subgraph around an account for Cytoscape.js frontend.
     Returns nodes and edges in a format ready for graph visualization.
     """
+    require_any_permission(request, ("case:view", "analytics:view", "aml:cdd"))
     orch = getattr(request.app.state, "orchestrator", None)
     graph = getattr(orch, "_graph", None) if orch else None
 
@@ -1604,6 +1671,7 @@ async def trigger_circuit_breaker(req: CircuitBreakerTriggerRequest, request: Re
     """
     Manually trigger circuit breaker freeze for an account + 1-hop network.
     """
+    require_permission(request, "circuit_breaker:trigger")
     orch = getattr(request.app.state, "orchestrator", None)
     breaker = getattr(orch, "_breaker", None) if orch else None
 

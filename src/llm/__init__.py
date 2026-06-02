@@ -11,7 +11,7 @@ from src.llm.health_check import (
 )
 from src.llm.orchestrator import LLMResponse, PayFlowLLM, VRAMInsufficientError
 from src.llm.prompts import (
-    COT_ACTIVATION_PREFIX,
+    EVIDENCE_RATIONALE_PREFIX,
     INVESTIGATOR_SYSTEM_PROMPT,
     VERDICT_SCHEMA,
     build_cot_prompt,
@@ -67,7 +67,7 @@ __all__ = [
     "TOOL_SCHEMAS",
     # Prompts
     "INVESTIGATOR_SYSTEM_PROMPT",
-    "COT_ACTIVATION_PREFIX",
+    "EVIDENCE_RATIONALE_PREFIX",
     "VERDICT_SCHEMA",
     "build_investigation_prompt",
     "build_cot_prompt",

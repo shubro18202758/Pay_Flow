@@ -7,36 +7,35 @@
 # │ Component               │ Footprint              │
 # ├──────────────────────────────────────────────────┤
 # │ Model weights (Q4_K_M)  │ ~3,400 MB              │
-# │ KV cache (q8_0, 16K ctx)│   ~800 MB              │
+# │ KV cache (q8_0, 8K ctx) │   ~800 MB              │
 # │ CUDA context + buffers  │   ~400 MB              │
 # │ Compute scratch space   │   ~300 MB              │
 # ├──────────────────────────────────────────────────┤
 # │ TOTAL                   │ ~4,900 MB (60% of 8GB) │
 # └──────────────────────────────────────────────────┘
 #
-# Build: ollama create payflow-qwen -f scripts/Modelfile
-# Run:   ollama run payflow-qwen
+# Optional custom build:
+#   ollama create qwen3.5-payflow -f scripts/Modelfile
 # ============================================================================
 
-FROM qwen3.5:4b-q4_K_M
+FROM qwen3.5:4b
 
 # ── Inference Parameters ──────────────────────────────────────────────────────
 
-# Context window: 16,384 tokens. This is the SAFE ceiling.
-# The 4B model gives more headroom than the upstream 9B build while keeping
-# the forensic prompt behavior and 16K investigation context.
-PARAMETER num_ctx 16384
+# Context window: 8,192 tokens. This is the local RTX 4070-safe ceiling for
+# keeping Qwen resident while ML/GNN workloads share the GPU.
+PARAMETER num_ctx 8192
 
 # Temperature: low for deterministic, fact-grounded fraud analysis output.
 # The model is NOT a creative assistant — it is a forensic reasoning engine.
-PARAMETER temperature 0.3
+PARAMETER temperature 0.2
 
 # Nucleus sampling: constrain to high-probability tokens only.
 PARAMETER top_p 0.9
 PARAMETER top_k 40
 
 # Repetition penalty: prevent degenerate loops during long evidence summaries.
-PARAMETER repeat_penalty 1.1
+PARAMETER repeat_penalty 1.08
 PARAMETER repeat_last_n 256
 
 # Stop tokens: enforce clean termination boundaries.
@@ -48,15 +47,15 @@ PARAMETER stop "<|endoftext|>"
 # Offload ALL transformer layers to the RTX 4070 CUDA cores.
 # Setting to 999 forces Ollama to offload every layer; if VRAM is insufficient
 # for a layer, Ollama will automatically fall back that layer to CPU.
-# For Qwen-3.5-4B Q4_K_M, all layers fit comfortably in 8 GB.
+# For Qwen-3.5-4B, all layers fit comfortably in 8 GB.
 PARAMETER num_gpu 999
 
 # ── Memory Management ─────────────────────────────────────────────────────────
 
 # Batch size for prompt processing: smaller = less peak VRAM during prefill.
 # Default 512 can spike to 800MB+ during long prompt ingestion.
-# 256 keeps prefill under 400 MB while only adding ~15% latency.
-PARAMETER num_batch 256
+# 128 keeps prefill spikes bounded while the fraud pipeline is active.
+PARAMETER num_batch 128
 
 # ── System Prompt ─────────────────────────────────────────────────────────────
 

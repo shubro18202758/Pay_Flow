@@ -9,34 +9,45 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useConsortiumStatus, useConsortiumAlerts, useCheckConsortiumAccount } from '@/hooks/use-api'
+import { useRoleAccess } from '@/hooks/use-rbac'
 
 const SEVERITY_COLORS: Record<string, { text: string; bg: string; border: string }> = {
-  LOW:      { text: 'text-cyan-400',   bg: 'bg-cyan-500/15',   border: 'border-cyan-500/30' },
-  MEDIUM:   { text: 'text-amber-400',  bg: 'bg-amber-500/15',  border: 'border-amber-500/30' },
-  HIGH:     { text: 'text-orange-400', bg: 'bg-orange-500/15', border: 'border-orange-500/30' },
-  CRITICAL: { text: 'text-red-400',    bg: 'bg-red-500/15',    border: 'border-red-500/30' },
+  LOW:      { text: 'text-[#00579C]',   bg: 'bg-[#00579C]/15',   border: 'border-[#00579C]/30' },
+  MEDIUM:   { text: 'text-[#DA251C]',  bg: 'bg-[#DA251C]/15',  border: 'border-[#DA251C]/30' },
+  HIGH:     { text: 'text-[#DA251C]', bg: 'bg-[#DA251C]/15', border: 'border-[#DA251C]/30' },
+  CRITICAL: { text: 'text-[#DA251C]',    bg: 'bg-[#DA251C]/15',    border: 'border-[#DA251C]/30' },
 }
 
 export function ConsortiumPanel() {
   const { data: status, isLoading: statusLoading } = useConsortiumStatus()
   const { data: alertsData, isLoading: alertsLoading } = useConsortiumAlerts()
   const checkAccount = useCheckConsortiumAccount()
+  const access = useRoleAccess()
   const [accountInput, setAccountInput] = useState('')
   const [activeTab, setActiveTab] = useState<'overview' | 'alerts' | 'lookup'>('overview')
+  const canCheckConsortium = access.can('cfr:check') || access.can('consortium:publish') || access.can('audit:review')
+  const verifiedCount = status && !('error' in status)
+    ? status.verified_proofs ?? status.verified_alerts ?? 0
+    : 0
 
   function getSeverityStyle(severity: string) {
     return SEVERITY_COLORS[severity] ?? SEVERITY_COLORS.LOW
+  }
+
+  function submitLookup() {
+    if (!accountInput.trim() || !canCheckConsortium) return
+    checkAccount.mutate(accountInput.trim())
   }
 
   return (
     <div className="flex flex-col h-full bg-bg-deep rounded-lg border border-border-subtle overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border-subtle bg-bg-surface/50">
-        <Globe className="w-4 h-4 text-emerald-400" />
+        <Globe className="w-4 h-4 text-[#00579C]" />
         <span className="text-xs font-semibold text-text-primary tracking-wide">
           Consortium Intelligence
         </span>
-        <Lock className="w-3 h-3 text-text-muted/50 ml-auto" aria-label="ZKP-verified" />
+        <Lock className="w-3 h-3 text-text-muted/50 ml-auto" aria-label="Consortium privacy proof channel" />
       </div>
 
       {/* Tab bar */}
@@ -48,7 +59,7 @@ export function ConsortiumPanel() {
             className={cn(
               'text-[9px] px-3 py-2 uppercase tracking-wider transition-colors border-b-2',
               activeTab === tab
-                ? 'text-emerald-400 border-emerald-400'
+                ? 'text-[#00579C] border-[#00579C]'
                 : 'text-text-muted border-transparent hover:text-text-secondary',
             )}
           >
@@ -62,7 +73,7 @@ export function ConsortiumPanel() {
         {activeTab === 'overview' && (
           statusLoading ? (
             <div className="flex items-center justify-center h-full">
-              <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+              <Loader2 className="w-5 h-5 animate-spin text-[#00579C]" />
             </div>
           ) : !status || 'error' in status ? (
             <div className="flex flex-col items-center justify-center h-full text-text-muted text-[10px] gap-2 animate-fade-in">
@@ -73,17 +84,17 @@ export function ConsortiumPanel() {
             <div className="space-y-4 animate-fade-in">
               {/* Stats grid */}
               <div className="grid grid-cols-2 gap-2">
-                <StatCard icon={Users} label="Member Banks" value={status.member_banks} color="text-emerald-400" />
-                <StatCard icon={AlertTriangle} label="Total Alerts" value={status.total_alerts} color="text-amber-400" />
-                <StatCard icon={ShieldCheck} label="Active Alerts" value={status.active_alerts} color="text-cyan-400" />
-                <StatCard icon={Shield} label="ZKP Verified" value={status.verified_proofs} color="text-violet-400" />
+                <StatCard icon={Users} label="Member Banks" value={status.member_banks} color="text-[#00579C]" />
+                <StatCard icon={AlertTriangle} label="Total Alerts" value={status.total_alerts} color="text-[#DA251C]" />
+                <StatCard icon={ShieldCheck} label="Active Alerts" value={status.active_alerts} color="text-[#00579C]" />
+                <StatCard icon={Shield} label="ZKP Verified" value={verifiedCount} color="text-[#00579C]" />
               </div>
 
               {/* Rejected proofs */}
               {status.rejected_proofs > 0 && (
-                <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2">
-                  <ShieldAlert className="w-3.5 h-3.5 text-red-400" />
-                  <span className="text-[10px] text-red-400">{status.rejected_proofs} rejected ZKP proofs</span>
+                <div className="flex items-center gap-2 bg-[#DA251C]/10 border border-[#DA251C]/20 rounded-md px-3 py-2">
+                  <ShieldAlert className="w-3.5 h-3.5 text-[#DA251C]" />
+                  <span className="text-[10px] text-[#DA251C]">{status.rejected_proofs} rejected ZKP proofs</span>
                 </div>
               )}
 
@@ -110,10 +121,13 @@ export function ConsortiumPanel() {
                     {Object.entries(status.members).map(([bankId, info]) => (
                       <div key={bankId} className="flex items-center gap-2 bg-bg-surface/40 rounded-md px-3 py-2 border border-border-subtle">
                         <span className="text-[10px] text-text-primary font-mono flex-1">{bankId}</span>
-                        <span className="text-[9px] text-text-muted">{info.alerts_published} alerts</span>
+                        <span className="text-[9px] text-text-muted">{info.alerts_published ?? info.alerts_shared ?? 0} shared</span>
+                        {info.alerts_received != null && (
+                          <span className="text-[9px] text-text-muted">{info.alerts_received} received</span>
+                        )}
                         <span className={cn(
                           'text-[9px] font-mono',
-                          info.trust_score >= 0.9 ? 'text-green-400' : info.trust_score >= 0.7 ? 'text-amber-400' : 'text-red-400',
+                          info.trust_score >= 0.9 ? 'text-[#00579C]' : info.trust_score >= 0.7 ? 'text-[#DA251C]' : 'text-[#DA251C]',
                         )}>
                           {(info.trust_score * 100).toFixed(0)}%
                         </span>
@@ -129,11 +143,11 @@ export function ConsortiumPanel() {
         {activeTab === 'alerts' && (
           alertsLoading ? (
             <div className="flex items-center justify-center h-full">
-              <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+              <Loader2 className="w-5 h-5 animate-spin text-[#00579C]" />
             </div>
           ) : !alertsData || alertsData.count === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-text-muted text-[10px] gap-2 animate-fade-in">
-              <CheckCircle className="w-8 h-8 opacity-30 text-green-400" />
+              <CheckCircle className="w-8 h-8 opacity-30 text-[#00579C]" />
               <p>No active consortium alerts</p>
             </div>
           ) : (
@@ -154,12 +168,12 @@ export function ConsortiumPanel() {
                     <div className="flex items-center gap-2">
                       <span className={cn('text-[10px] font-semibold', sev.text)}>{alert.severity}</span>
                       <span className="text-[9px] text-text-muted">{alert.fraud_type}</span>
-                      {alert.zkp_verified && <ShieldCheck className="w-3 h-3 text-green-400 ml-auto" aria-label="ZKP verified" />}
-                      {alert.expired && <span className="text-[8px] text-red-400 ml-auto">EXPIRED</span>}
+                      {alert.zkp_verified && <ShieldCheck className="w-3 h-3 text-[#00579C] ml-auto" aria-label="ZKP verified" />}
+                      {alert.expired && <span className="text-[8px] text-[#DA251C] ml-auto">EXPIRED</span>}
                     </div>
                     <div className="flex items-center gap-3 text-[9px] text-text-muted">
                       <span className="font-mono">{alert.originating_bank}</span>
-                      <span>Risk: <span className="text-amber-400">{(alert.risk_score * 100).toFixed(0)}%</span></span>
+                      <span>Risk: <span className="text-[#DA251C]">{(alert.risk_score * 100).toFixed(0)}%</span></span>
                       <span className="flex items-center gap-1">
                         <Clock className="w-2.5 h-2.5" />
                         {alert.ttl_hours}h TTL
@@ -185,18 +199,21 @@ export function ConsortiumPanel() {
                 type="text"
                 value={accountInput}
                 onChange={(e) => setAccountInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && accountInput.trim() && checkAccount.mutate(accountInput.trim())}
-                placeholder="Enter account ID..."
+                onKeyDown={(e) => e.key === 'Enter' && submitLookup()}
+                placeholder="Account ID"
+                disabled={!canCheckConsortium}
+                title={!canCheckConsortium ? `${access.policy.label} cannot run Central Fraud Registry lookups` : 'Account ID'}
                 className="flex-1 bg-bg-surface border border-border-subtle rounded-md px-3 py-1.5
                   text-[11px] text-text-primary placeholder:text-text-muted/50
-                  focus:outline-none focus:border-emerald-500/40 transition-colors"
+                  focus:outline-none focus:border-[#00579C]/40 disabled:cursor-not-allowed disabled:opacity-45 transition-colors"
               />
               <button
-                onClick={() => accountInput.trim() && checkAccount.mutate(accountInput.trim())}
-                disabled={checkAccount.isPending || !accountInput.trim()}
+                onClick={submitLookup}
+                disabled={checkAccount.isPending || !accountInput.trim() || !canCheckConsortium}
+                title={!canCheckConsortium ? `${access.policy.label} cannot run Central Fraud Registry lookups` : 'Check consortium account'}
                 className="flex items-center justify-center w-7 h-7 rounded-md
-                  bg-emerald-500/15 border border-emerald-500/30 text-emerald-400
-                  hover:bg-emerald-500/25 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  bg-[#00579C]/15 border border-[#00579C]/30 text-[#00579C]
+                  hover:bg-[#00579C]/25 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 {checkAccount.isPending ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -205,14 +222,19 @@ export function ConsortiumPanel() {
                 )}
               </button>
             </div>
+            {!canCheckConsortium && (
+              <div className="rounded-md border border-[#DA251C]/25 bg-[#DA251C]/10 px-3 py-2 text-[10px] font-semibold leading-5 text-[#DA251C]">
+                {access.policy.label} can view shared intelligence, but account-level CFR checks are locked by RBAC.
+              </div>
+            )}
 
             {checkAccount.data && (
               <div className="animate-slide-up">
                 {checkAccount.data.flagged ? (
-                  <div className="bg-red-500/10 border border-red-500/20 rounded-md p-3 space-y-2">
+                  <div className="bg-[#DA251C]/10 border border-[#DA251C]/20 rounded-md p-3 space-y-2">
                     <div className="flex items-center gap-2">
-                      <ShieldAlert className="w-4 h-4 text-red-400" />
-                      <span className="text-[11px] font-semibold text-red-400">Account Flagged</span>
+                      <ShieldAlert className="w-4 h-4 text-[#DA251C]" />
+                      <span className="text-[11px] font-semibold text-[#DA251C]">Account Flagged</span>
                       <span className="text-[9px] text-text-muted ml-auto">
                         {checkAccount.data.alert_count} alert{checkAccount.data.alert_count !== 1 ? 's' : ''}
                       </span>
@@ -224,9 +246,9 @@ export function ConsortiumPanel() {
                     ))}
                   </div>
                 ) : (
-                  <div className="bg-green-500/10 border border-green-500/20 rounded-md p-3 flex items-center gap-2">
-                    <CheckCircle className="w-4 h-4 text-green-400" />
-                    <span className="text-[11px] text-green-400">Account not flagged in consortium</span>
+                  <div className="bg-[#00579C]/10 border border-[#00579C]/20 rounded-md p-3 flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4 text-[#00579C]" />
+                    <span className="text-[11px] text-[#00579C]">Account not flagged in consortium</span>
                   </div>
                 )}
               </div>

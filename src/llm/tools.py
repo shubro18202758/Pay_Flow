@@ -92,10 +92,10 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "get_ml_feature_analysis",
             "description": (
-                "Retrieve the full 30-dimensional ML feature vector for a "
-                "transaction, including velocity metrics, behavioral deviation "
-                "scores, and text anomaly indicators. Returns feature names and "
-                "values ranked by absolute importance."
+                "Retrieve the live ML feature vector for a transaction, including "
+                "velocity metrics, behavioral deviation scores, text anomaly "
+                "indicators, and Union Bank domain sidecar features for RBI/FIU, "
+                "beneficiary, MFA, mule, and EFRMS/SOC context."
             ),
             "parameters": {
                 "type": "object",
@@ -357,10 +357,18 @@ class ToolExecutor:
                 features, names = cached
                 indices = np.argsort(np.abs(features))[::-1][:top_k]
                 ranked = {names[i]: round(float(features[i]), 4) for i in indices}
+                domain_cached = getattr(self._feature_engine, "_domain_feature_cache", {}).get(txn_id)
+                domain_features = {}
+                domain_controls = []
+                if domain_cached is not None:
+                    domain_features, domain_controls = domain_cached
                 return {
                     "txn_id": txn_id,
                     "feature_dim": len(features),
                     "top_features": ranked,
+                    "domain_feature_dim": len(domain_features),
+                    "domain_features": domain_features,
+                    "domain_controls": domain_controls,
                 }
 
         return {"txn_id": txn_id, "error": "Features not found in cache"}

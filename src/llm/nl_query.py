@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -58,6 +60,7 @@ You have access to the following data sources:
 6. Agent Verdicts - AI agent investigation results
 7. System Metrics - hardware, pipeline, model performance
 8. Pre-Fraud Intel Radar - external OSINT/SOCMINT trends and guarded adaptive playbooks
+9. LLM Runtime - the Ollama-hosted Qwen model that writes analyst-facing explanations
 
 When answering:
 - Be precise with numbers and account IDs
@@ -65,6 +68,9 @@ When answering:
 - Use INR amounts (₹) for currency
 - Cite evidence from the system when available
 - If data is unavailable, say so clearly
+- If the question asks which AI/LLM/model is answering, use LLM Runtime; do not confuse it with ML Models such as XGBoost.
+- Never state or imply that Qwen, the LLM Runtime, or the AI assistant has decision authority.
+- Decision authority belongs only to PayFlow rules, XGBoost/ML risk scoring, transaction graph evidence, circuit breaker enforcement, audit ledger evidence, and analyst approval gates.
 
 Respond in a structured format with clear sections."""
 
@@ -76,6 +82,17 @@ Respond in a structured format with clear sections."""
 }
 
 User query: """
+
+    _VALID_INTENTS = {
+        "risk_query",
+        "account_lookup",
+        "fraud_patterns",
+        "system_status",
+        "explanation",
+        "statistics",
+        "recommendation",
+        "general",
+    }
 
     def __init__(self, llm_client=None, orchestrator=None):
         self._llm = llm_client
@@ -94,13 +111,21 @@ User query: """
         t0 = time.monotonic()
 
         # Classify intent
-        intent_info = await self._classify_intent(question)
+        if self._is_model_identity_query(question):
+            intent_info = {
+                "intent": "system_status",
+                "entities": self._extract_entities(question),
+                "data_sources": ["metrics"],
+            }
+        else:
+            intent_info = await self._classify_intent(question)
         intent = intent_info.get("intent", "general")
         entities = intent_info.get("entities", {})
         data_sources = intent_info.get("data_sources", [])
 
         # Gather context from data sources
         context = await self._gather_context(intent, entities, data_sources)
+        context.setdefault("llm_runtime", self._llm_runtime_context())
 
         # Generate answer using LLM
         answer = await self._generate_answer(question, intent, context)
@@ -119,41 +144,160 @@ User query: """
             sources=data_sources,
             confidence=0.85 if self._llm else 0.5,
             processing_ms=round(elapsed, 2),
-            model_used=getattr(self._llm, "_model", OLLAMA_CFG.model) if self._llm else "fallback",
+            model_used=(
+                getattr(self._llm, "_resolved_model", None)
+                or getattr(self._llm, "_model", OLLAMA_CFG.model)
+            ) if self._llm else "fallback",
         )
+
+    def _extract_entities(self, question: str) -> dict:
+        """Cheap entity extraction before asking the LLM classifier."""
+        entities: dict[str, Any] = {}
+        account_match = re.search(r"\bACC[_-]?[A-Z0-9]+\b", question, flags=re.IGNORECASE)
+        if account_match:
+            entities["account_id"] = account_match.group(0).upper().replace("-", "_")
+
+        limit_match = re.search(r"\b(?:top|first|latest|last)\s+(\d{1,3})\b", question, flags=re.IGNORECASE)
+        if limit_match:
+            entities["limit"] = min(int(limit_match.group(1)), 100)
+
+        q = question.lower()
+        for fraud_type in (
+            "upi_mule",
+            "mule",
+            "circular_laundering",
+            "laundering",
+            "velocity_phishing",
+            "phishing",
+            "swift_heist",
+            "swift",
+            "structuring",
+            "round_tripping",
+        ):
+            if fraud_type in q:
+                entities["fraud_type"] = fraud_type.upper()
+                break
+        return entities
+
+    def _heuristic_intent(self, question: str) -> dict:
+        """Fast deterministic routing for common dashboard questions."""
+        q = question.lower()
+        entities = self._extract_entities(question)
+        if any(w in q for w in ["risk", "score", "dangerous", "suspicious"]):
+            return {"intent": "risk_query", "entities": entities, "data_sources": ["ml_models", "graph"]}
+        if any(w in q for w in ["account", "acc_", "frozen", "freeze"]):
+            return {"intent": "account_lookup", "entities": entities, "data_sources": ["graph", "circuit_breaker", "ml_models"]}
+        if any(w in q for w in ["latest", "trend", "osint", "socmint", "digital arrest", "kyc", "loan app", "public signal"]):
+            return {"intent": "fraud_patterns", "entities": entities, "data_sources": ["pre_fraud_intel", "graph", "verdicts"]}
+        if any(w in q for w in ["pattern", "mule", "laundering", "phishing", "swift", "structuring", "round trip"]):
+            return {"intent": "fraud_patterns", "entities": entities, "data_sources": ["graph", "verdicts", "pre_fraud_intel"]}
+        if any(w in q for w in ["status", "health", "gpu", "vram", "cpu", "pipeline", "ollama", "qwen"]):
+            return {"intent": "system_status", "entities": entities, "data_sources": ["metrics"]}
+        if any(w in q for w in ["why", "explain", "reason", "because"]):
+            return {"intent": "explanation", "entities": entities, "data_sources": ["verdicts", "ml_models", "graph"]}
+        if any(w in q for w in ["how many", "count", "total", "statistics", "stats"]):
+            return {"intent": "statistics", "entities": entities, "data_sources": ["graph", "metrics", "circuit_breaker"]}
+        if any(w in q for w in ["recommend", "next action", "what should", "mitigate"]):
+            return {"intent": "recommendation", "entities": entities, "data_sources": ["verdicts", "ml_models", "circuit_breaker", "pre_fraud_intel"]}
+        return {"intent": "general", "entities": entities, "data_sources": ["metrics"]}
+
+    def _llm_runtime_context(self) -> dict[str, Any]:
+        """Expose the answer-generation model separately from fraud classifiers."""
+        model = (
+            getattr(self._llm, "_resolved_model", None)
+            or getattr(self._llm, "_model", None)
+            or OLLAMA_CFG.model
+        ) if self._llm else "fallback"
+        return {
+            "assistant_model": model,
+            "provider": "Ollama" if self._llm else "structured_fallback",
+            "role": "bounded analyst-facing explanation and query layer",
+            "strict_model_family": OLLAMA_CFG.strict_model_family,
+            "decision_authority": "none; the LLM is advisory and explanation-only",
+            "authoritative_decision_layers": [
+                "rules",
+                "XGBoost risk model",
+                "transaction graph",
+                "circuit breaker",
+                "audit ledger",
+                "analyst approval gates",
+            ],
+        }
+
+    def _is_model_identity_query(self, question: str) -> bool:
+        """Detect direct questions about the model/runtime so answers stay deterministic."""
+        q = question.lower()
+        model_terms = ("model", "llm", "qwen", "ai", "assistant", "runtime")
+        action_terms = ("which", "what", "who", "using", "powered", "answering")
+        return any(term in q for term in model_terms) and any(term in q for term in action_terms)
+
+    def _model_identity_answer(self, context: dict) -> str:
+        """Return a fixed runtime disclosure with authority boundaries."""
+        runtime = context.get("llm_runtime", {})
+        model = runtime.get("assistant_model") or OLLAMA_CFG.model
+        provider = runtime.get("provider") or "Ollama"
+        authority = runtime.get("authoritative_decision_layers") or [
+            "PayFlow rules",
+            "XGBoost/ML risk scoring",
+            "transaction graph evidence",
+            "circuit breaker enforcement",
+            "audit ledger evidence",
+            "analyst approval gates",
+        ]
+        return "\n".join([
+            f"- Analyst-facing explanations are generated by {model} on {provider}.",
+            "- Qwen is a bounded explanation and query copilot; it has no decision authority.",
+            "- Authoritative decisions remain with " + ", ".join(authority) + ".",
+        ])
 
     async def _classify_intent(self, question: str) -> dict:
         """Use LLM to classify query intent, with fallback heuristics."""
+        heuristic = self._heuristic_intent(question)
+        if heuristic["intent"] != "general" or not self._llm:
+            return heuristic
+
         if self._llm:
             try:
                 prompt = self.INTENT_CLASSIFIER_PROMPT + question
-                response = await self._llm.generate(prompt, temperature=0.1, max_tokens=256)
+                if hasattr(self._llm, "chat"):
+                    response_data = await asyncio.to_thread(
+                        self._llm.chat,
+                        [{"role": "user", "content": prompt}],
+                        temperature=OLLAMA_CFG.intent_temperature,
+                        max_tokens=OLLAMA_CFG.intent_max_tokens,
+                        num_ctx=OLLAMA_CFG.num_ctx_status,
+                        response_format="json",
+                    )
+                    response = str(response_data.get("content", ""))
+                else:
+                    response = await self._llm.generate(
+                        prompt,
+                        temperature=OLLAMA_CFG.intent_temperature,
+                        max_tokens=OLLAMA_CFG.intent_max_tokens,
+                        num_ctx=OLLAMA_CFG.num_ctx_status,
+                    )
                 text = response.strip()
                 # Extract JSON from response
                 start = text.find("{")
                 end = text.rfind("}") + 1
                 if start >= 0 and end > start:
-                    return json.loads(text[start:end])
+                    parsed = json.loads(text[start:end])
+                    if not isinstance(parsed, dict):
+                        return heuristic
+                    intent = str(parsed.get("intent", "general"))
+                    if intent not in self._VALID_INTENTS:
+                        return heuristic
+                    entities = parsed.get("entities", {})
+                    if not isinstance(entities, dict):
+                        entities = {}
+                    parsed["entities"] = {**heuristic.get("entities", {}), **entities}
+                    sources = parsed.get("data_sources", [])
+                    parsed["data_sources"] = sources if isinstance(sources, list) and sources else heuristic["data_sources"]
+                    return parsed
             except Exception as e:
                 logger.debug("Intent classification via LLM failed: %s", e)
 
-        # Fallback heuristic classification
-        q = question.lower()
-        if any(w in q for w in ["risk", "score", "dangerous", "suspicious"]):
-            return {"intent": "risk_query", "entities": {}, "data_sources": ["ml_models", "graph"]}
-        if any(w in q for w in ["account", "acc_", "frozen", "freeze"]):
-            return {"intent": "account_lookup", "entities": {}, "data_sources": ["graph", "circuit_breaker"]}
-        if any(w in q for w in ["latest", "trend", "osint", "socmint", "digital arrest", "kyc", "loan app", "public signal"]):
-            return {"intent": "fraud_patterns", "entities": {}, "data_sources": ["pre_fraud_intel", "graph", "verdicts"]}
-        if any(w in q for w in ["pattern", "mule", "laundering", "phishing", "swift"]):
-            return {"intent": "fraud_patterns", "entities": {}, "data_sources": ["graph", "verdicts", "pre_fraud_intel"]}
-        if any(w in q for w in ["status", "health", "gpu", "vram", "cpu", "pipeline"]):
-            return {"intent": "system_status", "entities": {}, "data_sources": ["metrics"]}
-        if any(w in q for w in ["why", "explain", "reason", "because"]):
-            return {"intent": "explanation", "entities": {}, "data_sources": ["verdicts", "ml_models"]}
-        if any(w in q for w in ["how many", "count", "total", "statistics"]):
-            return {"intent": "statistics", "entities": {}, "data_sources": ["graph", "metrics"]}
-        return {"intent": "general", "entities": {}, "data_sources": ["metrics"]}
+        return heuristic
 
     async def _gather_context(
         self, intent: str, entities: dict, data_sources: list[str],
@@ -258,18 +402,45 @@ User query: """
 
     async def _generate_answer(self, question: str, intent: str, context: dict) -> str:
         """Generate a natural language answer using LLM or structured fallback."""
+        if self._is_model_identity_query(question):
+            return self._model_identity_answer(context)
+
         if self._llm:
             try:
+                fast_intents = {"system_status", "statistics", "risk_query", "account_lookup"}
+                context_limit = min(OLLAMA_CFG.context_chars, 4000) if intent in fast_intents else OLLAMA_CFG.context_chars
+                answer_max_tokens = (
+                    min(OLLAMA_CFG.answer_max_tokens, 256)
+                    if intent in fast_intents
+                    else OLLAMA_CFG.answer_max_tokens
+                )
+                answer_num_ctx = (
+                    OLLAMA_CFG.num_ctx_status
+                    if intent in fast_intents
+                    else OLLAMA_CFG.num_ctx_interactive
+                )
                 # Build context summary for LLM
-                context_str = json.dumps(context, indent=2, default=str)[:4000]
+                context_str = json.dumps(context, indent=2, default=str)[:context_limit]
+                length_instruction = (
+                    "For this routine dashboard query, answer in at most five compact bullets. "
+                    if intent in fast_intents
+                    else ""
+                )
                 prompt = (
                     f"{self.SYSTEM_PROMPT}\n\n"
                     f"System Context:\n{context_str}\n\n"
                     f"User Question: {question}\n\n"
-                    f"Provide a clear, data-driven answer:"
+                    "Use only the provided system context. If data is missing, say exactly what is unavailable. "
+                    f"{length_instruction}"
+                    "Do not use Markdown tables, bold markers, headings, or asterisks; use plain text bullets. "
+                    "Keep the answer concise, operational, and evidence-grounded.\n\n"
+                    "Provide a clear, data-driven answer:"
                 )
                 response = await self._llm.generate(
-                    prompt, temperature=0.3, max_tokens=1024,
+                    prompt,
+                    temperature=OLLAMA_CFG.answer_temperature,
+                    max_tokens=answer_max_tokens,
+                    num_ctx=answer_num_ctx,
                 )
                 return response.strip()
             except Exception as e:

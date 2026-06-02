@@ -22,7 +22,6 @@ export function RuntimeBanner() {
 
   useEffect(() => {
     if (connected || (orchestrator && hardware)) {
-      setWarmup(false)
       return
     }
     const timer = window.setTimeout(() => setWarmup(false), 14_000)
@@ -39,7 +38,7 @@ export function RuntimeBanner() {
   const title = connected
     ? 'Live stream connected. Waiting for the next telemetry frame.'
     : warmup
-      ? 'Starting live telemetry. REST snapshot is hydrating the prototype while SSE attaches.'
+      ? 'Starting live telemetry. REST snapshot is hydrating the platform while SSE attaches.'
       : 'Live stream is reconnecting in the background. Current REST snapshot remains available.'
 
   const StatusIcon = connected ? CheckCircle2 : AlertCircle
@@ -61,7 +60,7 @@ export function RuntimeBanner() {
         <StatusIcon
           className={cn(
             'w-3.5 h-3.5 shrink-0',
-            connected ? 'text-emerald-500' : 'text-amber-600',
+            connected ? 'text-[#00579C]' : 'text-[#DA251C]',
           )}
           strokeWidth={2}
         />

@@ -1,7 +1,7 @@
 """
 PayFlow -- QLoRA + GRPO Fine-Tuning Pipeline
 ==============================================
-Local fine-tuning pipeline for Qwen 3.5 9B operating within the 8 GB VRAM
+Local fine-tuning pipeline for Qwen 3.5 4B operating within the 8 GB VRAM
 constraint of an RTX 4070.
 
 Architecture::
@@ -25,7 +25,7 @@ VRAM Budget (8 GB ceiling)::
 
     Component                  VRAM
     ─────────────────────────  ──────
-    Base model (NF4 4-bit)     ~2.2 GB  (Qwen 3.5 9B in double-quant NF4)
+    Base model (NF4 4-bit)     ~2.2 GB  (Qwen 3.5 4B in double-quant NF4)
     LoRA adapters (rank 16)    ~50 MB   (trainable delta matrices)
     Activations + grad ckpt    ~2.5 GB  (offloaded to CPU on demand)
     Optimizer states (AdamW)   ~200 MB  (only LoRA params in 32-bit)
@@ -299,7 +299,7 @@ def _extract_verdict_json(text: str) -> dict[str, Any]:
 
 class QLoRAFineTuner:
     """
-    Manages the lifecycle of a QLoRA-adapted Qwen 3.5 9B model.
+    Manages the lifecycle of a QLoRA-adapted Qwen 3.5 4B model.
 
     Handles:
         - 4-bit quantized model loading via bitsandbytes

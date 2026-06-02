@@ -147,18 +147,18 @@ class AlertRouter:
         await router.route_batch(payloads)
     """
 
-    def __init__(self, max_queue: int = 10_000, max_agent_tasks: int = 2) -> None:
+    def __init__(self, max_queue: int = 512, max_agent_tasks: int = 2) -> None:
         self._graph_consumer: GraphConsumer | None = None
         self._llm_consumer: LLMConsumer | None = None
         self._ledger_consumer: LedgerConsumer | None = None
         self._circuit_breaker_consumer: CircuitBreakerConsumer | None = None
         self._agent_consumer: AgentConsumer | None = None
+        self._max_agent_tasks = max(1, max_agent_tasks)
         self._queue: asyncio.Queue[AlertPayload] = asyncio.Queue(maxsize=max_queue)
-        self._max_agent_tasks = max_agent_tasks
         self.metrics = RouterMetrics()
         self._worker_task: asyncio.Task | None = None
         self._agent_tasks: set[asyncio.Task] = set()  # fire-and-forget agent investigations
-        self._agent_semaphore = asyncio.Semaphore(2)  # limit concurrent LLM investigations
+        self._agent_semaphore = asyncio.Semaphore(self._max_agent_tasks)  # limit concurrent LLM investigations
 
     # ── Consumer Registration ─────────────────────────────────────────────
 
@@ -267,11 +267,11 @@ class AlertRouter:
 
         # Feed investigator agent for HIGH-tier alerts (true fire-and-forget)
         if payload.tier == RiskTier.HIGH and self._agent_consumer is not None:
-            if self.metrics.agent_enqueued >= self._max_agent_tasks:
+            if len(self._agent_tasks) >= self._max_agent_tasks:
                 self.metrics.agent_skipped_budget += 1
                 if self.metrics.agent_skipped_budget == 1:
                     logger.info(
-                        "Agent investigation budget reached (%d). "
+                        "Active agent investigation budget reached (%d). "
                         "Further HIGH alerts remain routed to graph, ledger, and circuit breaker.",
                         self._max_agent_tasks,
                     )
@@ -367,8 +367,35 @@ class AlertRouter:
             except Exception as exc:
                 logger.error("Worker loop error: %s", exc)
 
+    async def _drain_agent_tasks(self, timeout_sec: float = 120.0) -> None:
+        """Wait for already-enqueued investigator tasks before dependencies close."""
+        pending = [task for task in self._agent_tasks if not task.done()]
+        if not pending:
+            return
+
+        logger.info("Waiting for %d agent investigation(s) to finish.", len(pending))
+        done, still_pending = await asyncio.wait(pending, timeout=timeout_sec)
+        for task in done:
+            if task.cancelled():
+                continue
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                continue
+            if exc is not None:
+                logger.warning("Agent investigation task failed during drain: %s", exc)
+
+        if still_pending:
+            logger.warning(
+                "Cancelling %d agent investigation(s) after %.1fs drain timeout.",
+                len(still_pending), timeout_sec,
+            )
+            for task in still_pending:
+                task.cancel()
+            await asyncio.gather(*still_pending, return_exceptions=True)
+
     async def shutdown(self) -> None:
-        """Graceful shutdown: drain queue then cancel worker."""
+        """Graceful shutdown: stop queue worker and drain active agent tasks."""
         if self._worker_task is not None:
             self._worker_task.cancel()
             try:
@@ -377,6 +404,8 @@ class AlertRouter:
                 pass
             self._worker_task = None
             logger.info("Alert router worker stopped.")
+
+        await self._drain_agent_tasks()
 
     # ── Factory: Build Payloads from Inference Results ────────────────────
 

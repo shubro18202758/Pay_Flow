@@ -15,7 +15,6 @@ export function ConnectionStatus({ connected }: Props) {
 
   useEffect(() => {
     if (connected) {
-      setWarmup(false)
       return
     }
     const timer = window.setTimeout(() => setWarmup(false), 14_000)
@@ -23,8 +22,8 @@ export function ConnectionStatus({ connected }: Props) {
   }, [connected])
 
   const neutral = !connected && warmup
-  const statusColor = connected ? 'text-emerald-500' : neutral ? 'text-amber-600' : 'text-amber-700'
-  const dotColor = connected ? 'bg-emerald-500' : neutral ? 'bg-amber-500' : 'bg-amber-600'
+  const statusColor = connected ? 'text-[#00579C]' : neutral ? 'text-[#DA251C]' : 'text-[#DA251C]'
+  const dotColor = connected ? 'bg-[#00579C]' : neutral ? 'bg-[#DA251C]' : 'bg-[#DA251C]'
   const label = connected ? 'Live Stream' : neutral ? 'Connecting' : 'Snapshot Mode'
 
   return (
@@ -37,11 +36,11 @@ export function ConnectionStatus({ connected }: Props) {
           )}
         />
         {connected && (
-          <div className="absolute inset-0 w-2 h-2 rounded-full bg-emerald-500 animate-ping opacity-75" />
+          <div className="absolute inset-0 w-2 h-2 rounded-full bg-[#00579C] animate-ping opacity-75" />
         )}
       </div>
       {connected ? (
-        <Wifi className="w-3 h-3 text-emerald-500" />
+        <Wifi className="w-3 h-3 text-[#00579C]" />
       ) : (
         <WifiOff className={cn('w-3 h-3', statusColor)} />
       )}

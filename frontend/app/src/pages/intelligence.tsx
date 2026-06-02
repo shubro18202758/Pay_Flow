@@ -1,5 +1,5 @@
 // ============================================================================
-// Intelligence & Integrity Page -- AI CoT Stream + Cryptographic Audit Trail
+// Intelligence & Integrity Page -- AI Investigation Stream + Cryptographic Audit Trail
 // + Risk Heatmap + Velocity Sparklines + Forensic Evidence Chain
 // + NL Query + SHAP Explainability + Drift Monitor + Consortium Intelligence
 // ============================================================================
@@ -17,7 +17,7 @@ import { ConsortiumPanel } from '@/components/panels/consortium-panel'
 
 export function IntelligencePage() {
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex min-h-full flex-col">
       {/* ---- Page header ---- */}
       <div className="shrink-0 px-5 pt-5 pb-4 animate-fade-in">
         <div className="flex items-center gap-3 mb-1.5">
@@ -27,10 +27,10 @@ export function IntelligencePage() {
           <div>
             <h1 className="text-sm font-semibold text-text-primary tracking-wide flex items-center gap-2">
               Intelligence & Integrity
-              <ShieldCheck className="w-4 h-4 text-emerald-400/80" />
+              <ShieldCheck className="w-4 h-4 text-[#00579C]/80" />
             </h1>
             <p className="text-[10px] text-text-muted leading-relaxed mt-0.5">
-              Real-time AI reasoning, explainability, model health, cross-bank consortium intelligence, and cryptographic audit trail.
+              Real-time evidence rationale, explainability, model health, cross-bank consortium intelligence, and cryptographic audit trail.
             </p>
           </div>
         </div>
@@ -62,20 +62,20 @@ export function IntelligencePage() {
         </div>
       </div>
 
-      {/* ---- Row 3: AI Investigator + Evidence Chain + Audit Trail ---- */}
-      <div className="flex flex-1 min-h-0 gap-3 px-5 pb-5 animate-slide-up" style={{ animationDelay: '150ms' }}>
-        {/* Pane 1: AI Investigator Stream */}
-        <div className="flex-1 min-w-0 relative">
+      {/* ---- Row 3: AI Evidence Stream + Evidence Chain + Audit Trail ---- */}
+      <div className="flex min-h-[430px] gap-3 px-5 pb-5 animate-slide-up" style={{ animationDelay: '150ms' }}>
+        {/* Pane 1: AI Evidence Stream */}
+        <div className="relative h-[430px] flex-1 min-w-0">
           <AIInvestigatorStream />
         </div>
 
         {/* Pane 2: Forensic Evidence Chain */}
-        <div className="flex-1 min-w-0">
+        <div className="h-[430px] flex-1 min-w-0">
           <ForensicEvidenceChain />
         </div>
 
         {/* Pane 3: Cryptographic Audit Trail */}
-        <div className="flex-1 min-w-0">
+        <div className="h-[430px] flex-1 min-w-0">
           <CryptographicAuditTrail />
         </div>
       </div>

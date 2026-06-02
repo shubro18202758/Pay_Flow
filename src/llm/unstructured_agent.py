@@ -144,8 +144,8 @@ class UnstructuredAnalysisAgent:
         llm_client=None,
         config=None,
     ) -> None:
-        from config.settings import INVESTIGATOR_CFG
-        self._cfg = config or INVESTIGATOR_CFG
+        from config.settings import UNSTRUCTURED_AGENT_CFG
+        self._cfg = config or UNSTRUCTURED_AGENT_CFG
         self._llm = llm_client
         self.metrics = UnstructuredAgentMetrics()
 
@@ -508,25 +508,15 @@ class UnstructuredAnalysisAgent:
 
         try:
             from config.settings import OLLAMA_CFG
-            from config.vram_manager import assistant_mode
 
-            model = self._llm._ensure_model_available()
-
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "think": False,
-                "options": {
-                    "temperature": 0.2,  # lower than main agent for precision
-                    "num_predict": self._cfg.max_thinking_tokens,
-                    "num_ctx": OLLAMA_CFG.num_ctx,
-                },
-            }
-
-            with assistant_mode():
-                response = self._llm._client.chat(**kwargs)
-
-            return {"content": response.message.content or ""}
+            return self._llm.chat(
+                messages,
+                temperature=self._cfg.analysis_temperature,
+                max_tokens=min(self._cfg.max_analysis_tokens, OLLAMA_CFG.nlu_max_tokens),
+                num_ctx=OLLAMA_CFG.nlu_num_ctx,
+                timeout=OLLAMA_CFG.request_timeout_sec,
+                response_format="json",
+            )
 
         except Exception as exc:
             logger.error("NLU LLM call failed: %s", exc)
@@ -715,14 +705,17 @@ class UnstructuredAnalysisAgent:
         - Device anomalies: moderate weight (could be legitimate multi-device)
         """
         if se_score == 0.0 and la_score == 0.0 and da_score == 0.0:
-            return -0.05  # no findings = slight confidence reduction in fraud
+            return self._cfg.risk_modifier_floor  # no findings = slight confidence reduction in fraud
 
         weighted = (
-            se_score * 0.40 +
-            la_score * 0.35 +
-            da_score * 0.25
+            se_score * self._cfg.se_weight +
+            la_score * self._cfg.la_weight +
+            da_score * self._cfg.da_weight
         )
-        return min(0.30, round(weighted * 0.35, 4))
+        return min(
+            self._cfg.risk_modifier_ceiling,
+            round(weighted * self._cfg.risk_modifier_scale, 4),
+        )
 
     # ── Diagnostics ───────────────────────────────────────────────────────
 

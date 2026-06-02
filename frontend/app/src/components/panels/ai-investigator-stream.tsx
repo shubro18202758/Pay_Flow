@@ -1,12 +1,12 @@
 // ============================================================================
-// AI Investigator Stream -- Live terminal-style Chain-of-Thought renderer
+// AI Evidence Stream -- Live terminal-style investigation trace renderer
 // Grouped by investigation (txn_id) with collapsible groups
 // ============================================================================
 
 import { useRef, useEffect, useState, useMemo } from 'react'
 import { Terminal, Brain, Wrench, Gavel, ChevronDown, ChevronRight } from 'lucide-react'
 import { useDashboardStore } from '@/stores/use-dashboard-store'
-import { cn, fmtTimestamp, truncId } from '@/lib/utils'
+import { cn, fmtOptionalMs, fmtOptionalTimestamp, truncId } from '@/lib/utils'
 import type { AgentLogEntry, SSEAgentThinking, SSEAgentToolCall, SSEAgentVerdict } from '@/lib/types'
 
 const MAX_VISIBLE = 200
@@ -16,6 +16,17 @@ type ViewMode = 'grouped' | 'flat'
 function getTxnId(entry: AgentLogEntry): string {
   const d = entry.data as { txn_id?: string }
   return d.txn_id ?? 'unknown'
+}
+
+function isFallbackVerdict(d: SSEAgentVerdict): boolean {
+  const evidenceCount = (d.evidence_cited?.length ?? d.evidence?.length ?? 0)
+  return (
+    d.confidence_source === 'deterministic_evidence_fallback' ||
+    d.llm_parse_status?.includes('fallback') ||
+    (d.confidence === 0.5 &&
+      evidenceCount === 0 &&
+      Boolean(d.reasoning_summary?.includes('Unable to reach definitive conclusion')))
+  )
 }
 
 interface InvestigationGroup {
@@ -89,19 +100,19 @@ export function AIInvestigatorStream() {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-subtle shrink-0 bg-bg-surface">
         <div className="flex items-center gap-2.5">
-          <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+          <Terminal className="w-3.5 h-3.5 text-accent-primary" />
           <span className="relative flex h-2 w-2">
             <span className={cn(
               'absolute inline-flex h-full w-full rounded-full opacity-75',
-              agentLog.length > 0 ? 'animate-ping bg-emerald-400' : 'bg-gray-500',
+              agentLog.length > 0 ? 'animate-ping bg-accent-primary' : 'bg-gray-500',
             )} />
             <span className={cn(
               'relative inline-flex rounded-full h-2 w-2',
-              agentLog.length > 0 ? 'bg-emerald-400' : 'bg-gray-500',
+              agentLog.length > 0 ? 'bg-accent-primary' : 'bg-gray-500',
             )} />
           </span>
           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
-            AI Investigator Stream
+            AI Evidence Stream
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -141,7 +152,7 @@ export function AIInvestigatorStream() {
                 Awaiting agent activity...
               </p>
               <p className="text-text-muted/50 text-[9px] max-w-[240px] mx-auto leading-relaxed">
-                Launch a threat simulation to see the AI's Chain-of-Thought reasoning
+                Launch an event drill to inspect the bounded investigation trace
               </p>
             </div>
           </div>
@@ -151,11 +162,11 @@ export function AIInvestigatorStream() {
           groups.map((group) => {
             const isCollapsed = collapsedGroups.has(group.txnId)
             const verdictColor = group.verdictResult === 'FRAUDULENT'
-              ? 'border-red-500/40 bg-red-500/[0.03]'
+              ? 'border-[#DA251C]/40 bg-[#DA251C]/[0.03]'
               : group.verdictResult === 'SUSPICIOUS'
-                ? 'border-amber-500/40 bg-amber-500/[0.03]'
+                ? 'border-[#DA251C]/40 bg-[#DA251C]/[0.03]'
                 : group.hasVerdict
-                  ? 'border-emerald-500/40 bg-emerald-500/[0.03]'
+                  ? 'border-[#00579C]/40 bg-[#00579C]/[0.03]'
                   : 'border-border-subtle bg-white/[0.01]'
             return (
               <div key={group.txnId} className={cn('rounded-md border mb-2 overflow-hidden transition-all', verdictColor)}>
@@ -164,23 +175,23 @@ export function AIInvestigatorStream() {
                   className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-white/[0.03] transition-colors text-left"
                 >
                   {isCollapsed ? <ChevronRight className="w-3 h-3 text-text-muted shrink-0" /> : <ChevronDown className="w-3 h-3 text-text-muted shrink-0" />}
-                  <span className="text-[10px] text-amber-200/70 font-semibold">txn:{truncId(group.txnId, 10)}</span>
+                  <span className="text-[10px] text-[#DA251C]/70 font-semibold">txn:{truncId(group.txnId, 10)}</span>
                   <span className="text-[9px] text-text-muted">{group.entries.length} events</span>
                   {group.hasVerdict && (
                     <span className={cn(
                       'text-[8px] font-bold px-1.5 py-0.5 rounded',
-                      group.verdictResult === 'FRAUDULENT' ? 'text-red-400 bg-red-500/10'
-                        : group.verdictResult === 'SUSPICIOUS' ? 'text-amber-400 bg-amber-500/10'
-                          : 'text-emerald-400 bg-emerald-500/10',
+                      group.verdictResult === 'FRAUDULENT' ? 'text-[#DA251C] bg-[#DA251C]/10'
+                        : group.verdictResult === 'SUSPICIOUS' ? 'text-[#DA251C] bg-[#DA251C]/10'
+                          : 'text-[#00579C] bg-[#00579C]/10',
                     )}>
                       {group.verdictResult}
                     </span>
                   )}
                   {!group.hasVerdict && (
-                    <span className="text-[8px] text-cyan-400 animate-pulse">in progress</span>
+                    <span className="text-[8px] text-accent-primary animate-pulse">in progress</span>
                   )}
                   <span className="ml-auto text-[8px] text-text-muted/50">
-                    {fmtTimestamp(group.entries[group.entries.length - 1].timestamp)}
+                    {fmtOptionalTimestamp(group.entries[group.entries.length - 1].timestamp)}
                   </span>
                 </button>
                 {!isCollapsed && (
@@ -201,7 +212,7 @@ export function AIInvestigatorStream() {
 
         {/* Blinking cursor */}
         {agentLog.length > 0 && (
-          <span className="inline-block w-2 h-4 rounded-sm bg-emerald-400 animate-pulse ml-1" />
+          <span className="inline-block w-2 h-4 rounded-sm bg-[#00579C] animate-pulse ml-1" />
         )}
       </div>
 
@@ -225,18 +236,18 @@ export function AIInvestigatorStream() {
 // -- Individual log entry renderer --
 
 function LogLine({ entry }: { entry: AgentLogEntry }) {
-  const ts = fmtTimestamp(entry.timestamp)
+  const ts = fmtOptionalTimestamp(entry.timestamp)
 
   if (entry.type === 'thinking') {
     const d = entry.data as SSEAgentThinking
     return (
       <div className="flex gap-2 py-1 px-2 hover:bg-white/[0.03] rounded-md transition-colors group">
         <span className="text-text-muted/50 shrink-0 text-[10px]">{ts}</span>
-        <span className="flex items-center gap-1 text-cyan-400 shrink-0 font-semibold">
+          <span className="flex items-center gap-1 text-accent-primary shrink-0 font-semibold">
           <Brain className="w-3 h-3" />
-          <span className="text-[10px]">THINK</span>
+          <span className="text-[10px]">EVIDENCE</span>
         </span>
-        <span className="text-amber-200/70 shrink-0 text-[10px]">txn:{truncId(d.txn_id, 8)}</span>
+        <span className="text-[#DA251C]/70 shrink-0 text-[10px]">txn:{truncId(d.txn_id, 8)}</span>
         <span className="text-text-secondary/90">{d.content}</span>
       </div>
     )
@@ -245,22 +256,22 @@ function LogLine({ entry }: { entry: AgentLogEntry }) {
   if (entry.type === 'tool_call') {
     const d = entry.data as SSEAgentToolCall
     return (
-      <div className="flex gap-2 py-1 px-2 hover:bg-white/[0.03] rounded-md transition-colors bg-violet-500/[0.03] group">
+      <div className="flex gap-2 py-1 px-2 hover:bg-white/[0.03] rounded-md transition-colors bg-[#00579C]/[0.03] group">
         <span className="text-text-muted/50 shrink-0 text-[10px]">{ts}</span>
-        <span className="flex items-center gap-1 text-violet-400 shrink-0 font-semibold">
+        <span className="flex items-center gap-1 text-[#00579C] shrink-0 font-semibold">
           <Wrench className="w-3 h-3" />
           <span className="text-[10px]">TOOL</span>
         </span>
-        <span className="text-amber-200/70 shrink-0 text-[10px]">txn:{truncId(d.txn_id, 8)}</span>
+        <span className="text-[#DA251C]/70 shrink-0 text-[10px]">txn:{truncId(d.txn_id, 8)}</span>
         <span className="text-text-secondary/90">
           {d.tool_name}
           <span className={cn(
             'font-bold ml-1',
-            d.success ? 'text-emerald-400' : 'text-red-400',
+            d.success ? 'text-[#00579C]' : 'text-[#DA251C]',
           )}>
             {d.success ? 'OK' : 'FAIL'}
           </span>
-          <span className="text-text-muted/40 ml-1">({d.duration_ms}ms)</span>
+          <span className="text-text-muted/40 ml-1">({fmtOptionalMs(d.duration_ms)})</span>
         </span>
       </div>
     )
@@ -270,10 +281,10 @@ function LogLine({ entry }: { entry: AgentLogEntry }) {
   const d = entry.data as SSEAgentVerdict
   const verdictColor =
     d.verdict === 'FRAUDULENT'
-      ? 'text-red-400'
+      ? 'text-[#DA251C]'
       : d.verdict === 'SUSPICIOUS'
-        ? 'text-amber-400'
-        : 'text-emerald-400'
+        ? 'text-[#DA251C]'
+        : 'text-[#00579C]'
 
   const glowColor =
     d.verdict === 'FRAUDULENT'
@@ -284,10 +295,10 @@ function LogLine({ entry }: { entry: AgentLogEntry }) {
 
   const borderColor =
     d.verdict === 'FRAUDULENT'
-      ? 'border-red-500/30'
+      ? 'border-[#DA251C]/30'
       : d.verdict === 'SUSPICIOUS'
-        ? 'border-amber-500/30'
-        : 'border-emerald-500/30'
+        ? 'border-[#DA251C]/30'
+        : 'border-[#00579C]/30'
 
   return (
     <div className={cn(
@@ -302,9 +313,16 @@ function LogLine({ entry }: { entry: AgentLogEntry }) {
           <Gavel className="w-3.5 h-3.5" />
           <span className="text-[10px]">VERDICT</span>
         </span>
-        <span className="text-amber-200/70 shrink-0 text-[10px]">txn:{truncId(d.txn_id, 8)}</span>
+        <span className="text-[#DA251C]/70 shrink-0 text-[10px]">txn:{truncId(d.txn_id, 8)}</span>
         <span className={cn('font-bold', verdictColor)}>{d.verdict}</span>
-        <span className="text-text-muted font-mono text-[10px]">conf:{(d.confidence * 100).toFixed(0)}%</span>
+        <span className="text-text-muted font-mono text-[10px]">
+          {isFallbackVerdict(d) ? 'conf:n/a' : `conf:${(d.confidence * 100).toFixed(0)}%`}
+        </span>
+        {isFallbackVerdict(d) && (
+          <span className="text-[8px] font-bold px-1.5 py-0.5 rounded text-slate-400 bg-slate-500/10">
+            fallback
+          </span>
+        )}
       </div>
       {d.reasoning_summary && (
         <div className="ml-[5rem] mt-1 text-text-muted/80 text-[10px] italic leading-relaxed">
@@ -313,9 +331,9 @@ function LogLine({ entry }: { entry: AgentLogEntry }) {
       )}
       <div className="ml-[5rem] mt-1 flex gap-3 text-[9px] text-text-muted/50">
         <span>action: {d.recommended_action}</span>
-        <span>steps: {d.thinking_steps}</span>
+        <span>rationale: {d.thinking_steps} steps</span>
         <span>tools: {d.tools_used?.join(', ')}</span>
-        <span className="font-mono">{d.total_duration_ms}ms</span>
+        <span className="font-mono">{fmtOptionalMs(d.total_duration_ms)}</span>
       </div>
     </div>
   )

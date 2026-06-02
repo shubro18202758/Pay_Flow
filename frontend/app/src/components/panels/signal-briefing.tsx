@@ -5,17 +5,18 @@
 import { useDashboardStore } from '@/stores/use-dashboard-store'
 import { useSimulationStore } from '@/stores/use-simulation-store'
 import { useThreatSummary, useRiskDistribution } from '@/hooks/use-api'
-import { SeverityBadge, verdictToSeverity } from '@/components/shared/severity-badge'
-import { fmtPaisa, fmtTimestamp, truncId, cn } from '@/lib/utils'
+import { SeverityBadge } from '@/components/shared/severity-badge'
+import { verdictToSeverity } from '@/lib/severity'
+import { cn, fmtOptionalTimestamp, fmtPaisa, truncId } from '@/lib/utils'
 import { Crosshair, Zap, Scale, ShieldAlert, BarChart3, AlertTriangle } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { SSEAgentVerdict, ThreatIndicator } from '@/lib/types'
 
 const THREAT_COLORS: Record<string, { bg: string; border: string; text: string; glow: string }> = {
-  critical: { bg: 'bg-red-500/15', border: 'border-red-500/40', text: 'text-red-400', glow: 'shadow-red-500/20 shadow-lg' },
-  high:     { bg: 'bg-orange-500/15', border: 'border-orange-500/40', text: 'text-orange-400', glow: 'shadow-orange-500/15 shadow-md' },
-  elevated: { bg: 'bg-amber-500/15', border: 'border-amber-500/40', text: 'text-amber-400', glow: '' },
-  normal:   { bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', text: 'text-emerald-400', glow: '' },
+  critical: { bg: 'bg-[#DA251C]/15', border: 'border-[#DA251C]/40', text: 'text-[#DA251C]', glow: 'shadow-red-500/20 shadow-lg' },
+  high:     { bg: 'bg-[#DA251C]/15', border: 'border-[#DA251C]/40', text: 'text-[#DA251C]', glow: 'shadow-orange-500/15 shadow-md' },
+  elevated: { bg: 'bg-[#DA251C]/15', border: 'border-[#DA251C]/40', text: 'text-[#DA251C]', glow: '' },
+  normal:   { bg: 'bg-[#00579C]/10', border: 'border-[#00579C]/30', text: 'text-[#00579C]', glow: '' },
   unknown:  { bg: 'bg-zinc-500/10', border: 'border-zinc-500/30', text: 'text-zinc-400', glow: '' },
 }
 
@@ -64,7 +65,7 @@ export function SignalBriefing() {
               {threatData.indicators.slice(0, 3).map((ind: ThreatIndicator, i: number) => (
                 <div key={i} className="flex items-center gap-1.5 text-[8px]">
                   <AlertTriangle className={cn('w-2.5 h-2.5 shrink-0',
-                    ind.severity === 'critical' ? 'text-red-400' : ind.severity === 'high' ? 'text-orange-400' : 'text-amber-400'
+                    ind.severity === 'critical' ? 'text-[#DA251C]' : ind.severity === 'high' ? 'text-[#DA251C]' : 'text-[#DA251C]'
                   )} />
                   <span className="text-text-secondary truncate">{ind.detail}</span>
                 </div>
@@ -75,7 +76,7 @@ export function SignalBriefing() {
             <div className="mt-2 h-1 rounded-full bg-bg-deep/50 overflow-hidden">
               <div
                 className={cn('h-full rounded-full transition-all duration-500',
-                  threatLevel === 'critical' ? 'bg-red-500' : threatLevel === 'high' ? 'bg-orange-500' : threatLevel === 'elevated' ? 'bg-amber-500' : 'bg-emerald-500'
+                  threatLevel === 'critical' ? 'bg-[#DA251C]' : threatLevel === 'high' ? 'bg-[#DA251C]' : threatLevel === 'elevated' ? 'bg-[#DA251C]' : 'bg-[#00579C]'
                 )}
                 style={{ width: `${Math.min(threatData.severity_score * 100, 100)}%` }}
               />
@@ -126,7 +127,7 @@ export function SignalBriefing() {
           body={
             currentScenario
               ? `${currentScenario.attack_label} | ${currentScenario.events_ingested}/${currentScenario.events_generated} events | ${currentScenario.status}`
-              : 'No simulation selected yet'
+              : 'No event drill selected yet'
           }
           meta={currentScenario ? truncId(currentScenario.scenario_id, 8) : 'idle'}
         />
@@ -134,8 +135,8 @@ export function SignalBriefing() {
         <BriefingCard
           icon={Zap}
           title="Latest Injected Event"
-          body={latestEvent ? summarizeEvent(latestEvent) : 'No synthetic event has entered the pipeline yet'}
-          meta={latestEvent ? fmtTimestamp(latestEvent.timestamp) : 'awaiting'}
+          body={latestEvent ? summarizeEvent(latestEvent) : 'No injected event has entered the pipeline yet'}
+          meta={latestEvent ? fmtOptionalTimestamp(latestEvent.timestamp) : 'awaiting'}
         />
 
         {/* Latest Verdict -- special card with severity badge */}
@@ -152,7 +153,7 @@ export function SignalBriefing() {
                   {truncId((latestVerdict.data as SSEAgentVerdict).txn_id, 10)}
                 </span>
                 <span className="ml-auto text-[9px] font-mono tabular-nums text-text-muted">
-                  {fmtTimestamp(latestVerdict.timestamp)}
+                  {fmtOptionalTimestamp(latestVerdict.timestamp)}
                 </span>
               </div>
               <div className="mt-1.5 text-[10px] leading-relaxed text-text-secondary">

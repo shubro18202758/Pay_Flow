@@ -1,9 +1,9 @@
 // ============================================================================
-// Simulation Event Trace -- Live feed of injected synthetic events
+// Simulation Event Trace -- Live feed of backend-injected event-lab records
 // ============================================================================
 
 import { useSimulationStore } from '@/stores/use-simulation-store'
-import { cn, fmtPaisa, fmtTimestamp, truncId } from '@/lib/utils'
+import { cn, fmtOptionalTimestamp, fmtPaisa, truncId } from '@/lib/utils'
 import {
   ListOrdered,
   ArrowRightLeft,
@@ -28,10 +28,10 @@ export function SimulationEventTrace() {
         <div>
           <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
             <ListOrdered className="w-3.5 h-3.5 text-accent-primary" />
-            Injected Event Trace
+            Backend Event Trace
           </div>
           <div className="mt-1 text-[11px] text-text-muted">
-            Each row is one synthetic event entering the live pipeline.
+            Each row is a backend-injected event entering the live pipeline.
           </div>
         </div>
         <div className="flex items-center gap-1.5 text-[10px] font-mono text-text-muted tabular-nums">
@@ -66,7 +66,7 @@ export function SimulationEventTrace() {
                   {entry.attackLabel}
                 </span>
                 <span className="text-[10px] font-mono text-text-muted tabular-nums">
-                  {fmtTimestamp(entry.timestamp)}
+                  {fmtOptionalTimestamp(entry.timestamp)}
                 </span>
                 <span className="ml-auto text-[10px] font-mono font-semibold text-accent-primary tabular-nums">
                   {entry.progressPct.toFixed(0)}%
@@ -147,7 +147,7 @@ function renderSummary(entry: ReturnType<typeof useSimulationStore.getState>['re
     )
   }
 
-  return <span>Unknown simulation payload</span>
+  return <span>Backend event payload type is not mapped in this inspector</span>
 }
 
 function TraceBadge({ label, tone }: { label: string; tone: string }) {

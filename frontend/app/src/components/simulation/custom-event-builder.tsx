@@ -3,7 +3,8 @@
 // ============================================================================
 
 import { useState, useMemo, useCallback } from 'react'
-import { useEnums, useInjectEvent } from '@/hooks/use-api'
+import { useEnums, useInjectEvent, useEventLabTemplates, usePreviewEventLabRun } from '@/hooks/use-api'
+import { useRoleAccess } from '@/hooks/use-rbac'
 import { useDashboardStore } from '@/stores/use-dashboard-store'
 import { useActivityStore } from '@/stores/use-activity-store'
 import { cn } from '@/lib/utils'
@@ -26,67 +27,10 @@ import {
   Unlock,
   Copy,
   Clock,
-  Dices,
   Zap,
   Tag,
 } from 'lucide-react'
-import type { InjectEventRequest } from '@/lib/types'
-
-// -- Random attack data pools --
-
-const INDIAN_CITIES = [
-  { name: 'Mumbai', lat: 19.076, lon: 72.878 },
-  { name: 'Delhi', lat: 28.704, lon: 77.103 },
-  { name: 'Bangalore', lat: 12.972, lon: 77.595 },
-  { name: 'Chennai', lat: 13.083, lon: 80.271 },
-  { name: 'Kolkata', lat: 22.573, lon: 88.364 },
-  { name: 'Hyderabad', lat: 17.385, lon: 78.487 },
-  { name: 'Pune', lat: 18.520, lon: 73.857 },
-  { name: 'Ahmedabad', lat: 23.023, lon: 72.571 },
-  { name: 'Jaipur', lat: 26.912, lon: 75.787 },
-  { name: 'Lucknow', lat: 26.847, lon: 80.946 },
-  { name: 'Surat', lat: 21.170, lon: 72.831 },
-  { name: 'Nagpur', lat: 21.146, lon: 79.088 },
-  { name: 'Patna', lat: 25.609, lon: 85.138 },
-  { name: 'Guwahati', lat: 26.145, lon: 91.736 },
-  { name: 'Bhopal', lat: 23.260, lon: 77.413 },
-  { name: 'Varanasi', lat: 25.318, lon: 83.011 },
-  { name: 'Chandigarh', lat: 30.734, lon: 76.779 },
-  { name: 'Coimbatore', lat: 11.017, lon: 76.956 },
-]
-
-const IFSC_PREFIXES = ['UBIN', 'SBIN', 'HDFC', 'ICIC', 'PUNB', 'BARB', 'CNRB', 'BKID', 'IOBA', 'UCBA']
-
-interface FraudScenario {
-  label: string
-  eventType: 'transaction' | 'auth' | 'interbank'
-  senderPrefix: string
-  receiverPrefix: string
-  amountRange: [number, number]
-  channel: string
-  acctType?: string
-  desc: string
-}
-
-const RANDOM_FRAUD_SCENARIOS: FraudScenario[] = [
-  { label: 'Dormant Account Drain', eventType: 'transaction', senderPrefix: 'DORMANT_ACCT', receiverPrefix: 'MULE_RECV', amountRange: [300000, 900000], channel: 'IMPS', desc: 'Suddenly active dormant savings account transferring to mule' },
-  { label: 'Micro-Split Ring', eventType: 'transaction', senderPrefix: 'SPLIT_SRC', receiverPrefix: 'SPLIT_DST', amountRange: [7500, 9999], channel: 'UPI', desc: 'Structuring transactions just below ₹10K reporting threshold' },
-  { label: 'Corporate Shell Transfer', eventType: 'transaction', senderPrefix: 'RETAIL_VICTIM', receiverPrefix: 'SHELL_CORP', amountRange: [1000000, 5000000], channel: 'NEFT', acctType: 'CURRENT', desc: 'High-value transfer to newly created shell company account' },
-  { label: 'UPI Velocity Burst', eventType: 'transaction', senderPrefix: 'RAPID_UPI', receiverPrefix: 'RAPID_RECV', amountRange: [500, 15000], channel: 'UPI', desc: 'Rapid-fire small UPI payments — velocity far exceeds pattern' },
-  { label: 'NRI Layering', eventType: 'transaction', senderPrefix: 'NRI_LAYERED', receiverPrefix: 'DOMESTIC_PASS', amountRange: [2000000, 10000000], channel: 'RTGS', acctType: 'NRE', desc: 'Cross-border layered transfer through NRE intermediate account' },
-  { label: 'Mule Collector', eventType: 'transaction', senderPrefix: 'BENAMI_SRC', receiverPrefix: 'COLLECTOR', amountRange: [50000, 500000], channel: 'IMPS', desc: 'Benami account funneling to centralized mule collector' },
-  { label: 'Late-Night NEFT', eventType: 'transaction', senderPrefix: 'NOCTURNAL', receiverPrefix: 'OFFSHORE_LINK', amountRange: [500000, 3000000], channel: 'NEFT', desc: 'Unusual late-night large transfer to offshore-linked account' },
-  { label: 'Phishing Drain', eventType: 'transaction', senderPrefix: 'PHISH_VICTIM', receiverPrefix: 'PHISHER_ACCT', amountRange: [20000, 200000], channel: 'UPI', desc: 'Compromised credentials draining victim account via rapid UPI' },
-  { label: 'Credential Stuffing', eventType: 'auth', senderPrefix: 'BRUTE_ACCT', receiverPrefix: '', amountRange: [0, 0], channel: '', desc: 'Multiple failed login attempts from rotating IPs — brute force' },
-  { label: 'Geo-Impossible Login', eventType: 'auth', senderPrefix: 'GEO_JUMP', receiverPrefix: '', amountRange: [0, 0], channel: '', desc: 'Login from geographically impossible location within minutes' },
-  { label: 'SWIFT Heist Probe', eventType: 'interbank', senderPrefix: '', receiverPrefix: '', amountRange: [5000000, 50000000], channel: 'SWIFT', desc: 'Suspicious SWIFT message mimicking MT103 single customer transfer' },
-  { label: 'Interbank Round-Trip', eventType: 'interbank', senderPrefix: '', receiverPrefix: '', amountRange: [1000000, 8000000], channel: 'NEFT', desc: 'Interbank round-trip pattern suggesting circular laundering' },
-]
-
-function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)] }
-function randInt(min: number, max: number) { return Math.floor(Math.random() * (max - min + 1)) + min }
-function randIfsc() { return `${pick(IFSC_PREFIXES)}0${String(randInt(100000, 999999))}` }
-function randDeviceFp() { return Array.from({ length: 16 }, () => '0123456789abcdef'[randInt(0, 15)]).join('') }
+import type { EventLabGeneratedEvent, InjectEventRequest } from '@/lib/types'
 
 type EventTab = 'transaction' | 'auth' | 'interbank'
 
@@ -102,7 +46,7 @@ function FieldGroup({ label, required, hint, children }: {
     <div className="space-y-1">
       <label className="text-[9px] font-semibold text-text-primary uppercase tracking-wider flex items-center gap-1">
         {label}
-        {required && <span className="text-red-400">*</span>}
+        {required && <span className="text-[#DA251C]">*</span>}
       </label>
       {children}
       {hint && <p className="text-[8px] text-text-muted/60 leading-tight">{hint}</p>}
@@ -259,20 +203,20 @@ function ResultDisplay({ result, onDismiss }: { result: InjectionResult; onDismi
     <div className={cn(
       'rounded-md border p-3 animate-fade-in',
       result.success
-        ? 'bg-green-500/5 border-green-500/20'
-        : 'bg-red-500/5 border-red-500/20',
+        ? 'bg-[#00579C]/5 border-[#00579C]/20'
+        : 'bg-[#DA251C]/5 border-[#DA251C]/20',
     )}>
       <div className="flex items-start gap-2">
         {result.success ? (
-          <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+          <CheckCircle2 className="w-4 h-4 text-[#00579C] shrink-0 mt-0.5" />
         ) : (
-          <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+          <XCircle className="w-4 h-4 text-[#DA251C] shrink-0 mt-0.5" />
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className={cn(
               'text-[10px] font-bold uppercase tracking-wider',
-              result.success ? 'text-green-400' : 'text-red-400',
+              result.success ? 'text-[#00579C]' : 'text-[#DA251C]',
             )}>
               {result.success ? 'Event Injected Successfully' : 'Injection Failed'}
             </span>
@@ -304,7 +248,7 @@ function ResultDisplay({ result, onDismiss }: { result: InjectionResult; onDismi
             </div>
           )}
           {!result.success && (
-            <p className="text-[9px] text-red-300/80 mt-1">{result.message}</p>
+            <p className="text-[9px] text-[#DA251C]/80 mt-1">{result.message}</p>
           )}
         </div>
       </div>
@@ -312,12 +256,32 @@ function ResultDisplay({ result, onDismiss }: { result: InjectionResult; onDismi
   )
 }
 
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function numberValue(value: unknown): number | '' {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : ''
+}
+
+function accountTypeFor(accountId: string, fallback = 'SAVINGS') {
+  if (!accountId) return fallback
+  if (accountId.startsWith('SHELL') || accountId.startsWith('MULE')) return 'CURRENT'
+  if (accountId.startsWith('DORM')) return 'SAVINGS'
+  return fallback
+}
+
 // -- Main component --
 
 export function CustomEventBuilder() {
+  const access = useRoleAccess()
   const { data: enums } = useEnums()
+  const { data: templatesData, isLoading: templatesLoading } = useEventLabTemplates()
+  const preview = usePreviewEventLabRun()
   const inject = useInjectEvent()
   const setTrackedEventId = useActivityStore((s) => s.setTrackedEventId)
+  const appendTerminalEntry = useActivityStore((s) => s.appendTerminalEntry)
   const [tab, setTab] = useState<EventTab>('transaction')
   const [result, setResult] = useState<InjectionResult | null>(null)
 
@@ -328,7 +292,7 @@ export function CustomEventBuilder() {
   // Transaction fields
   const [senderId, setSenderId] = useState('')
   const [receiverId, setReceiverId] = useState('')
-  const [amountInr, setAmountInr] = useState<number | ''>(50000)
+  const [amountInr, setAmountInr] = useState<number | ''>('')
   const [channel, setChannel] = useState('')
   const [senderAcctType, setSenderAcctType] = useState('')
   const [receiverAcctType, setReceiverAcctType] = useState('')
@@ -342,7 +306,7 @@ export function CustomEventBuilder() {
   // Interbank fields
   const [senderIfsc, setSenderIfsc] = useState('')
   const [receiverIfsc, setReceiverIfsc] = useState('')
-  const [ibAmount, setIbAmount] = useState<number | ''>(100000)
+  const [ibAmount, setIbAmount] = useState<number | ''>('')
   const [msgType, setMsgType] = useState('')
   const [ibChannel, setIbChannel] = useState('')
 
@@ -351,67 +315,103 @@ export function CustomEventBuilder() {
   const [geoLat, setGeoLat] = useState<number | ''>('')
   const [geoLon, setGeoLon] = useState<number | ''>('')
 
-  const [isRandomizing, setIsRandomizing] = useState(false)
-  const [lastScenarioLabel, setLastScenarioLabel] = useState<string | null>(null)
-
   const channelOptions = (enums?.channels ?? []).map((e) => ({ value: e.name, label: e.name }))
   const acctTypeOptions = (enums?.account_types ?? []).map((e) => ({ value: e.name, label: e.name }))
   const authActionOptions = (enums?.auth_actions ?? []).map((e) => ({ value: e.name, label: e.name }))
   const msgTypeOptions = (enums?.message_types ?? []).map((t) => ({ value: t, label: t }))
 
-  const generateRandomAttack = useCallback(async () => {
-    setIsRandomizing(true)
-    setResult(null)
+  const templates = useMemo(() => templatesData?.templates ?? [], [templatesData?.templates])
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
+  const [lastPrimedTemplate, setLastPrimedTemplate] = useState<{
+    title: string
+    description: string
+    eventId: string
+  } | null>(null)
+  const selectedTemplate = useMemo(() => {
+    if (!templates.length) return undefined
+    return templates.find((template) => template.template_id === selectedTemplateId) ?? templates[0]
+  }, [selectedTemplateId, templates])
+  const templateOptions = templates.map((template) => ({
+    value: template.template_id,
+    label: template.title,
+  }))
 
-    const scenario = pick(RANDOM_FRAUD_SCENARIOS)
-    setLastScenarioLabel(scenario.label)
-    const city = pick(INDIAN_CITIES)
-    const jitter = () => +(Math.random() * 0.04 - 0.02).toFixed(4)
+  const applyGeneratedEvent = useCallback((event: EventLabGeneratedEvent) => {
+    const record = event as Record<string, unknown>
+    const eventType = event.type
+    setTab(eventType)
 
-    // Switch to the correct tab
-    setTab(scenario.eventType)
+    const device = stringValue(event.device_fingerprint)
+    const lat = numberValue(record.geo_lat)
+    const lon = numberValue(record.geo_lon)
+    setDeviceFp(device)
+    setGeoLat(lat)
+    setGeoLon(lon)
 
-    // Small delay for visual "filling" effect
-    await new Promise((r) => setTimeout(r, 150))
-
-    if (scenario.eventType === 'transaction') {
-      const suffix = () => `_${randInt(100, 999)}`
-      setSenderId(`${scenario.senderPrefix}${suffix()}`)
-      setReceiverId(`${scenario.receiverPrefix}${suffix()}`)
-      setAmountInr(randInt(scenario.amountRange[0], scenario.amountRange[1]))
-      setChannel(scenario.channel)
-      const accts = ['SAVINGS', 'CURRENT', 'NRE', 'NRO']
-      setSenderAcctType(scenario.acctType ?? pick(accts))
-      setReceiverAcctType(pick(accts))
-    } else if (scenario.eventType === 'auth') {
-      setAccountId(`${scenario.senderPrefix}_${randInt(100, 999)}`)
-      const actions = ['LOGIN', 'PASSWORD_CHANGE', 'MFA_ENROLL', 'LOGOUT']
-      if (scenario.label.includes('Credential')) {
-        setAuthAction('LOGIN')
-        setAuthSuccess(false)
-      } else {
-        setAuthAction(pick(actions))
-        setAuthSuccess(Math.random() > 0.6)
-      }
-      setIpAddress(`${randInt(103, 223)}.${randInt(0, 255)}.${randInt(0, 255)}.${randInt(1, 254)}`)
-    } else {
-      setSenderIfsc(randIfsc())
-      setReceiverIfsc(randIfsc())
-      setIbAmount(randInt(scenario.amountRange[0], scenario.amountRange[1]))
-      setMsgType(pick(['MT103', 'MT202', 'N01', 'N02', 'N06']))
-      setIbChannel(scenario.channel)
+    if (eventType === 'transaction') {
+      const sender = stringValue(event.sender)
+      const receiver = stringValue(event.receiver)
+      setSenderId(sender)
+      setReceiverId(receiver)
+      setAmountInr(event.amount_paisa ? Math.round(event.amount_paisa / 100) : '')
+      setChannel(stringValue(event.channel))
+      setSenderAcctType(accountTypeFor(sender))
+      setReceiverAcctType(accountTypeFor(receiver))
+      return
     }
 
-    setDeviceFp(randDeviceFp())
-    setGeoLat(+(city.lat + jitter()).toFixed(4))
-    setGeoLon(+(city.lon + jitter()).toFixed(4))
+    if (eventType === 'auth') {
+      setAccountId(stringValue(event.account))
+      setAuthAction(stringValue(event.action))
+      setIpAddress(stringValue(event.ip))
+      setAuthSuccess(Boolean(event.success))
+      return
+    }
 
-    // Brief pause before auto-injection
-    await new Promise((r) => setTimeout(r, 300))
-    setIsRandomizing(false)
+    setSenderIfsc(stringValue(event.sender_ifsc))
+    setReceiverIfsc(stringValue(event.receiver_ifsc))
+    setIbAmount(event.amount_paisa ? Math.round(event.amount_paisa / 100) : '')
+    setMsgType(stringValue(event.message_type))
+    setIbChannel(stringValue(event.channel))
   }, [])
 
+  const primeFromTemplate = useCallback(async () => {
+    if (!selectedTemplate) return
+    setResult(null)
+    try {
+      const response = await preview.mutateAsync({
+        template_id: selectedTemplate.template_id,
+        playbook_id: selectedTemplate.linked_playbooks?.[0]?.playbook_id ?? null,
+        mode: selectedTemplate.default_mode,
+        intensity: 'scale',
+        seed: null,
+      })
+      const event =
+        response.run_preview.events.find((item) => item.type === tab) ??
+        response.run_preview.events[0]
+      if (!event) {
+        setResult({ success: false, message: 'Selected backend template did not return a generated event' })
+        return
+      }
+      applyGeneratedEvent(event)
+      setLastPrimedTemplate({
+        title: selectedTemplate.title,
+        description: selectedTemplate.description,
+        eventId: event.event_id,
+      })
+    } catch (err) {
+      setResult({ success: false, message: String(err) })
+    }
+  }, [applyGeneratedEvent, preview, selectedTemplate, tab])
+
   async function handleInject() {
+    if (!access.can('simulation:write')) {
+      setResult({
+        success: false,
+        message: `${access.policy.label} cannot inject events into the live pipeline`,
+      })
+      return
+    }
     setResult(null)
     const body: InjectEventRequest = { event_type: tab }
 
@@ -442,7 +442,7 @@ export function CustomEventBuilder() {
       }
       body.sender_ifsc = senderIfsc
       body.receiver_ifsc = receiverIfsc
-      body.amount_inr = ibAmount as number || 100000
+      if (ibAmount !== '') body.amount_inr = ibAmount as number
       if (msgType) body.message_type = msgType
       if (ibChannel) body.channel = ibChannel
     }
@@ -451,13 +451,31 @@ export function CustomEventBuilder() {
     if (geoLat !== '') body.geo_lat = geoLat as number
     if (geoLon !== '') body.geo_lon = geoLon as number
 
+    appendTerminalEntry({
+      timestamp: Date.now() / 1000,
+      source: 'custom',
+      tone: 'warn',
+      title: `custom ${tab} injection submitted`,
+      detail: [
+        body.sender_id ? `sender=${body.sender_id}` : '',
+        body.receiver_id ? `receiver=${body.receiver_id}` : '',
+        body.account_id ? `account=${body.account_id}` : '',
+        body.sender_ifsc ? `sender_ifsc=${body.sender_ifsc}` : '',
+        body.receiver_ifsc ? `receiver_ifsc=${body.receiver_ifsc}` : '',
+        body.amount_inr != null ? `amount_inr=${body.amount_inr}` : '',
+        body.channel ? `channel=${body.channel}` : '',
+        body.action ? `action=${body.action}` : '',
+      ].filter(Boolean).join(' | '),
+      stage: 'custom_injection_submitted',
+    })
+
     try {
       const res = await inject.mutateAsync(body)
       const evt = (res.event ?? {}) as Record<string, unknown>
       const evtId = String(evt.txn_id ?? evt.event_id ?? evt.msg_id ?? 'unknown')
       const details: Record<string, unknown> = {
         type: String(evt.type ?? tab),
-        pipeline: 'Processing...',
+        pipeline: 'accepted by live ingestion',
       }
       const addDetail = (key: string, value: unknown) => {
         if (value !== undefined && value !== null && value !== '') {
@@ -478,6 +496,20 @@ export function CustomEventBuilder() {
       addDetail('success', evt.success)
       addDetail('sender_ifsc', evt.sender_ifsc)
       addDetail('receiver_ifsc', evt.receiver_ifsc)
+      appendTerminalEntry({
+        timestamp: res.timestamp ?? Date.now() / 1000,
+        source: 'custom',
+        tone: 'success',
+        title: `custom ${tab} accepted by live ingestion`,
+        detail: [
+          `event=${evtId}`,
+          ...Object.entries(details)
+            .slice(0, 8)
+            .map(([key, value]) => `${key}=${String(value)}`),
+        ].join(' | '),
+        txnId: evtId,
+        stage: 'custom_injection_accepted',
+      })
       setTrackedEventId(evtId)
       setResult({
         success: true,
@@ -488,6 +520,14 @@ export function CustomEventBuilder() {
         details,
       })
     } catch (err) {
+      appendTerminalEntry({
+        timestamp: Date.now() / 1000,
+        source: 'custom',
+        tone: 'danger',
+        title: `custom ${tab} injection failed`,
+        detail: err instanceof Error ? err.message : String(err),
+        stage: 'custom_injection_failed',
+      })
       setResult({ success: false, message: String(err) })
     }
   }
@@ -511,7 +551,7 @@ export function CustomEventBuilder() {
               Custom Event Builder
             </h3>
             <p className="text-[9px] text-text-muted mt-0.5">
-              Inject real-world banking events into the live pipeline — ML + Graph + AI scores each event independently
+              {access.policy.label} scope: {access.policy.escalationScope}
             </p>
           </div>
         </div>
@@ -543,92 +583,96 @@ export function CustomEventBuilder() {
       </div>
 
       <div className="p-4 space-y-4">
-        {/* Quick-fill scenario templates */}
-        {tab === 'transaction' && (
-          <div className="space-y-1.5 animate-fade-in">
-            <div className="text-[8px] font-semibold text-text-muted uppercase tracking-wider">Quick-fill Scenarios</div>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                { label: 'Small UPI', sender: 'UPI_ACCT_001', receiver: 'UPI_ACCT_002', amount: 2500, ch: 'UPI' },
-                { label: 'High-Value NEFT', sender: 'CORP_SENDER_01', receiver: 'CORP_RECV_01', amount: 1500000, ch: 'NEFT' },
-                { label: 'Suspicious Dormant', sender: 'DORMANT_ACCT_99', receiver: 'MULE_ACCT_01', amount: 495000, ch: 'IMPS' },
-                { label: 'Micro-Split', sender: 'SPLIT_SRC_01', receiver: 'SPLIT_DST_01', amount: 9900, ch: 'UPI' },
-                { label: 'Cross-Border RTGS', sender: 'NRI_ACCT_01', receiver: 'DOMESTIC_RECV_01', amount: 5000000, ch: 'RTGS' },
-              ].map((t) => (
-                <button
-                  key={t.label}
-                  type="button"
-                  onClick={() => {
-                    setSenderId(t.sender)
-                    setReceiverId(t.receiver)
-                    setAmountInr(t.amount)
-                    setChannel(t.ch)
-                  }}
-                  className="px-2 py-1 rounded text-[8px] font-semibold uppercase tracking-wider border border-border-subtle bg-bg-overlay/40 text-text-secondary hover:border-accent-primary/40 hover:text-accent-primary hover:bg-accent-primary/5 transition-all"
-                >
-                  {t.label}
-                </button>
-              ))}
+        <div className="rounded-md border border-border-subtle bg-bg-overlay/35 p-3">
+          <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-accent-primary">
+                <Zap className="h-3 w-3" />
+                Backend Typology Primer
+              </div>
+              <p className="mt-1 text-[9px] leading-relaxed text-text-muted">
+                Prime the form from the same intel-linked Event Lab generator used for adaptive runs.
+              </p>
             </div>
+            {selectedTemplate && (
+              <div className="flex max-w-[260px] flex-wrap justify-end gap-1">
+                {selectedTemplate.typologies.slice(0, 3).map((typology) => (
+                  <span
+                    key={typology}
+                    className="rounded-full border border-accent-primary/20 bg-accent-primary/5 px-1.5 py-0.5 text-[7px] font-bold uppercase tracking-wide text-accent-primary/80"
+                  >
+                    {typology.replace(/_/g, ' ')}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-        {tab === 'interbank' && (
-          <div className="space-y-1.5 animate-fade-in">
-            <div className="text-[8px] font-semibold text-text-muted uppercase tracking-wider">Quick-fill Scenarios</div>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                { label: 'UBI → SBI NEFT', sIfsc: 'UBIN0531456', rIfsc: 'SBIN0001234', amount: 250000, ch: 'NEFT' },
-                { label: 'PNB → HDFC RTGS', sIfsc: 'PUNB0123400', rIfsc: 'HDFC0000123', amount: 10000000, ch: 'RTGS' },
-                { label: 'Small SWIFT', sIfsc: 'UBIN0500001', rIfsc: 'CITI0000001', amount: 50000, ch: 'SWIFT' },
-              ].map((t) => (
-                <button
-                  key={t.label}
-                  type="button"
-                  onClick={() => {
-                    setSenderIfsc(t.sIfsc)
-                    setReceiverIfsc(t.rIfsc)
-                    setIbAmount(t.amount)
-                    setIbChannel(t.ch)
-                  }}
-                  className="px-2 py-1 rounded text-[8px] font-semibold uppercase tracking-wider border border-border-subtle bg-bg-overlay/40 text-text-secondary hover:border-accent-primary/40 hover:text-accent-primary hover:bg-accent-primary/5 transition-all"
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+            <SelectInput
+              value={selectedTemplate?.template_id ?? ''}
+              onChange={(value) => {
+                setSelectedTemplateId(value)
+                setLastPrimedTemplate(null)
+              }}
+              options={templateOptions}
+              placeholder={templatesLoading ? 'Loading templates from backend' : 'Choose backend template'}
+              icon={Tag}
+            />
+            <button
+              type="button"
+              onClick={() => void primeFromTemplate()}
+              disabled={!selectedTemplate || preview.isPending || inject.isPending}
+              className={cn(
+                'flex items-center justify-center gap-2 rounded-md border px-4 py-2 text-[10px] font-bold uppercase tracking-wider transition-all duration-200',
+                'border-[#DA251C]/40 bg-[#DA251C]/10 text-[#DA251C] hover:bg-[#DA251C]/20 hover:shadow-[0_0_16px_rgba(245,158,11,0.18)]',
+                'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[#DA251C]/10 disabled:hover:shadow-none',
+              )}
+            >
+              {preview.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Zap className="h-3.5 w-3.5" />
+              )}
+              {preview.isPending ? 'Priming...' : 'Prime Fields'}
+            </button>
           </div>
-        )}
+          {selectedTemplate && (
+            <p className="mt-2 line-clamp-2 text-[8px] leading-relaxed text-text-muted">
+              {selectedTemplate.description}
+            </p>
+          )}
+        </div>
         {/* Transaction Fields */}
         {tab === 'transaction' && (
           <div className="space-y-3 animate-fade-in">
             <div className="grid grid-cols-2 gap-3">
               <FieldGroup label="Sender Account ID" required hint="Select from graph or type new">
-                <TextInput value={senderId} onChange={setSenderId} placeholder="e.g. ACCT001" icon={User} suggestions={nodeIds} />
+                <TextInput value={senderId} onChange={setSenderId} placeholder="Sender account ID" icon={User} suggestions={nodeIds} />
               </FieldGroup>
               <FieldGroup label="Receiver Account ID" required hint="Select from graph or type new">
-                <TextInput value={receiverId} onChange={setReceiverId} placeholder="e.g. ACCT002" icon={User} suggestions={nodeIds} />
+                <TextInput value={receiverId} onChange={setReceiverId} placeholder="Receiver account ID" icon={User} suggestions={nodeIds} />
               </FieldGroup>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <FieldGroup label="Amount (INR)" required hint="Converted to paisa internally">
-                <NumberInput value={amountInr} onChange={setAmountInr} placeholder="50000" step={1000} prefix="₹" />
+                <NumberInput value={amountInr} onChange={setAmountInr} placeholder="Transaction amount" step={1000} prefix="₹" />
               </FieldGroup>
               <FieldGroup label="Payment Channel">
-                <SelectInput value={channel} onChange={setChannel} options={channelOptions} placeholder="Default: UPI" icon={Wifi} />
+                <SelectInput value={channel} onChange={setChannel} options={channelOptions} placeholder="Use backend channel policy" icon={Wifi} />
               </FieldGroup>
             </div>
             <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-accent-primary/5 border border-accent-primary/15 text-[8px] text-accent-primary/80">
               <Shield className="w-3 h-3 shrink-0" />
-              <span>Fraud detection is automatic — the ML pipeline, graph analysis, and Qwen AI will independently classify this event in real-time</span>
+              <span>Fraud detection is backend-led — ML, graph analysis, rules, and ledger actions classify the event; the LLM layer only adds bounded forensic explanation when available</span>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <FieldGroup label="Sender Account Type">
-                <SelectInput value={senderAcctType} onChange={setSenderAcctType} options={acctTypeOptions} placeholder="Default: SAVINGS" icon={CreditCard} />
+                <SelectInput value={senderAcctType} onChange={setSenderAcctType} options={acctTypeOptions} placeholder="Use sender account policy" icon={CreditCard} />
               </FieldGroup>
               <FieldGroup label="Receiver Account Type">
-                <SelectInput value={receiverAcctType} onChange={setReceiverAcctType} options={acctTypeOptions} placeholder="Default: SAVINGS" icon={CreditCard} />
+                <SelectInput value={receiverAcctType} onChange={setReceiverAcctType} options={acctTypeOptions} placeholder="Use receiver account policy" icon={CreditCard} />
               </FieldGroup>
             </div>
           </div>
@@ -639,16 +683,16 @@ export function CustomEventBuilder() {
           <div className="space-y-3 animate-fade-in">
             <div className="grid grid-cols-2 gap-3">
               <FieldGroup label="Account ID" required hint="Account performing auth action">
-                <TextInput value={accountId} onChange={setAccountId} placeholder="e.g. ACCT001" icon={User} suggestions={nodeIds} />
+                <TextInput value={accountId} onChange={setAccountId} placeholder="Account ID" icon={User} suggestions={nodeIds} />
               </FieldGroup>
               <FieldGroup label="Auth Action">
-                <SelectInput value={authAction} onChange={setAuthAction} options={authActionOptions} placeholder="Default: LOGIN" icon={Shield} />
+                <SelectInput value={authAction} onChange={setAuthAction} options={authActionOptions} placeholder="Use auth action policy" icon={Shield} />
               </FieldGroup>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <FieldGroup label="IP Address" hint="Auto-generated if empty">
-                <TextInput value={ipAddress} onChange={setIpAddress} placeholder="Auto-generated" icon={Globe} />
+              <FieldGroup label="IP Address" hint="Generated by backend if empty">
+                <TextInput value={ipAddress} onChange={setIpAddress} placeholder="IP address" icon={Globe} />
               </FieldGroup>
               <FieldGroup label="Auth Result">
                 <div className="flex gap-2">
@@ -657,7 +701,7 @@ export function CustomEventBuilder() {
                     className={cn(
                       'flex-1 flex items-center justify-center gap-1.5 py-2 rounded-md text-[9px] font-bold uppercase tracking-wider border transition-all',
                       authSuccess
-                        ? 'bg-green-500/15 text-green-400 border-green-500/30 shadow-[0_0_8px_rgba(34,197,94,0.1)]'
+                        ? 'bg-[#00579C]/15 text-[#00579C] border-[#00579C]/30 shadow-[0_0_8px_rgba(0,87,156,0.1)]'
                         : 'text-text-muted border-border-subtle hover:border-border-default',
                     )}
                   >
@@ -669,7 +713,7 @@ export function CustomEventBuilder() {
                     className={cn(
                       'flex-1 flex items-center justify-center gap-1.5 py-2 rounded-md text-[9px] font-bold uppercase tracking-wider border transition-all',
                       !authSuccess
-                        ? 'bg-red-500/15 text-red-400 border-red-500/30 shadow-[0_0_8px_rgba(239,68,68,0.1)]'
+                        ? 'bg-[#DA251C]/15 text-[#DA251C] border-[#DA251C]/30 shadow-[0_0_8px_rgba(218,37,28,0.1)]'
                         : 'text-text-muted border-border-subtle hover:border-border-default',
                     )}
                   >
@@ -687,22 +731,22 @@ export function CustomEventBuilder() {
           <div className="space-y-3 animate-fade-in">
             <div className="grid grid-cols-2 gap-3">
               <FieldGroup label="Sender IFSC" required hint="Sender bank IFSC code">
-                <TextInput value={senderIfsc} onChange={setSenderIfsc} placeholder="e.g. UBIN0000001" icon={Building2} />
+                <TextInput value={senderIfsc} onChange={setSenderIfsc} placeholder="Sender IFSC" icon={Building2} />
               </FieldGroup>
               <FieldGroup label="Receiver IFSC" required hint="Receiver bank IFSC code">
-                <TextInput value={receiverIfsc} onChange={setReceiverIfsc} placeholder="e.g. SBIN0000001" icon={Building2} />
+                <TextInput value={receiverIfsc} onChange={setReceiverIfsc} placeholder="Receiver IFSC" icon={Building2} />
               </FieldGroup>
             </div>
 
             <div className="grid grid-cols-3 gap-3">
               <FieldGroup label="Amount (INR)">
-                <NumberInput value={ibAmount} onChange={setIbAmount} placeholder="100000" step={10000} prefix="₹" />
+                <NumberInput value={ibAmount} onChange={setIbAmount} placeholder="Transfer amount" step={10000} prefix="₹" />
               </FieldGroup>
               <FieldGroup label="Message Type" hint="SWIFT / NEFT msg type">
-                <SelectInput value={msgType} onChange={setMsgType} options={msgTypeOptions} placeholder="Default: N06" />
+                <SelectInput value={msgType} onChange={setMsgType} options={msgTypeOptions} placeholder="Use message policy" />
               </FieldGroup>
               <FieldGroup label="Channel">
-                <SelectInput value={ibChannel} onChange={setIbChannel} options={channelOptions} placeholder="Default: NEFT" icon={Wifi} />
+                <SelectInput value={ibChannel} onChange={setIbChannel} options={channelOptions} placeholder="Use interbank channel policy" icon={Wifi} />
               </FieldGroup>
             </div>
           </div>
@@ -717,55 +761,42 @@ export function CustomEventBuilder() {
             Advanced Fields (Device, Geo-location)
           </summary>
           <div className="grid grid-cols-3 gap-3 mt-3 pt-3 border-t border-border-subtle/50">
-            <FieldGroup label="Device Fingerprint" hint="Auto-generated if empty">
-              <TextInput value={deviceFp} onChange={setDeviceFp} placeholder="Auto-generated" icon={Fingerprint} />
+            <FieldGroup label="Device Fingerprint" hint="Generated by backend if empty">
+              <TextInput value={deviceFp} onChange={setDeviceFp} placeholder="Device fingerprint" icon={Fingerprint} />
             </FieldGroup>
             <FieldGroup label="Geo Latitude" hint="India range: 8 - 35">
-              <NumberInput value={geoLat} onChange={setGeoLat} placeholder="Auto (India)" step={0.001} icon={MapPin} />
+              <NumberInput value={geoLat} onChange={setGeoLat} placeholder="Latitude" step={0.001} icon={MapPin} />
             </FieldGroup>
             <FieldGroup label="Geo Longitude" hint="India range: 69 - 97">
-              <NumberInput value={geoLon} onChange={setGeoLon} placeholder="Auto (India)" step={0.001} icon={MapPin} />
+              <NumberInput value={geoLon} onChange={setGeoLon} placeholder="Longitude" step={0.001} icon={MapPin} />
             </FieldGroup>
           </div>
         </details>
 
-        {/* Inject + Random Attack Buttons */}
+        {/* Inject controls */}
         <div className="space-y-2.5 pt-2 border-t border-border-subtle">
-          {/* Scenario label banner */}
-          {lastScenarioLabel && (
-            <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-amber-500/5 border border-amber-500/15 animate-fade-in">
-              <Zap className="w-3 h-3 text-amber-400 shrink-0" />
-              <span className="text-[9px] font-bold text-amber-300 uppercase tracking-wider">
-                Random Scenario: {lastScenarioLabel}
+          {lastPrimedTemplate && (
+            <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-[#DA251C]/5 border border-[#DA251C]/15 animate-fade-in">
+              <Zap className="w-3 h-3 text-[#DA251C] shrink-0" />
+              <span className="text-[9px] font-bold text-[#DA251C] uppercase tracking-wider">
+                Event Lab Primed: {lastPrimedTemplate.title}
               </span>
-              <span className="text-[8px] text-amber-400/60 ml-auto">
-                {RANDOM_FRAUD_SCENARIOS.find(s => s.label === lastScenarioLabel)?.desc}
+              <span className="min-w-0 truncate text-[8px] text-[#DA251C]/60">
+                {lastPrimedTemplate.description}
+              </span>
+              <span className="ml-auto shrink-0 font-mono text-[8px] text-[#DA251C]/80">
+                {lastPrimedTemplate.eventId}
               </span>
             </div>
           )}
           <div className="flex items-center gap-3">
             <button
-              onClick={() => void generateRandomAttack()}
-              disabled={isRandomizing || inject.isPending}
-              className={cn(
-                'flex items-center gap-2 px-4 py-2.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all duration-200 border',
-                'border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 hover:shadow-[0_0_20px_rgba(245,158,11,0.2)] hover:scale-[1.02]',
-                'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none',
-              )}
-            >
-              {isRandomizing ? (
-                <Dices className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Dices className="w-3.5 h-3.5" />
-              )}
-              {isRandomizing ? 'Generating...' : 'Random Attack'}
-            </button>
-            <button
               onClick={() => void handleInject()}
-              disabled={inject.isPending}
+              disabled={inject.isPending || !access.can('simulation:write')}
+              title={!access.can('simulation:write') ? `${access.policy.label} cannot inject events into the live pipeline` : 'Inject event into pipeline'}
               className={cn(
                 'flex items-center gap-2 px-5 py-2.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all duration-200',
-                'bg-accent-primary text-bg-deep hover:shadow-[0_0_20px_oklch(0.55_0.14_250_/_0.35)] hover:scale-[1.02]',
+                'bg-accent-primary text-bg-deep hover:shadow-[0_0_20px_rgba(0,87,156,0.26)] hover:scale-[1.02]',
                 'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none',
               )}
             >

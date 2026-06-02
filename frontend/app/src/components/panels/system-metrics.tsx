@@ -28,6 +28,11 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
+function metric(value: number | null | undefined, digits = 0, suffix = ''): string {
+  if (value == null || !Number.isFinite(value)) return 'n/a'
+  return `${digits > 0 ? value.toFixed(digits) : fmtNum(value)}${suffix}`
+}
+
 export function SystemMetrics() {
   const orchestrator = useDashboardStore((s) => s.orchestrator)
   const hardware = useDashboardStore((s) => s.hardware)
@@ -36,33 +41,33 @@ export function SystemMetrics() {
   const agentMetrics = useDashboardStore((s) => s.agentMetrics)
 
   return (
-    <div className="p-4 space-y-5 overflow-y-auto h-full">
+    <div className="space-y-5 p-4">
       {/* Pipeline Section */}
       <Section title="Pipeline" icon={Activity}>
         <div className="grid grid-cols-2 gap-2">
           <MetricCard
             label="Events Ingested"
-            value={fmtNum(orchestrator?.events_ingested ?? 0)}
+            value={metric(orchestrator?.events_ingested)}
             icon={ArrowRightLeft}
-            accent="text-cyan-400"
+            accent="text-[#00579C]"
           />
           <MetricCard
             label="Throughput"
-            value={`${(orchestrator?.events_per_sec ?? 0).toFixed(1)}/s`}
+            value={orchestrator ? `${orchestrator.events_per_sec.toFixed(1)}/s` : 'n/a'}
             icon={Gauge}
             accent="text-accent-primary"
           />
           <MetricCard
             label="ML Inferences"
-            value={fmtNum(orchestrator?.ml_inferences ?? 0)}
+            value={metric(orchestrator?.ml_inferences)}
             icon={Brain}
-            accent="text-violet-400"
+            accent="text-[#00579C]"
           />
           <MetricCard
             label="Alerts Routed"
-            value={fmtNum(orchestrator?.alerts_routed ?? 0)}
+            value={metric(orchestrator?.alerts_routed)}
             icon={Bell}
-            accent="text-amber-400"
+            accent="text-[#DA251C]"
           />
         </div>
       </Section>
@@ -72,38 +77,38 @@ export function SystemMetrics() {
         <div className="space-y-2.5">
           <GaugeBar
             label="GPU VRAM"
-            value={(hardware?.gpu_vram_used_mb ?? 0) / Math.max(hardware?.gpu_vram_total_mb ?? 1, 1) * 100}
+            value={hardware ? hardware.gpu_vram_used_mb / Math.max(hardware.gpu_vram_total_mb, 1) * 100 : null}
             color={
-              (hardware?.gpu_vram_used_mb ?? 0) / Math.max(hardware?.gpu_vram_total_mb ?? 1, 1) > 0.9
+              hardware && hardware.gpu_vram_used_mb / Math.max(hardware.gpu_vram_total_mb, 1) > 0.9
                 ? 'critical'
                 : 'accent'
             }
           />
           <GaugeBar
             label="GPU Utilization"
-            value={hardware?.gpu_utilization_pct ?? 0}
+            value={hardware?.gpu_utilization_pct}
             color={
-              (hardware?.gpu_utilization_pct ?? 0) > 90 ? 'critical' : 'accent'
+              hardware && hardware.gpu_utilization_pct > 90 ? 'critical' : 'accent'
             }
           />
           <GaugeBar
             label="CPU Utilization"
-            value={hardware?.cpu_utilization_pct ?? 0}
+            value={hardware?.cpu_utilization_pct}
             color={
-              (hardware?.cpu_utilization_pct ?? 0) > 90 ? 'critical' : 'accent'
+              hardware && hardware.cpu_utilization_pct > 90 ? 'critical' : 'accent'
             }
           />
           <div className="grid grid-cols-2 gap-2">
             <MetricCard
               label="LLM Tokens/sec"
-              value={(hardware?.llm_tps ?? 0).toFixed(1)}
+              value={hardware ? hardware.llm_tps.toFixed(1) : 'n/a'}
               icon={Zap}
-              accent="text-emerald-400"
+              accent="text-[#00579C]"
             />
             <MetricCard
               label="Load Shedding"
-              value={hardware?.load_shed_active ? 'ACTIVE' : 'OFF'}
-              accent={hardware?.load_shed_active ? 'text-alert-critical' : 'text-alert-low'}
+              value={hardware ? (hardware.load_shed_active ? 'ACTIVE' : 'OFF') : 'n/a'}
+              accent={!hardware ? 'text-text-muted' : hardware.load_shed_active ? 'text-alert-critical' : 'text-alert-low'}
             />
           </div>
         </div>
@@ -114,24 +119,24 @@ export function SystemMetrics() {
         <div className="grid grid-cols-2 gap-2">
           <MetricCard
             label="Completed"
-            value={fmtNum(agentMetrics?.completed ?? 0)}
+            value={metric(agentMetrics?.completed)}
             icon={BrainCircuit}
             accent="text-accent-primary"
           />
           <MetricCard
             label="Fraudulent"
-            value={fmtNum(agentMetrics?.verdicts.fraudulent ?? 0)}
+            value={metric(agentMetrics?.verdicts.fraudulent)}
             icon={AlertTriangle}
             accent="text-alert-critical"
           />
           <MetricCard
             label="Suspicious"
-            value={fmtNum(agentMetrics?.verdicts.suspicious ?? 0)}
+            value={metric(agentMetrics?.verdicts.suspicious)}
             accent="text-alert-high"
           />
           <MetricCard
             label="Breaker Triggered"
-            value={fmtNum(agentMetrics?.agent_breaker_triggered ?? 0)}
+            value={metric(agentMetrics?.agent_breaker_triggered)}
             accent="text-alert-medium"
           />
         </div>
@@ -142,27 +147,27 @@ export function SystemMetrics() {
         <div className="grid grid-cols-2 gap-2">
           <MetricCard
             label="Nodes"
-            value={fmtNum(graphSize?.nodes ?? 0)}
+            value={metric(graphSize?.nodes)}
             icon={CircleDot}
-            accent="text-blue-400"
+            accent="text-[#00579C]"
           />
           <MetricCard
             label="Edges"
-            value={fmtNum(graphSize?.edges ?? 0)}
+            value={metric(graphSize?.edges)}
             icon={GitBranch}
-            accent="text-blue-300"
+            accent="text-[#00579C]"
           />
           <MetricCard
             label="Mule Detections"
-            value={fmtNum(graphMetrics?.mule_detections ?? 0)}
+            value={metric(graphMetrics?.mule_detections)}
             icon={AlertTriangle}
-            accent="text-red-400"
+            accent="text-[#DA251C]"
           />
           <MetricCard
             label="Cycle Detections"
-            value={fmtNum(graphMetrics?.cycle_detections ?? 0)}
+            value={metric(graphMetrics?.cycle_detections)}
             icon={RotateCcw}
-            accent="text-orange-400"
+            accent="text-[#DA251C]"
           />
         </div>
       </Section>
@@ -178,9 +183,13 @@ export function SystemMetrics() {
 
 function ModelHealthSection() {
   const { data: drift } = useDriftStatus()
+  const psi = drift?.psi
+  const driftedFeatureCount = drift?.feature_drift
+    ? drift.feature_drift.filter((f) => f.has_drift).length
+    : null
 
   const severityColor: Record<string, string> = {
-    none: 'text-emerald-400',
+    none: 'text-[#00579C]',
     low: 'text-alert-low',
     moderate: 'text-alert-medium',
     high: 'text-alert-high',
@@ -192,30 +201,32 @@ function ModelHealthSection() {
       <div className="grid grid-cols-2 gap-2">
         <MetricCard
           label="Drift Severity"
-          value={drift?.severity?.toUpperCase() ?? '—'}
+          value={drift?.severity?.toUpperCase() ?? 'n/a'}
           icon={Shield}
-          accent={severityColor[drift?.severity ?? 'none'] ?? 'text-text-secondary'}
+          accent={drift ? (severityColor[drift.severity ?? 'none'] ?? 'text-text-secondary') : 'text-text-muted'}
         />
         <MetricCard
           label="PSI Score"
-          value={drift?.psi?.toFixed(4) ?? '—'}
+          value={drift?.psi?.toFixed(4) ?? 'n/a'}
           icon={TrendingDown}
           accent={
-            (drift?.psi ?? 0) > 0.2
+            !drift
+              ? 'text-text-muted'
+              : psi != null && psi > 0.2
               ? 'text-alert-critical'
-              : (drift?.psi ?? 0) > 0.1
+              : psi != null && psi > 0.1
                 ? 'text-alert-high'
-                : 'text-emerald-400'
+                : 'text-[#00579C]'
           }
         />
         <MetricCard
           label="Features Drifted"
-          value={String(drift?.feature_drift?.filter((f) => f.has_drift).length ?? 0)}
-          accent="text-amber-400"
+          value={driftedFeatureCount == null ? 'n/a' : String(driftedFeatureCount)}
+          accent="text-[#DA251C]"
         />
         <MetricCard
           label="Sample Size"
-          value={fmtNum(drift?.current_size ?? 0)}
+          value={drift ? metric(drift.current_size) : 'n/a'}
           accent="text-text-secondary"
         />
       </div>
@@ -230,34 +241,38 @@ function ModelHealthSection() {
 
 function ConsortiumSection() {
   const { data: consortium } = useConsortiumStatus()
+  const memberCount = consortium?.member_count ?? consortium?.member_banks
+  const verifiedCount = consortium?.verified_proofs ?? consortium?.verified_alerts
 
   return (
     <Section title="Consortium Network" icon={Globe}>
       <div className="grid grid-cols-2 gap-2">
         <MetricCard
           label="Member Banks"
-          value={String(consortium?.member_count ?? 0)}
+          value={consortium ? metric(memberCount) : 'n/a'}
           icon={Globe}
-          accent="text-cyan-400"
+          accent="text-[#00579C]"
         />
         <MetricCard
           label="Active Alerts"
-          value={String(consortium?.active_alerts ?? 0)}
+          value={consortium ? metric(consortium.active_alerts) : 'n/a'}
           icon={Bell}
-          accent="text-amber-400"
+          accent="text-[#DA251C]"
         />
         <MetricCard
           label="ZKP Verified"
-          value={String(consortium?.verified_proofs ?? 0)}
+          value={consortium ? metric(verifiedCount) : 'n/a'}
           icon={ShieldCheck}
-          accent="text-emerald-400"
+          accent="text-[#00579C]"
         />
         <MetricCard
           label="Rejected Proofs"
-          value={String(consortium?.rejected_proofs ?? 0)}
+          value={consortium ? metric(consortium.rejected_proofs) : 'n/a'}
           icon={AlertTriangle}
           accent={
-            (consortium?.rejected_proofs ?? 0) > 0
+            !consortium
+              ? 'text-text-muted'
+              : consortium.rejected_proofs > 0
               ? 'text-alert-high'
               : 'text-text-secondary'
           }

@@ -7,7 +7,7 @@ import { Cpu, Activity } from 'lucide-react'
 
 export function SystemPage() {
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex min-h-full flex-col">
       {/* Page header */}
       <div className="flex items-center gap-4 px-5 py-4 border-b border-border-default bg-bg-surface/30 shrink-0 animate-fade-in">
         <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-accent-primary/10 border border-accent-primary/20">
@@ -25,7 +25,7 @@ export function SystemPage() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="min-h-0 flex-1">
         <SystemMetrics />
       </div>
     </div>

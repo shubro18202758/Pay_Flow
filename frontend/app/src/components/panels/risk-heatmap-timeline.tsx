@@ -8,16 +8,16 @@ import { Clock, Flame, TrendingUp } from 'lucide-react'
 import type { TemporalBucket } from '@/lib/types'
 
 const RISK_GRADIENT = [
-  'bg-emerald-500/20',
-  'bg-emerald-500/40',
-  'bg-lime-500/40',
-  'bg-yellow-500/50',
-  'bg-amber-500/50',
-  'bg-orange-500/60',
-  'bg-red-500/50',
-  'bg-red-500/70',
-  'bg-red-500/90',
-  'bg-rose-600',
+  'bg-[#00579C]/20',
+  'bg-[#00579C]/40',
+  'bg-[#DA251C]/40',
+  'bg-[#DA251C]/50',
+  'bg-[#DA251C]/50',
+  'bg-[#DA251C]/60',
+  'bg-[#DA251C]/50',
+  'bg-[#DA251C]/70',
+  'bg-[#DA251C]/90',
+  'bg-[#DA251C]',
 ]
 
 function riskClass(ratio: number): string {
@@ -26,6 +26,7 @@ function riskClass(ratio: number): string {
 }
 
 function formatBucketTime(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return 'n/a'
   const d = new Date(ts * 1000)
   return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
@@ -43,7 +44,7 @@ export function RiskHeatmapTimeline({
   const maxTxn = Math.max(...buckets.map((b: TemporalBucket) => b.txn_count), 1)
 
   return (
-    <div className="rounded-lg border border-border-subtle bg-bg-card p-3">
+    <div className="rounded-lg border border-border-subtle bg-bg-deep p-3">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
           <Clock className="w-3.5 h-3.5 text-accent-primary/70" />
@@ -87,7 +88,7 @@ export function RiskHeatmapTimeline({
                     <div className="flex justify-center">
                       <div className={cn(
                         'w-1.5 h-1.5 rounded-full',
-                        fraudRatio > 0.3 ? 'bg-red-500 animate-pulse' : fraudRatio > 0.1 ? 'bg-orange-400' : 'bg-amber-400/60',
+                        fraudRatio > 0.3 ? 'bg-[#DA251C] animate-pulse' : fraudRatio > 0.1 ? 'bg-[#DA251C]' : 'bg-[#DA251C]/60',
                       )} />
                     </div>
                   )}
@@ -123,9 +124,9 @@ export function RiskHeatmapTimeline({
               highlight
             />
             <div className="ml-auto flex items-center gap-1 text-[8px] text-text-muted">
-              <span className="w-2 h-2 rounded-sm bg-emerald-500/40" /> Low
-              <span className="w-2 h-2 rounded-sm bg-amber-500/50 ml-1" /> Med
-              <span className="w-2 h-2 rounded-sm bg-red-500/70 ml-1" /> High
+              <span className="w-2 h-2 rounded-sm bg-[#00579C]/40" /> Low
+              <span className="w-2 h-2 rounded-sm bg-[#DA251C]/50 ml-1" /> Med
+              <span className="w-2 h-2 rounded-sm bg-[#DA251C]/70 ml-1" /> High
             </div>
           </div>
         </>
@@ -147,10 +148,10 @@ function SummaryChip({
 }) {
   return (
     <div className="flex items-center gap-1.5">
-      <Icon className={cn('w-3 h-3', highlight ? 'text-red-400' : 'text-text-muted')} />
+      <Icon className={cn('w-3 h-3', highlight ? 'text-[#DA251C]' : 'text-text-muted')} />
       <div>
         <div className="text-[7px] uppercase tracking-wider text-text-muted">{label}</div>
-        <div className={cn('text-[11px] font-mono font-semibold tabular-nums', highlight ? 'text-red-400' : 'text-text-primary')}>
+        <div className={cn('text-[11px] font-mono font-semibold tabular-nums', highlight ? 'text-[#DA251C]' : 'text-text-primary')}>
           {value}
         </div>
       </div>

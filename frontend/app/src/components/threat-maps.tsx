@@ -20,6 +20,7 @@ import type {
   ThreatEvent,
   AttackVectorStat,
 } from '../stores/use-analytics-store'
+import { cn } from '@/lib/utils'
 
 const WORLD_GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
 
@@ -103,11 +104,27 @@ function severityColor(sev: string): string {
 }
 
 function timeAgo(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return 'n/a'
   const s = Math.floor((Date.now() - ts) / 1000)
   if (s < 60) return `${s}s ago`
   const m = Math.floor(s / 60)
   if (m < 60) return `${m}m ago`
   return `${Math.floor(m / 60)}h ago`
+}
+
+function evidenceTimeLabel(ts?: number): string {
+  if (!ts || !Number.isFinite(ts) || ts <= 0) return 'n/a'
+  return new Date(ts).toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
+function eventTimeLabel(evt: ThreatEvent): string {
+  if (evt.timestampSource === 'unavailable') return 'evidence time n/a'
+  return timeAgo(evt.timestamp)
 }
 
 function formatCurrency(val: number): string {
@@ -117,19 +134,41 @@ function formatCurrency(val: number): string {
   return `₹${val}`
 }
 
+function EvidenceEmptyState({
+  title,
+  detail,
+  minHeight = 220,
+}: {
+  title: string
+  detail: string
+  minHeight?: number
+}) {
+  return (
+    <div
+      className="flex w-full flex-col items-center justify-center rounded-md border border-slate-800/50 bg-slate-950/25 px-4 text-center"
+      style={{ minHeight }}
+    >
+      <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-300">{title}</div>
+      <div className="mt-1 max-w-sm text-[9px] leading-relaxed text-slate-500">{detail}</div>
+    </div>
+  )
+}
+
 
 // ============================================================================
-// 1. WORLD THREAT MAP — comprehensive labelled geographic intelligence
+// 1. NATIONAL THREAT MAP — labelled geographic intelligence from backend edges
 // ============================================================================
 
 interface WorldThreatMapProps {
   hotspots: ThreatHotspot[]
   flows: CrossBorderFlow[]
   countryThreats: CountryThreat[]
+  evidenceTimestamp?: number
 }
 
-export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatMapProps) {
+export function WorldThreatMap({ hotspots, flows, countryThreats, evidenceTimestamp }: WorldThreatMapProps) {
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
+  const hasEvidence = hotspots.length > 0 || flows.length > 0 || countryThreats.length > 0
 
   const threatLookup = useMemo(() => {
     const m = new Map<string, CountryThreat>()
@@ -160,7 +199,7 @@ export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatM
     return top ? { name: top.name, level: top.threatIndex } : { name: '-', level: 0 }
   }, [countryThreats])
 
-  // Labelled high-threat countries (top 8 by threat index)
+  // Labelled high-threat national views (top 8 by threat index)
   const labelledCountries = useMemo(() =>
     [...countryThreats]
       .sort((a, b) => b.threatIndex - a.threatIndex)
@@ -168,16 +207,26 @@ export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatM
       .filter(c => COUNTRY_CENTERS[c.iso]),
   [countryThreats])
 
+  if (!hasEvidence) {
+    return (
+      <EvidenceEmptyState
+        title="No geographic threat evidence"
+        detail="Backend analytics have not emitted geo-tagged hotspot or corridor evidence yet. Ingest geo-tagged transactions to populate this map."
+        minHeight={360}
+      />
+    )
+  }
+
   return (
     <div className="relative w-full" style={{ aspectRatio: '2 / 1', minHeight: 360 }}>
       {/* Enhanced HUD — two rows of metrics */}
       <div className="absolute top-2 left-2 z-10 space-y-1.5">
         <div className="flex gap-1.5">
           {[
-            { label: 'MONITORED COUNTRIES', value: countryThreats.length, color: 'text-slate-200' },
-            { label: 'ACTIVE HOTSPOTS', value: hotspots.length, color: 'text-cyan-400' },
-            { label: 'TOTAL INCIDENTS', value: totalIncidents.toLocaleString(), color: 'text-amber-400' },
-            { label: 'CRITICAL ZONES', value: criticalCount, color: 'text-red-400' },
+            { label: 'NATIONAL VIEWS', value: countryThreats.length, color: 'text-slate-200' },
+            { label: 'ACTIVE HOTSPOTS', value: hotspots.length, color: 'text-[#00579C]' },
+            { label: 'TOTAL INCIDENTS', value: totalIncidents.toLocaleString(), color: 'text-[#DA251C]' },
+            { label: 'CRITICAL ZONES', value: criticalCount, color: 'text-[#DA251C]' },
           ].map(s => (
             <div key={s.label} className="px-2.5 py-1.5 rounded-md bg-slate-900/90 border border-slate-700/40 backdrop-blur-sm">
               <div className="text-[7px] text-slate-500 font-mono tracking-wider">{s.label}</div>
@@ -187,10 +236,10 @@ export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatM
         </div>
         <div className="flex gap-1.5">
           {[
-            { label: 'VOLUME AT RISK', value: formatCurrency(totalVolumeAtRisk), color: 'text-rose-400' },
-            { label: 'AVG BLOCK RATE', value: `${avgBlockRate}%`, color: parseFloat(avgBlockRate) > 50 ? 'text-green-400' : 'text-amber-400' },
-            { label: 'ACTIVE FLOWS', value: `${activeFlows} / ${flows.length}`, color: 'text-indigo-400' },
-            { label: 'PEAK THREAT', value: `${peakThreat.name} (${peakThreat.level})`, color: 'text-red-300' },
+            { label: 'VOLUME AT RISK', value: formatCurrency(totalVolumeAtRisk), color: 'text-[#DA251C]' },
+            { label: 'AVG FLAG RATE', value: `${avgBlockRate}%`, color: parseFloat(avgBlockRate) > 50 ? 'text-[#DA251C]' : 'text-[#DA251C]' },
+            { label: 'ACTIVE CORRIDORS', value: `${activeFlows} / ${flows.length}`, color: 'text-[#00579C]' },
+            { label: 'PEAK THREAT', value: `${peakThreat.name} (${peakThreat.level})`, color: 'text-[#DA251C]' },
           ].map(s => (
             <div key={s.label} className="px-2.5 py-1.5 rounded-md bg-slate-900/90 border border-slate-700/40 backdrop-blur-sm">
               <div className="text-[7px] text-slate-500 font-mono tracking-wider">{s.label}</div>
@@ -200,12 +249,14 @@ export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatM
         </div>
       </div>
 
-      {/* Timestamp */}
+      {/* Backend evidence freshness */}
       <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-slate-900/90 border border-slate-700/40 backdrop-blur-sm">
-        <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-        <span className="text-[8px] text-green-400 font-mono font-semibold">LIVE</span>
+        <div className="w-1.5 h-1.5 rounded-full bg-[#00579C]" />
+        <span className="text-[8px] text-[#00579C] font-mono font-semibold">BACKEND EVIDENCE</span>
         <span className="text-[8px] text-slate-500 font-mono">
-          {new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} IST
+          {evidenceTimestamp && Number.isFinite(evidenceTimestamp) && evidenceTimestamp > 0
+            ? `${evidenceTimeLabel(evidenceTimestamp)} IST`
+            : 'evidence time n/a'}
         </span>
       </div>
 
@@ -236,8 +287,11 @@ export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatM
                     const ct = iso3 ? threatLookup.get(iso3) : undefined
                     if (ct) {
                       const rect = (e.target as SVGElement).closest('svg')?.getBoundingClientRect()
+                      const trendText = typeof ct.trend === 'number'
+                        ? ` | Trend: ${ct.trend > 0 ? 'up' : 'down'} ${Math.abs(ct.trend)}%`
+                        : ''
                       setTooltip({
-                        text: `${ct.name} — Threat: ${ct.threatIndex}/100 (${threatLabel(ct.threatIndex)}) | ${ct.incidents.toLocaleString()} incidents | ${ct.blocked.toLocaleString()} blocked (${ct.blockRate}%) | ${ct.primaryAttack} | Trend: ${ct.trend > 0 ? '↑' : '↓'}${Math.abs(ct.trend)}%`,
+                        text: `${ct.name} - Threat: ${ct.threatIndex}/100 (${threatLabel(ct.threatIndex)}) | ${ct.incidents.toLocaleString()} events | ${ct.blocked.toLocaleString()} flagged (${ct.blockRate}%) | ${ct.primaryAttack}${trendText}`,
                         x: rect ? e.clientX - rect.left : 200,
                         y: rect ? e.clientY - rect.top : 20,
                       })
@@ -287,7 +341,7 @@ export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatM
             )
           })}
 
-          {/* Cross-border flow lines — static gradient, no animation */}
+          {/* Inter-region flow lines from backend graph edges */}
           {flows.map((flow, i) => (
             <Line
               key={`flow-${i}`}
@@ -431,15 +485,15 @@ export function WorldThreatMap({ hotspots, flows, countryThreats }: WorldThreatM
         {/* Symbol key */}
         <div className="flex items-center gap-3 px-2.5 py-1 rounded-md bg-slate-900/90 border border-slate-700/40 backdrop-blur-sm">
           <div className="flex items-center gap-1">
-            <div className="w-2 h-2 rounded-full bg-red-500" />
+            <div className="w-2 h-2 rounded-full bg-[#DA251C]" />
             <span className="text-[6px] text-slate-500 font-mono">Hotspot</span>
           </div>
           <div className="flex items-center gap-1">
-            <div className="w-4 h-[1.5px] bg-amber-500 rounded" />
+            <div className="w-4 h-[1.5px] bg-[#DA251C] rounded" />
             <span className="text-[6px] text-slate-500 font-mono">Flow (solid=high risk)</span>
           </div>
           <div className="flex items-center gap-1">
-            <div className="w-4 h-[1.5px] bg-cyan-500 rounded" style={{ borderBottom: '1.5px dashed #06b6d4', height: 0 }} />
+            <div className="w-4 h-[1.5px] bg-[#00579C] rounded" style={{ borderBottom: '1.5px dashed #06b6d4', height: 0 }} />
             <span className="text-[6px] text-slate-500 font-mono">Flow (dashed=moderate)</span>
           </div>
         </div>
@@ -477,8 +531,10 @@ export function IndiaRegionalMap({ regions }: IndiaRegionalMapProps) {
   const sorted = useMemo(() =>
     [...regions].sort((a, b) => a.riskScore - b.riskScore), [regions])
 
-  const avgRisk = useMemo(() =>
-    (regions.reduce((s, r) => s + r.riskScore, 0) / regions.length).toFixed(1), [regions])
+  const avgRiskIndex = useMemo(() =>
+    regions.length > 0
+      ? (regions.reduce((s, r) => s + r.riskScore, 0) / regions.length).toFixed(1)
+      : '0.0', [regions])
 
   const highRiskCount = useMemo(() => regions.filter(r => r.riskScore > 60).length, [regions])
 
@@ -488,6 +544,16 @@ export function IndiaRegionalMap({ regions }: IndiaRegionalMapProps) {
     const s = [...regions].sort((a, b) => b.riskScore - a.riskScore)[0]
     return s ? s.region : '-'
   }, [regions])
+
+  if (regions.length === 0) {
+    return (
+      <EvidenceEmptyState
+        title="No regional risk evidence"
+        detail="No state-level transaction aggregates are available from the backend. The regional map stays empty until real regional evidence is produced."
+        minHeight={370}
+      />
+    )
+  }
 
   return (
     <div className="relative w-full" style={{ minHeight: 370 }}>
@@ -499,15 +565,15 @@ export function IndiaRegionalMap({ regions }: IndiaRegionalMapProps) {
         </div>
         <div className="px-2 py-1 rounded-md bg-slate-900/90 border border-slate-700/40 backdrop-blur-sm">
           <div className="text-[6px] text-slate-500 font-mono">AVG RISK INDEX</div>
-          <div className="text-[12px] font-bold font-mono" style={{ color: riskColor(parseFloat(avgRisk)) }}>{avgRisk}/100</div>
+          <div className="text-[12px] font-bold font-mono" style={{ color: riskColor(parseFloat(avgRiskIndex)) }}>{avgRiskIndex}/100</div>
         </div>
-        <div className="px-2 py-1 rounded-md bg-slate-900/90 border border-red-900/30 backdrop-blur-sm">
+        <div className="px-2 py-1 rounded-md bg-slate-900/90 border border-[#DA251C]/30 backdrop-blur-sm">
           <div className="text-[6px] text-slate-500 font-mono">HIGH RISK STATES</div>
-          <div className="text-[12px] font-bold text-red-400 font-mono">{highRiskCount}</div>
+          <div className="text-[12px] font-bold text-[#DA251C] font-mono">{highRiskCount}</div>
         </div>
         <div className="px-2 py-1 rounded-md bg-slate-900/90 border border-slate-700/40 backdrop-blur-sm">
           <div className="text-[6px] text-slate-500 font-mono">TOTAL VOLUME</div>
-          <div className="text-[12px] font-bold text-indigo-400 font-mono">{formatCurrency(totalVolume)}</div>
+          <div className="text-[12px] font-bold text-[#00579C] font-mono">{formatCurrency(totalVolume)}</div>
         </div>
       </div>
 
@@ -655,9 +721,9 @@ export function IndiaRegionalMap({ regions }: IndiaRegionalMapProps) {
       )}
 
       {/* Highest risk state badge */}
-      <div className="absolute bottom-2 left-1 z-10 px-2 py-1 rounded-md bg-slate-900/90 border border-red-900/30 backdrop-blur-sm">
+      <div className="absolute bottom-2 left-1 z-10 px-2 py-1 rounded-md bg-slate-900/90 border border-[#DA251C]/30 backdrop-blur-sm">
         <div className="text-[6px] text-slate-500 font-mono">HIGHEST RISK</div>
-        <div className="text-[9px] font-bold text-red-400 font-mono">{topState}</div>
+        <div className="text-[9px] font-bold text-[#DA251C] font-mono">{topState}</div>
       </div>
     </div>
   )
@@ -665,7 +731,7 @@ export function IndiaRegionalMap({ regions }: IndiaRegionalMapProps) {
 
 
 // ============================================================================
-// 3. COUNTRY THREAT PANEL — enriched intelligence view with rank numbers
+// 3. NATIONAL THREAT PANEL — enriched intelligence view with rank numbers
 // ============================================================================
 
 interface CountryThreatPanelProps {
@@ -675,6 +741,17 @@ interface CountryThreatPanelProps {
 export function CountryThreatPanel({ countries }: CountryThreatPanelProps) {
   const sorted = useMemo(() =>
     [...countries].sort((a, b) => b.threatIndex - a.threatIndex).slice(0, 10), [countries])
+
+  if (sorted.length === 0) {
+    return (
+      <EvidenceEmptyState
+        title="No national threat index"
+        detail="National threat scores are unavailable until graph telemetry contains transactions."
+        minHeight={220}
+      />
+    )
+  }
+
   const maxThreat = Math.max(...sorted.map(c => c.threatIndex), 1)
   const totalIncidents = sorted.reduce((s, c) => s + c.incidents, 0)
   const totalBlocked = sorted.reduce((s, c) => s + c.blocked, 0)
@@ -685,21 +762,21 @@ export function CountryThreatPanel({ countries }: CountryThreatPanelProps) {
       <div className="flex items-center gap-3 mb-2 px-1">
         <div>
           <span className="text-[7px] text-slate-500 font-mono">TOTAL INCIDENTS: </span>
-          <span className="text-[9px] text-amber-400 font-mono font-bold">{totalIncidents.toLocaleString()}</span>
+          <span className="text-[9px] text-[#DA251C] font-mono font-bold">{totalIncidents.toLocaleString()}</span>
         </div>
         <div>
-          <span className="text-[7px] text-slate-500 font-mono">TOTAL BLOCKED: </span>
-          <span className="text-[9px] text-green-400 font-mono font-bold">{totalBlocked.toLocaleString()}</span>
+          <span className="text-[7px] text-slate-500 font-mono">TOTAL FLAGGED: </span>
+          <span className="text-[9px] text-[#00579C] font-mono font-bold">{totalBlocked.toLocaleString()}</span>
         </div>
       </div>
 
       {/* Column headers */}
       <div className="flex items-center gap-1 text-[7px] text-slate-600 font-mono px-1 pb-1 border-b border-slate-800/40">
         <span className="w-[14px]">#</span>
-        <span className="w-[58px]">COUNTRY</span>
+        <span className="w-[58px]">SCOPE</span>
         <span className="flex-1">THREAT INDEX</span>
         <span className="w-[38px] text-right">EVENTS</span>
-        <span className="w-[36px] text-right">BLOCK%</span>
+        <span className="w-[36px] text-right">FLAG%</span>
         <span className="w-[55px] text-right">ATTACK TYPE</span>
         <span className="w-[14px] text-right">Δ</span>
       </div>
@@ -749,9 +826,12 @@ export function CountryThreatPanel({ countries }: CountryThreatPanelProps) {
             {c.primaryAttack}
           </span>
 
-          {/* Trend arrow with value */}
-          <span className={`w-[14px] text-[8px] font-mono text-right ${c.trend > 0 ? 'text-red-400' : 'text-green-400'}`}>
-            {c.trend > 0 ? '↑' : '↓'}
+          {/* Trend is only shown when backed by historical deltas. */}
+          <span className={cn(
+            'w-[14px] text-[8px] font-mono text-right',
+            typeof c.trend === 'number' ? (c.trend > 0 ? 'text-[#DA251C]' : 'text-[#00579C]') : 'text-slate-600',
+          )}>
+            {typeof c.trend === 'number' ? (c.trend > 0 ? 'up' : 'down') : 'N/A'}
           </span>
         </div>
       ))}
@@ -761,7 +841,7 @@ export function CountryThreatPanel({ countries }: CountryThreatPanelProps) {
 
 
 // ============================================================================
-// 4. CROSS-BORDER CORRIDORS — enhanced intelligence table
+// 4. INTER-REGION CORRIDORS — enhanced intelligence table
 // ============================================================================
 
 interface CrossBorderCorridorsProps {
@@ -771,6 +851,16 @@ interface CrossBorderCorridorsProps {
 export function CrossBorderCorridors({ flows }: CrossBorderCorridorsProps) {
   const sorted = useMemo(() =>
     [...flows].sort((a, b) => b.riskScore - a.riskScore), [flows])
+
+  if (sorted.length === 0) {
+    return (
+      <EvidenceEmptyState
+        title="No suspicious corridors"
+        detail="No inter-region flow evidence is present in backend analytics for this run."
+        minHeight={180}
+      />
+    )
+  }
 
   const totalVolume = flows.reduce((s, f) => s + f.amount, 0)
   const highRiskCount = flows.filter(f => f.riskScore > 70).length
@@ -785,11 +875,11 @@ export function CrossBorderCorridors({ flows }: CrossBorderCorridorsProps) {
         </div>
         <div>
           <span className="text-[7px] text-slate-500 font-mono">TOTAL VOLUME: </span>
-          <span className="text-[9px] text-indigo-400 font-mono font-bold">{formatCurrency(totalVolume)}</span>
+          <span className="text-[9px] text-[#00579C] font-mono font-bold">{formatCurrency(totalVolume)}</span>
         </div>
         <div>
           <span className="text-[7px] text-slate-500 font-mono">HIGH RISK: </span>
-          <span className="text-[9px] text-red-400 font-mono font-bold">{highRiskCount}</span>
+          <span className="text-[9px] text-[#DA251C] font-mono font-bold">{highRiskCount}</span>
         </div>
       </div>
 
@@ -828,22 +918,27 @@ export function CrossBorderCorridors({ flows }: CrossBorderCorridorsProps) {
                     {f.riskScore}
                   </span>
                 </td>
-                <td className={`py-1.5 px-2 text-right text-[8px] font-mono ${f.trend > 0 ? 'text-red-400' : 'text-green-400'}`}>
-                  {f.trend > 0 ? '↑' : '↓'}{Math.abs(f.trend).toFixed(0)}%
+                <td className={cn(
+                  'py-1.5 px-2 text-right text-[8px] font-mono',
+                  typeof f.trend === 'number' ? (f.trend > 0 ? 'text-[#DA251C]' : 'text-[#00579C]') : 'text-slate-600',
+                )}>
+                  {typeof f.trend === 'number'
+                    ? `${f.trend > 0 ? 'up' : 'down'} ${Math.abs(f.trend).toFixed(0)}%`
+                    : 'N/A'}
                 </td>
                 <td className="py-1.5 px-2 text-right text-[8px] text-slate-500 font-mono">{timeAgo(f.lastDetected)}</td>
                 <td className="py-1.5 px-2 text-center">
                   {f.riskScore > 70 ? (
-                    <span className="inline-flex items-center gap-0.5 text-[7px] text-red-400 font-mono font-bold">
-                      <span className="w-1.5 h-1.5 rounded-full bg-red-500" /> ALERT
+                    <span className="inline-flex items-center gap-0.5 text-[7px] text-[#DA251C] font-mono font-bold">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#DA251C]" /> ALERT
                     </span>
                   ) : f.riskScore > 45 ? (
-                    <span className="inline-flex items-center gap-0.5 text-[7px] text-yellow-400 font-mono">
-                      <span className="w-1.5 h-1.5 rounded-full bg-yellow-500" /> WATCH
+                    <span className="inline-flex items-center gap-0.5 text-[7px] text-[#DA251C] font-mono">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#DA251C]" /> WATCH
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-0.5 text-[7px] text-green-400 font-mono">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-500" /> CLEAR
+                    <span className="inline-flex items-center gap-0.5 text-[7px] text-[#00579C] font-mono">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#00579C]" /> CLEAR
                     </span>
                   )}
                 </td>
@@ -866,6 +961,16 @@ interface AttackVectorBreakdownProps {
 }
 
 export function AttackVectorBreakdown({ vectors }: AttackVectorBreakdownProps) {
+  if (vectors.length === 0) {
+    return (
+      <EvidenceEmptyState
+        title="No attack vectors"
+        detail="Fraud typology analytics are empty until model/rule outputs classify events."
+        minHeight={220}
+      />
+    )
+  }
+
   const maxCount = Math.max(...vectors.map(v => v.count), 1)
   const totalCount = vectors.reduce((s, v) => s + v.count, 0)
 
@@ -887,9 +992,11 @@ export function AttackVectorBreakdown({ vectors }: AttackVectorBreakdownProps) {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[8px] text-slate-400 font-mono font-bold">{v.percentage}%</span>
-              <span className={`text-[8px] font-mono ${v.trend > 0 ? 'text-red-400' : 'text-green-400'}`}>
-                {v.trend > 0 ? '↑' : '↓'}{Math.abs(v.trend).toFixed(0)}%
-              </span>
+              {typeof v.trend === 'number' && (
+                <span className={`text-[8px] font-mono ${v.trend > 0 ? 'text-[#DA251C]' : 'text-[#00579C]'}`}>
+                  {v.trend > 0 ? 'up ' : 'down '}{Math.abs(v.trend).toFixed(0)}%
+                </span>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -901,12 +1008,8 @@ export function AttackVectorBreakdown({ vectors }: AttackVectorBreakdownProps) {
             </div>
             <span className="text-[8px] text-slate-300 font-mono w-[32px] text-right tabular-nums font-bold">{v.count}</span>
           </div>
-          <div className="flex items-center gap-1.5 mt-0.5">
-            <span className="text-[7px] text-slate-600 font-mono">AVG RISK</span>
-            <div className="w-16 h-1.5 bg-slate-800/40 rounded-full overflow-hidden">
-              <div className="h-full rounded-full" style={{ width: `${v.avgRisk}%`, backgroundColor: riskColor(v.avgRisk) }} />
-            </div>
-            <span className="text-[7px] font-mono font-semibold" style={{ color: riskColor(v.avgRisk) }}>{v.avgRisk}</span>
+          <div className="mt-0.5 text-[7px] text-slate-600 font-mono">
+            Backend typology count from fraud classification output
           </div>
         </div>
       ))}
@@ -924,6 +1027,16 @@ interface LiveThreatFeedProps {
 }
 
 export function LiveThreatFeed({ events }: LiveThreatFeedProps) {
+  if (events.length === 0) {
+    return (
+      <EvidenceEmptyState
+        title="No threat feed events"
+        detail="The feed renders only backend threat-summary indicators and agent outcomes. No such events are available yet."
+        minHeight={220}
+      />
+    )
+  }
+
   const criticalCount = events.filter(e => e.severity === 'critical').length
   const highCount = events.filter(e => e.severity === 'high').length
   const blockedCount = events.filter(e => e.status === 'blocked').length
@@ -933,9 +1046,9 @@ export function LiveThreatFeed({ events }: LiveThreatFeedProps) {
       {/* Feed summary bar */}
       <div className="flex items-center gap-3 px-2 pb-1.5 border-b border-slate-800/30">
         <span className="text-[7px] text-slate-500 font-mono">EVENTS: <span className="text-slate-300 font-bold">{events.length}</span></span>
-        <span className="text-[7px] text-red-400 font-mono">CRITICAL: {criticalCount}</span>
-        <span className="text-[7px] text-orange-400 font-mono">HIGH: {highCount}</span>
-        <span className="text-[7px] text-green-400 font-mono">BLOCKED: {blockedCount}</span>
+        <span className="text-[7px] text-[#DA251C] font-mono">CRITICAL: {criticalCount}</span>
+        <span className="text-[7px] text-[#DA251C] font-mono">HIGH: {highCount}</span>
+        <span className="text-[7px] text-[#00579C] font-mono">BLOCKED: {blockedCount}</span>
       </div>
 
       <div className="space-y-1 max-h-[260px] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin', scrollbarColor: '#1e293b transparent' }}>
@@ -962,8 +1075,10 @@ export function LiveThreatFeed({ events }: LiveThreatFeedProps) {
                 >
                   {evt.severity}
                 </span>
-                <span className="text-[9px] text-slate-300 font-mono font-medium">{evt.city}, {evt.country}</span>
-                <span className="text-[8px] text-slate-600 font-mono ml-auto flex-shrink-0">{timeAgo(evt.timestamp)}</span>
+                <span className="text-[9px] text-slate-300 font-mono font-medium">
+                  {evt.sourceLabel || `${evt.city}, ${evt.country}`}
+                </span>
+                <span className="text-[8px] text-slate-600 font-mono ml-auto flex-shrink-0">{eventTimeLabel(evt)}</span>
               </div>
               <p className="text-[9px] text-slate-400 mt-0.5 leading-relaxed truncate">{evt.description}</p>
               <div className="flex items-center gap-2 mt-0.5">
@@ -972,10 +1087,10 @@ export function LiveThreatFeed({ events }: LiveThreatFeedProps) {
                   <span className="text-[8px] text-slate-500 font-mono">{formatCurrency(evt.amount)}</span>
                 )}
                 <span className={`text-[7px] font-mono px-1.5 py-0.5 rounded font-semibold ${
-                  evt.status === 'blocked' ? 'text-green-400 bg-green-900/20' :
-                  evt.status === 'escalated' ? 'text-red-400 bg-red-900/20' :
-                  evt.status === 'investigating' ? 'text-amber-400 bg-amber-900/20' :
-                  'text-cyan-400 bg-cyan-900/20'
+                  evt.status === 'blocked' ? 'text-[#00579C] bg-[#00579C]/20' :
+                  evt.status === 'escalated' ? 'text-[#DA251C] bg-[#DA251C]/20' :
+                  evt.status === 'investigating' ? 'text-[#DA251C] bg-[#DA251C]/20' :
+                  'text-[#00579C] bg-[#00579C]/20'
                 }`}>
                   {evt.status.toUpperCase()}
                 </span>

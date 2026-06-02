@@ -4,6 +4,7 @@
 
 import { useState } from 'react'
 import { useAttackTypes, useLaunchAttack } from '@/hooks/use-api'
+import { useRoleAccess } from '@/hooks/use-rbac'
 import { cn } from '@/lib/utils'
 import {
   Network,
@@ -43,6 +44,7 @@ function AttackCard({
   detail: AttackTypeDetail
   index: number
 }) {
+  const access = useRoleAccess()
   const launch = useLaunchAttack()
   const [isLaunching, setIsLaunching] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -58,6 +60,7 @@ function AttackCard({
   const Icon = iconInfo.icon
 
   async function handleLaunch() {
+    if (!access.can('simulation:write')) return
     setIsLaunching(true)
     try {
       await launch.mutateAsync({ attack_type: type, params })
@@ -134,7 +137,8 @@ function AttackCard({
       <div className="mt-auto">
         <button
           onClick={() => void handleLaunch()}
-          disabled={isLaunching || launch.isPending}
+          disabled={isLaunching || launch.isPending || !access.can('simulation:write')}
+          title={!access.can('simulation:write') ? `${access.policy.label} cannot launch attack simulations` : 'Launch attack simulation'}
           className={cn(
             'group relative w-full py-2 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all duration-200',
             'border border-accent-primary/70 text-accent-primary',

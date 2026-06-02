@@ -15,7 +15,7 @@ interface SimulationState {
   selectedScenarioId: string | null
 
   // Actions
-  handleSSEEvent: (data: SSESimulationData) => void
+  handleSSEEvent: (data: SSESimulationData, serverTimestamp?: number) => void
   setScenarios: (list: ScenarioStatus[]) => void
   upsertScenario: (scenario: ScenarioStatus) => void
   setSelectedScenario: (scenarioId: string | null) => void
@@ -24,14 +24,20 @@ interface SimulationState {
 
 const MAX_RECENT_EVENTS = 100
 
+function timestampOrZero(raw: unknown): number {
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
 export const useSimulationStore = create<SimulationState>((set) => ({
   scenarios: new Map(),
   recentEvents: [],
   selectedScenarioId: null,
 
-  handleSSEEvent: (data) =>
+  handleSSEEvent: (data, serverTimestamp) =>
     set((state) => {
       const scenarios = new Map(state.scenarios)
+      const eventTimestamp = timestampOrZero(serverTimestamp)
 
       if (data.type === 'attack_event') {
         const existing = scenarios.get(data.scenario_id)
@@ -52,7 +58,7 @@ export const useSimulationStore = create<SimulationState>((set) => ({
             attackLabel: existing?.attack_label ?? data.attack_type,
             eventType: data.event?.type ?? 'unknown',
             progressPct: data.progress_pct!,
-            timestamp: Date.now() / 1000,
+            timestamp: eventTimestamp,
             event: data.event,
           },
         ].slice(-MAX_RECENT_EVENTS)
@@ -86,8 +92,8 @@ export const useSimulationStore = create<SimulationState>((set) => ({
           events_ingested: data.events_ingested ?? existing?.events_ingested ?? 0,
           progress_pct: existing?.progress_pct ?? 0,
           accounts_involved: data.accounts_involved ?? existing?.accounts_involved ?? [],
-          started_at: existing?.started_at ?? Date.now() / 1000,
-          stopped_at: status !== 'running' ? Date.now() / 1000 : null,
+          started_at: existing?.started_at && existing.started_at > 0 ? existing.started_at : eventTimestamp,
+          stopped_at: status !== 'running' ? eventTimestamp : null,
           elapsed_sec: existing?.elapsed_sec ?? 0,
         })
         return {

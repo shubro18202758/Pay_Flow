@@ -1,13 +1,13 @@
 // ============================================================================
-// Tab Navigation -- SOC command center style navigation tabs with icons
-// Enhanced: keyboard shortcuts, alert count badges, active indicator animation
+// Tab Navigation -- Union Bank product navigation with live alert badges
 // ============================================================================
 
 import { useEffect, useCallback } from 'react'
 import { useUIStore, type TabId } from '@/stores/use-ui-store'
 import { useDashboardStore } from '@/stores/use-dashboard-store'
-import { useIntelTuningStatus } from '@/hooks/use-api'
+import { useCountermeasureProposals, useEscalations, useIntelTuningStatus } from '@/hooks/use-api'
 import { cn } from '@/lib/utils'
+import { canAccessTab, rolePolicy } from '@/lib/rbac'
 import {
   LayoutDashboard,
   Crosshair,
@@ -17,6 +17,7 @@ import {
   Cpu,
   ShieldCheck,
   Radar,
+  LockKeyhole,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -34,12 +35,14 @@ const TABS: { id: TabId; label: string; shortLabel: string; icon: LucideIcon; ke
 export function TabNav() {
   const activeTab = useUIStore((s) => s.activeTab)
   const setActiveTab = useUIStore((s) => s.setActiveTab)
+  const currentRole = useUIStore((s) => s.currentRole)
   const frozenCount = useDashboardStore((s) => s.frozenCount)
   const pendingAlerts = useDashboardStore((s) => s.pendingAlerts)
-  const agentLogLen = useDashboardStore((s) => s.agentLog.length)
   const { data: intelStatus } = useIntelTuningStatus()
+  const { data: escalations } = useEscalations()
+  const { data: countermeasures } = useCountermeasureProposals()
 
-  // Keyboard shortcut: Alt+1..5
+  // Preserve direct keyboard navigation without rendering shortcut hints.
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
@@ -60,27 +63,36 @@ export function TabNav() {
 
   // Badge counts per tab
   const badgeCounts: Partial<Record<TabId, number>> = {}
+  const pendingEscalations = (escalations ?? []).filter((item) => item.status === 'pending_review').length
+  const pendingCountermeasures = (countermeasures?.proposals ?? []).filter((item) => item.status === 'proposed').length
   if (frozenCount > 0 || pendingAlerts > 0) badgeCounts['overview'] = frozenCount + pendingAlerts
-  if (agentLogLen > 0) badgeCounts['investigations'] = agentLogLen
+  if (pendingEscalations > 0) badgeCounts['investigations'] = pendingEscalations
+  if (pendingCountermeasures > 0) badgeCounts['threat-sim'] = pendingCountermeasures
   if ((intelStatus?.active_playbooks ?? 0) > 0) badgeCounts['pre-fraud-intel'] = intelStatus?.active_playbooks ?? 0
 
   return (
     <nav className="flex shrink-0 items-center overflow-x-auto border-b border-border-default bg-bg-surface px-2 py-1.5 shadow-sm">
       {TABS.map((tab) => {
         const Icon = tab.icon
+        const allowed = canAccessTab(currentRole, tab.id)
+        const policy = rolePolicy(currentRole)
         const isActive = activeTab === tab.id
         const badge = badgeCounts[tab.id]
         return (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            aria-label={tab.label}
+            onClick={() => allowed && setActiveTab(tab.id)}
+            disabled={!allowed}
+            aria-label={allowed ? tab.label : `${tab.label} restricted for ${policy.label}`}
+            aria-disabled={!allowed}
             aria-current={isActive ? 'page' : undefined}
-            title={`${tab.label} (Alt+${tab.key})`}
+            title={allowed ? tab.label : `${policy.label} cannot access ${tab.label}`}
             className={cn(
               'group relative flex shrink-0 items-center gap-2 px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.1em] transition-all duration-150',
               'relative rounded-full border',
-              isActive
+              !allowed
+                ? 'cursor-not-allowed border-transparent text-text-muted/35 opacity-60'
+                : isActive
                 ? 'border-accent-primary bg-accent-primary text-white shadow-sm'
                 : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-bg-elevated/70 hover:text-accent-primary',
             )}
@@ -91,15 +103,7 @@ export function TabNav() {
             )} />
             <span className="hidden 2xl:inline">{tab.label}</span>
             <span className="2xl:hidden">{tab.shortLabel}</span>
-            {/* Keyboard hint */}
-            <span className={cn(
-              'text-[7px] font-mono px-1 py-0.5 rounded border leading-none ml-0.5 transition-colors',
-              isActive
-                ? 'border-white/40 bg-white/15 text-white/80'
-                : 'border-border-subtle text-text-muted/40 group-hover:border-border-default group-hover:text-text-muted/60',
-            )}>
-              {tab.key}
-            </span>
+            {!allowed && <LockKeyhole className="h-3 w-3 text-text-muted/45" />}
             {/* Alert badge */}
             {badge != null && badge > 0 && (
               <span className="flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-alert-critical px-1 font-mono text-[7px] font-bold text-white animate-data-pulse">

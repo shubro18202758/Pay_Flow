@@ -133,7 +133,7 @@ class SemanticFinding:
     A single semantic anomaly detected by the NLU sub-agent.
 
     Each finding carries enough context for the main Investigator Agent
-    to incorporate it into its Chain-of-Thought reasoning.
+    to incorporate it into its evidence-rationale workflow.
     """
     anomaly_type: SemanticAnomalyType
     confidence: FindingConfidence
@@ -168,7 +168,7 @@ class UnstructuredAnalysisResult:
     linguistic_anomaly_score: float            # 0.0 - 1.0
     device_anomaly_score: float                # 0.0 - 1.0
     analysis_duration_ms: float
-    model_used: str = "qwen3.5:4b-q4_K_M"
+    model_used: str = "qwen3.5:4b"
 
     def to_dict(self) -> dict:
         return {

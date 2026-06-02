@@ -1,5 +1,5 @@
 // ============================================================================
-// Dashboard Store -- Graph elements, system telemetry, agent CoT, circuit breaker
+// Dashboard Store -- Graph elements, system telemetry, agent investigation trace, circuit breaker
 // ============================================================================
 
 import { create } from 'zustand'
@@ -17,6 +17,11 @@ import type {
   ThreatSimulationSnapshot,
   VerdictBlock,
 } from '@/lib/types'
+import {
+  sanitizeEvidenceList,
+  sanitizeOptionalEvidenceText,
+  sanitizePublicTraceText,
+} from '@/lib/evidence-sanitizer'
 
 const MAX_EDGES = 900
 const MAX_COT_ENTRIES = 500
@@ -51,7 +56,7 @@ interface DashboardState {
   bannedDevices: number
   routingPausedNodes: number
 
-  // Agent CoT log
+  // Agent investigation trace log
   agentLog: AgentLogEntry[]
 
   // Actions
@@ -59,7 +64,7 @@ interface DashboardState {
   addGraphElements: (batch: SSEGraphBatchUpdate) => void
   updateNodeStatus: (nodeId: string, status: string) => void
   setSystemTelemetry: (data: Record<string, unknown>) => void
-  addAgentEntry: (data: SSEAgentData) => void
+  addAgentEntry: (data: SSEAgentData, serverTimestamp?: number) => void
   hydrateVerdicts: (verdicts: VerdictBlock[]) => void
   setCircuitBreaker: (
     orders: FreezeOrder[],
@@ -96,9 +101,36 @@ function buildAgentEntryId(data: SSEAgentData, timestamp: number, suffix = ''): 
     return `thinking:${data.txn_id}:${data.iteration}:${suffix || timestamp}`
   }
   if (data.type === 'tool_call') {
-    return `tool:${data.txn_id}:${data.tool_name}:${Math.round(data.duration_ms)}:${suffix || timestamp}`
+    const durationKey =
+      typeof data.duration_ms === 'number' && Number.isFinite(data.duration_ms) && data.duration_ms >= 0
+        ? Math.round(data.duration_ms)
+        : 'duration-na'
+    return `tool:${data.txn_id}:${data.tool_name}:${durationKey}:${suffix || timestamp}`
   }
   return `verdict:${data.txn_id}:${data.verdict}:${suffix || timestamp}`
+}
+
+function timestampOrZero(raw: unknown): number {
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+function sanitizeAgentData(data: SSEAgentData): SSEAgentData {
+  if (data.type === 'thinking_step') {
+    const publicContent = sanitizePublicTraceText(data.public_content ?? data.content)
+    return {
+      ...data,
+      content: publicContent,
+      public_content: publicContent,
+    }
+  }
+  if (data.type !== 'verdict') return data
+  return {
+    ...data,
+    reasoning_summary: sanitizeOptionalEvidenceText(data.reasoning_summary) ?? '',
+    evidence_cited: sanitizeEvidenceList(data.evidence_cited),
+    evidence: sanitizeEvidenceList(data.evidence),
+  }
 }
 
 export const useDashboardStore = create<DashboardState>((set) => ({
@@ -191,20 +223,21 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       } : {}),
     }),
 
-  addAgentEntry: (data) =>
+  addAgentEntry: (data, serverTimestamp) =>
     set((state) => {
-      const timestamp = Date.now() / 1000
+      const safeData = sanitizeAgentData(data)
+      const timestamp = timestampOrZero(serverTimestamp)
       const entry: AgentLogEntry = {
-        id: buildAgentEntryId(data, timestamp, `${++_cotCounter}`),
+        id: buildAgentEntryId(safeData, timestamp, `${++_cotCounter}`),
         timestamp,
-        txn_id: data.txn_id ?? '',
+        txn_id: safeData.txn_id ?? '',
         type:
-          data.type === 'thinking_step'
+          safeData.type === 'thinking_step'
             ? 'thinking'
-            : data.type === 'tool_call'
+            : safeData.type === 'tool_call'
               ? 'tool_call'
               : 'verdict',
-        data,
+        data: safeData,
       }
 
       if (state.agentLog.some((existing) => existing.id === entry.id)) {
@@ -226,8 +259,8 @@ export const useDashboardStore = create<DashboardState>((set) => ({
         const payload = block.payload
         if (!payload) continue
 
-        const timestamp = block.timestamp ?? Date.now() / 1000
-        const verdictData = {
+        const timestamp = timestampOrZero(block.timestamp)
+        const verdictData = sanitizeAgentData({
           type: 'verdict' as const,
           txn_id: payload.txn_id,
           node_id: payload.node_id ?? '',
@@ -238,8 +271,11 @@ export const useDashboardStore = create<DashboardState>((set) => ({
           recommended_action: payload.recommended_action,
           thinking_steps: payload.thinking_steps ?? 0,
           tools_used: payload.tools_used ?? [],
-          total_duration_ms: payload.total_duration_ms ?? 0,
-        }
+          total_duration_ms: payload.total_duration_ms,
+          confidence_source: payload.confidence_source,
+          llm_parse_status: payload.llm_parse_status,
+          model_used: payload.model_used,
+        })
 
         const id = buildAgentEntryId(verdictData, timestamp, `${block.index ?? index}`)
         if (existingIds.has(id)) continue

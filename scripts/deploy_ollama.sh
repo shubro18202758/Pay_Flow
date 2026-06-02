@@ -3,7 +3,7 @@
 # PayFlow — Ollama Deployment & VRAM-Safe Configuration Script
 # ============================================================================
 # Configures Ollama daemon environment variables for 8 GB VRAM ceiling,
-# creates the VRAM-optimized custom model, validates deployment, and
+# validates the original Qwen 3.5 4B model, optionally builds a custom tag, and
 # runs a diagnostic inference pass.
 #
 # Usage: bash scripts/deploy_ollama.sh
@@ -25,8 +25,9 @@ info() { echo -e "${CYAN}[INFO]${NC} $*"; }
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODELFILE_PATH="${PROJECT_ROOT}/scripts/Modelfile"
-CUSTOM_MODEL_TAG="payflow-qwen"
-BASE_MODEL="qwen3.5:4b-q4_K_M"
+BASE_MODEL="${OLLAMA_MODEL:-qwen3.5:4b}"
+CUSTOM_MODEL_TAG="${PAYFLOW_OLLAMA_MODEL:-}"
+RUNTIME_MODEL="${CUSTOM_MODEL_TAG:-${BASE_MODEL}}"
 
 # ── Step 0: Preflight — Verify Ollama Installation ───────────────────────────
 
@@ -61,8 +62,7 @@ cat > "${PROJECT_ROOT}/scripts/ollama.env" << 'ENVEOF'
 
 # --- KV Cache Quantization ---
 # Default: f16 (2 bytes per element). q8_0 halves this to ~1 byte.
-# Impact: 16K context KV cache drops from ~2,950 MB → ~1,475 MB.
-# This single flag reclaims ~1.5 GB of VRAM.
+# Impact: keeps the 8K context budget small enough for GPU coexistence.
 OLLAMA_KV_CACHE_TYPE=q8_0
 
 # --- Flash Attention ---
@@ -71,9 +71,7 @@ OLLAMA_KV_CACHE_TYPE=q8_0
 OLLAMA_FLASH_ATTENTION=1
 
 # --- Concurrency Limits ---
-# Each parallel slot allocates its OWN KV cache. At 16K context:
-#   1 slot  = ~1,475 MB KV    (fits)
-#   2 slots = ~2,950 MB KV    (OOM with model weights)
+# Each parallel slot allocates its OWN KV cache.
 # MUST be 1 on 8 GB cards.
 OLLAMA_NUM_PARALLEL=1
 
@@ -83,9 +81,8 @@ OLLAMA_NUM_PARALLEL=1
 OLLAMA_MAX_LOADED_MODELS=1
 
 # --- Keep-Alive (Auto-Unload) ---
-# Unload model from VRAM after 5 minutes of idle.
-# Critical for yielding GPU back to Analysis mode (XGBoost / GNN).
-OLLAMA_KEEP_ALIVE=5m
+# Keep Qwen warm for dashboard and investigator queries during demos.
+OLLAMA_KEEP_ALIVE=30m
 
 # --- GPU Selection ---
 # Force Ollama to use GPU 0 (the discrete RTX 4070).
@@ -112,7 +109,7 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; t
     setx OLLAMA_FLASH_ATTENTION  "1"     > /dev/null 2>&1 || true
     setx OLLAMA_NUM_PARALLEL     "1"     > /dev/null 2>&1 || true
     setx OLLAMA_MAX_LOADED_MODELS "1"    > /dev/null 2>&1 || true
-    setx OLLAMA_KEEP_ALIVE       "5m"    > /dev/null 2>&1 || true
+    setx OLLAMA_KEEP_ALIVE       "30m"   > /dev/null 2>&1 || true
     setx CUDA_VISIBLE_DEVICES    "0"     > /dev/null 2>&1 || true
     log "Persisted. Restart Ollama service for changes to take effect."
 fi
@@ -144,27 +141,31 @@ log "Ollama daemon is responsive."
 
 # ── Step 3: Pull Base Model ───────────────────────────────────────────────────
 
-log "Ensuring base model '${BASE_MODEL}' is available..."
+log "Ensuring original Qwen model '${BASE_MODEL}' is available..."
 
 if ollama list 2>/dev/null | grep -q "${BASE_MODEL}"; then
     log "Base model '${BASE_MODEL}' already downloaded."
 else
-    log "Pulling '${BASE_MODEL}' (Q4_K_M, ~3.4 GB). This may take several minutes..."
+    log "Pulling '${BASE_MODEL}' (~3.4 GB). This may take several minutes..."
     ollama pull "${BASE_MODEL}"
     log "Base model downloaded."
 fi
 
-# ── Step 4: Build Custom PayFlow Model ────────────────────────────────────────
+# ── Step 4: Optional Custom PayFlow Model ─────────────────────────────────────
 
-log "Building custom model '${CUSTOM_MODEL_TAG}' from Modelfile..."
+if [ -n "${CUSTOM_MODEL_TAG}" ] && [ "${CUSTOM_MODEL_TAG}" != "${BASE_MODEL}" ]; then
+    log "Building optional custom model '${CUSTOM_MODEL_TAG}' from Modelfile..."
 
-if [ ! -f "$MODELFILE_PATH" ]; then
-    err "Modelfile not found at: ${MODELFILE_PATH}"
-    exit 1
+    if [ ! -f "$MODELFILE_PATH" ]; then
+        err "Modelfile not found at: ${MODELFILE_PATH}"
+        exit 1
+    fi
+
+    ollama create "${CUSTOM_MODEL_TAG}" -f "${MODELFILE_PATH}"
+    log "Custom model '${CUSTOM_MODEL_TAG}' created."
+else
+    log "Using original Qwen model directly; no custom model tag will be built."
 fi
-
-ollama create "${CUSTOM_MODEL_TAG}" -f "${MODELFILE_PATH}"
-log "Custom model '${CUSTOM_MODEL_TAG}' created."
 
 # ── Step 5: Validate — Dry-Run Inference ──────────────────────────────────────
 
@@ -172,7 +173,7 @@ log "Running diagnostic inference (single-shot)..."
 
 DIAG_RESPONSE=$(curl -sf http://localhost:11434/api/generate \
     -d '{
-        "model": "'"${CUSTOM_MODEL_TAG}"'",
+        "model": "'"${RUNTIME_MODEL}"'",
         "prompt": "You are a financial fraud analyst. Respond with EXACTLY: PAYFLOW_DIAGNOSTIC_OK",
         "stream": false,
         "options": {
@@ -203,7 +204,7 @@ fi
 
 log "Unloading model to free VRAM..."
 curl -sf http://localhost:11434/api/generate \
-    -d '{"model": "'"${CUSTOM_MODEL_TAG}"'", "keep_alive": 0}' > /dev/null 2>&1 || true
+    -d '{"model": "'"${RUNTIME_MODEL}"'", "keep_alive": 0}' > /dev/null 2>&1 || true
 log "VRAM released."
 
 # ── Summary ───────────────────────────────────────────────────────────────────
@@ -212,18 +213,18 @@ echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║          PayFlow — Ollama Deployment Complete                   ║${NC}"
 echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
-echo -e "${CYAN}║${NC}  Model tag:     ${GREEN}${CUSTOM_MODEL_TAG}${NC}"
+echo -e "${CYAN}║${NC}  Runtime model: ${GREEN}${RUNTIME_MODEL}${NC}"
 echo -e "${CYAN}║${NC}  Base model:    ${GREEN}${BASE_MODEL}${NC}"
-echo -e "${CYAN}║${NC}  Context:       ${GREEN}16,384 tokens${NC}"
+echo -e "${CYAN}║${NC}  Context:       ${GREEN}8,192 tokens${NC}"
 echo -e "${CYAN}║${NC}  KV cache:      ${GREEN}q8_0 (halved memory)${NC}"
 echo -e "${CYAN}║${NC}  Flash attn:    ${GREEN}enabled${NC}"
 echo -e "${CYAN}║${NC}  GPU layers:    ${GREEN}all (num_gpu=999)${NC}"
 echo -e "${CYAN}║${NC}  Parallelism:   ${GREEN}1 slot (env-controlled)${NC}"
-echo -e "${CYAN}║${NC}  Keep-alive:    ${GREEN}5 min via daemon env${NC}"
+echo -e "${CYAN}║${NC}  Keep-alive:    ${GREEN}30 min via daemon env${NC}"
 echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${CYAN}║${NC}  ${BOLD}VRAM BUDGET:${NC}"
 echo -e "${CYAN}║${NC}    Weights (Q4_K_M):    ~3,400 MB${NC}"
-echo -e "${CYAN}║${NC}    KV cache (q8_0,16K):   ~768 MB${NC}"
+echo -e "${CYAN}║${NC}    KV cache (q8_0,8K):    ~768 MB${NC}"
 echo -e "${CYAN}║${NC}    CUDA overhead:         ~400 MB${NC}"
 echo -e "${CYAN}║${NC}    Safety margin:          ~300 MB${NC}"
 echo -e "${CYAN}║${NC}    ───────────────────────────────${NC}"

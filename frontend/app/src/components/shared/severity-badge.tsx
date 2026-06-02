@@ -11,8 +11,7 @@ import {
   UserCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-
-type Severity = 'critical' | 'high' | 'medium' | 'low' | 'escalated'
+import type { Severity } from '@/lib/severity'
 
 interface Props {
   severity: Severity
@@ -64,13 +63,4 @@ export function SeverityBadge({ severity, label, className }: Props) {
       {label ?? config.defaultLabel}
     </span>
   )
-}
-
-export function verdictToSeverity(verdict: string): Severity {
-  const v = verdict.toLowerCase()
-  if (v === 'fraudulent') return 'critical'
-  if (v === 'suspicious') return 'high'
-  if (v.includes('escalat')) return 'escalated'
-  if (v === 'legitimate') return 'low'
-  return 'medium'
 }

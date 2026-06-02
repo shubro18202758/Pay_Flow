@@ -32,6 +32,14 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _trapezoid(y: np.ndarray, x: np.ndarray) -> float:
+    """Compatibility shim for NumPy versions before np.trapezoid."""
+    integrate = getattr(np, "trapezoid", None)
+    if integrate is None:
+        integrate = getattr(np, "trapz")
+    return float(integrate(y, x))
+
+
 # ── Result Types ─────────────────────────────────────────────────────────────
 
 class LRPredictionResult(NamedTuple):
@@ -146,7 +154,7 @@ class LogisticFraudClassifier:
             probs = self._model.predict_proba(X_eval)[:, 1]
             if len(np.unique(y_bin_eval)) > 1:
                 precision_vals, recall_vals, _ = precision_recall_curve(y_bin_eval, probs)
-                metrics.best_aucpr = float(-np.trapezoid(precision_vals, recall_vals))
+                metrics.best_aucpr = -_trapezoid(precision_vals, recall_vals)
                 metrics.auc_roc = float(roc_auc_score(y_bin_eval, probs))
 
         self._training_info = {
@@ -202,7 +210,7 @@ class LogisticFraudClassifier:
         p_vals, r_vals, _ = precision_recall_curve(y_bin, probs)
 
         return LRValidationMetrics(
-            aucpr=float(-np.trapezoid(p_vals, r_vals)),
+            aucpr=-_trapezoid(p_vals, r_vals),
             auc_roc=float(roc_auc_score(y_bin, probs)),
             f1=float(f1_score(y_bin, preds, zero_division=0)),
             precision=float(precision_score(y_bin, preds, zero_division=0)),

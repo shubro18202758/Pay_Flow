@@ -4,13 +4,12 @@ PayFlow -- LangGraph Investigator Agent
 Autonomous fraud investigation agent powered by Qwen 3.5 4B via Ollama,
 orchestrated through a LangGraph state-machine graph.
 
-The agent implements a **think-act-observe** loop:
+The agent implements an **analyze-act-observe** loop:
 
-1. **THINK** (Chain-of-Thought): Reason step-by-step about current evidence.
-   The ``/think`` prefix activates Qwen's internal reasoning mode.
+1. **ANALYZE**: Build a concise, evidence-grounded rationale from current evidence.
 2. **ACT** (Tool Calls): Invoke PayFlow subsystem tools to gather evidence.
 3. **OBSERVE** (Evidence Integration): Incorporate tool results into the
-   reasoning trace.
+   investigation trace.
 4. **DECIDE** (Verdict): Issue a structured fraud verdict when confident
    or when max iterations are exhausted.
 
@@ -22,8 +21,8 @@ State Machine::
          │
          ▼
     ┌──────────┐     "tools"      ┌──────────────┐
-    │  THINK   │ ──────────────> │ EXECUTE_TOOLS │
-    │  (CoT)   │ <────────────── │              │
+    │ ANALYZE  │ ──────────────> │ EXECUTE_TOOLS │
+    │ TRACE    │ <────────────── │              │
     └────┬─────┘    "think"      └──────────────┘
          │
          │ "verdict"
@@ -46,7 +45,7 @@ Dependencies:
     - langgraph (LangGraph state machine)
     - ollama (Qwen 3.5 4B inference via PayFlowLLM)
     - src.llm.tools (ToolExecutor, ToolCall, ToolResult)
-    - src.llm.prompts (system prompts, CoT templates)
+    - src.llm.prompts (system prompts, evidence-rationale templates)
 """
 
 from __future__ import annotations
@@ -61,8 +60,8 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, StateGraph
 
 from src.llm.prompts import (
-    COT_ACTIVATION_PREFIX,
     INVESTIGATOR_SYSTEM_PROMPT,
+    VERDICT_SCHEMA,
     build_cot_prompt,
     build_investigation_prompt,
     build_verdict_prompt,
@@ -85,7 +84,7 @@ class AgentState(TypedDict, total=False):
     ml_score: float                      # Risk score from ML pipeline
     gnn_score: float                     # GNN topology score (-1 if unavailable)
     messages: list[dict]                 # Full conversation history
-    thinking_trace: list[str]            # Chain-of-thought steps
+    thinking_trace: list[str]            # Evidence-rationale steps
     tool_calls_made: list[dict]          # History of tool invocations
     evidence_collected: dict             # Accumulated evidence from tools
     iteration: int                       # Current reasoning loop count
@@ -97,6 +96,8 @@ class AgentState(TypedDict, total=False):
     hitl_dispatched: bool                # Whether escalation was sent
     intermediate_confidence: float       # Running confidence estimate
     detected_typology: str | None        # Typology detected during reasoning
+    _pending_tool_calls: list[ToolCall]  # Tool calls to execute in the next node
+    _t0: float                           # Investigation start time for events
 
 
 # ── Verdict Payload ──────────────────────────────────────────────────────────
@@ -113,12 +114,15 @@ class VerdictPayload:
     verdict: str                         # "FRAUDULENT" | "SUSPICIOUS" | "LEGITIMATE" | "ESCALATED_TO_HUMAN"
     confidence: float                    # 0.0 - 1.0
     fraud_typology: str | None           # e.g., "layering", "round_tripping"
-    reasoning_summary: str               # Condensed CoT summary
+    reasoning_summary: str               # Concise evidence-rationale summary
     evidence_cited: list[str]            # Specific evidence items cited
     recommended_action: str              # "FREEZE" | "ESCALATE" | "MONITOR" | "CLEAR" | "ESCALATE_TO_HUMAN"
-    thinking_steps: int                  # Number of CoT iterations
+    thinking_steps: int                  # Number of rationale iterations
     tools_used: list[str]               # Names of tools invoked
     total_duration_ms: float
+    confidence_source: str = "qwen_json"
+    llm_parse_status: str = "parsed"
+    model_used: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -133,6 +137,9 @@ class VerdictPayload:
             "thinking_steps": self.thinking_steps,
             "tools_used": self.tools_used,
             "total_duration_ms": round(self.total_duration_ms, 2),
+            "confidence_source": self.confidence_source,
+            "llm_parse_status": self.llm_parse_status,
+            "model_used": self.model_used,
         }
 
 
@@ -179,8 +186,8 @@ class InvestigatorAgent:
     """
     LangGraph-powered fraud investigation agent using Qwen 3.5 4B.
 
-    Implements a think-act-observe loop where the LLM reasons through
-    fraud typologies step-by-step (Chain-of-Thought / Thinking Mode),
+    Implements an analyze-act-observe loop where the LLM evaluates
+    fraud typologies through concise evidence rationales,
     calls tools to gather evidence from PayFlow subsystems, and issues
     a structured verdict.
 
@@ -217,6 +224,7 @@ class InvestigatorAgent:
         self._graph = self._build_graph()
         self.metrics = AgentMetrics()
         self._investigation_records: dict[str, dict] = {}  # txn_id → full record
+        self._tool_evidence_cache: dict[str, dict] = {}
 
         # HITL components (lazy-initialized)
         from src.llm.hitl import (
@@ -230,25 +238,256 @@ class InvestigatorAgent:
         self._hitl_dispatcher = HITLDispatcher(config=self._hitl_cfg)
         self.hitl_metrics = HITLMetrics()
 
+    def _graph_context(self, gnn_score: float) -> dict:
+        """Expose optional GNN state without letting -1 become risk evidence."""
+        try:
+            score = float(gnn_score)
+        except (TypeError, ValueError):
+            score = -1.0
+        if score >= 0.0:
+            return {
+                "gnn_score": round(score, 4),
+                "graph_model_status": "available",
+            }
+        return {
+            "gnn_score": None,
+            "graph_model_status": "unavailable",
+            "graph_evidence_rule": (
+                "Do not cite -1/null GNN as risk. Use graph tool pattern "
+                "fields such as mule_network_detected, cycles_found, degrees, "
+                "and subgraph size."
+            ),
+        }
+
+    def _summarize_tool_result(self, result_or_name, payload: dict | None = None) -> dict:
+        """
+        Compact tool output before sending it back to a 4B model.
+
+        The full evidence remains in state for audit. The prompt receives only
+        fields that influence the verdict, preventing old ledger payloads from
+        crowding out the transaction evidence.
+        """
+        if isinstance(result_or_name, ToolResult):
+            tool_name = result_or_name.tool_name
+            success = result_or_name.success
+            data = result_or_name.data or {}
+            error = result_or_name.error
+        else:
+            tool_name = str(result_or_name)
+            raw = payload or {}
+            success = bool(raw.get("success", True))
+            data = raw.get("data", raw)
+            error = raw.get("error")
+
+        summary: dict[str, Any] = {
+            "tool_name": tool_name,
+            "success": success,
+        }
+        if error:
+            summary["error"] = error
+
+        if tool_name == "read_audit_logs":
+            entries = data.get("entries", []) if isinstance(data, dict) else []
+            summary["data"] = {
+                "entries_count": data.get("entries_count", len(entries)) if isinstance(data, dict) else len(entries),
+                "filter": data.get("filter", {}) if isinstance(data, dict) else {},
+                "recent_entries": [
+                    {
+                        "index": entry.get("index"),
+                        "timestamp": entry.get("timestamp"),
+                        "event_type": entry.get("event_type"),
+                        "block_hash": entry.get("block_hash"),
+                        "payload_keys": sorted((entry.get("payload") or {}).keys())[:12],
+                    }
+                    for entry in entries[:5]
+                    if isinstance(entry, dict)
+                ],
+            }
+            return summary
+
+        if tool_name == "query_graph_database" and isinstance(data, dict):
+            summary["data"] = {
+                "node_id": data.get("node_id"),
+                "found": data.get("found"),
+                "subgraph": data.get("subgraph", {}),
+                "connections": data.get("connections", {}),
+                "patterns": data.get("patterns", {}),
+                "message": data.get("message"),
+            }
+            return summary
+
+        if tool_name == "get_ml_feature_analysis" and isinstance(data, dict):
+            top_features = data.get("top_features", {})
+            summary["data"] = {
+                "txn_id": data.get("txn_id"),
+                "feature_dim": data.get("feature_dim"),
+                "top_features": dict(list(top_features.items())[:12])
+                if isinstance(top_features, dict)
+                else top_features,
+                "error": data.get("error"),
+            }
+            return summary
+
+        if tool_name == "check_node_freeze_status" and isinstance(data, dict):
+            summary["data"] = {
+                "node_id": data.get("node_id"),
+                "is_frozen": data.get("is_frozen"),
+                "freeze_details": data.get("freeze_details"),
+                "error": data.get("error"),
+            }
+            return summary
+
+        summary["data"] = data
+        return summary
+
+    def _summarize_evidence_for_prompt(self, evidence: dict) -> dict:
+        return {
+            name: self._summarize_tool_result(name, payload)
+            for name, payload in evidence.items()
+            if isinstance(payload, dict)
+        }
+
+    def _public_trace_content(self, content: str) -> str:
+        """
+        Convert a raw model response into an auditable dashboard trace.
+
+        Qwen responses may contain JSON verdict drafts, tool-call prose, or
+        longer analysis. Public trace entries must stay evidence-facing: no
+        hidden chain-of-thought and no speculative "AI said so" text.
+        """
+        text = str(content or "").strip()
+        if not text:
+            return ""
+
+        payload = text
+        if "```json" in payload:
+            payload = payload.split("```json", 1)[1].split("```", 1)[0]
+        elif payload.startswith("```") and "```" in payload[3:]:
+            payload = payload.split("```", 1)[1].split("```", 1)[0]
+
+        try:
+            parsed = json.loads(payload.strip())
+        except (TypeError, ValueError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            parts: list[str] = []
+            summary = parsed.get("reasoning_summary") or parsed.get("summary")
+            if summary:
+                parts.append(str(summary).strip())
+            verdict = parsed.get("verdict")
+            action = parsed.get("recommended_action")
+            if verdict or action:
+                parts.append(
+                    "Draft verdict: "
+                    + " / ".join(str(value).strip() for value in (verdict, action) if value)
+                )
+            evidence = parsed.get("evidence_cited")
+            if isinstance(evidence, list) and evidence:
+                parts.append("Evidence cited: " + ", ".join(str(item) for item in evidence[:4]))
+            if parts:
+                return " ".join(parts)[:500]
+
+        public_lines: list[str] = []
+        blocked_prefixes = (
+            "thought:",
+            "chain-of-thought",
+            "hidden reasoning",
+            "let me think",
+            "i think",
+        )
+        for raw_line in text.replace("\r", "\n").split("\n"):
+            line = raw_line.strip().strip("- ")
+            if not line or line.startswith("```"):
+                continue
+            lowered = line.lower()
+            if lowered.startswith(blocked_prefixes):
+                continue
+            public_lines.append(line)
+            if sum(len(item) for item in public_lines) >= 500:
+                break
+
+        public = " ".join(public_lines).strip()
+        return public[:500] if public else "Evidence-rationale update recorded."
+
+    def _evidence_from_tool_result_messages(self, messages: list[dict]) -> dict:
+        """
+        Reconstruct compact evidence from TOOL RESULTS messages if LangGraph
+        drops custom state fields before the final record is materialized.
+        """
+        evidence: dict[str, dict] = {}
+        for msg in messages:
+            content = msg.get("content", "") if isinstance(msg, dict) else ""
+            if "## TOOL RESULTS" not in content:
+                continue
+            payload = content
+            if "```json" in payload:
+                payload = payload.split("```json", 1)[1].split("```", 1)[0]
+            elif "```" in payload:
+                payload = payload.split("```", 1)[1].split("```", 1)[0]
+            try:
+                parsed = json.loads(payload.strip())
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            if not isinstance(parsed, list):
+                continue
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("tool_name")
+                if name:
+                    evidence[str(name)] = item
+        return evidence
+
+    async def _replay_tool_evidence(self, tool_calls: list[dict]) -> dict:
+        """
+        Last-resort evidence capture for already requested read-only tools.
+
+        This should rarely run; it protects investigation records if graph state
+        propagation loses the tool results after the LLM has requested tools.
+        """
+        replayable = {
+            "query_graph_database",
+            "get_ml_feature_analysis",
+            "read_audit_logs",
+            "check_node_freeze_status",
+        }
+        evidence: dict[str, dict] = {}
+        for raw in tool_calls:
+            if not isinstance(raw, dict):
+                continue
+            name = raw.get("name")
+            args = raw.get("arguments", {})
+            if name not in replayable:
+                continue
+            if not isinstance(args, dict):
+                args = {}
+            result = await self._tools.execute(ToolCall(name=name, arguments=args))
+            evidence[result.tool_name] = result.to_dict()
+        return evidence
+
     # ── LangGraph Node Functions ──────────────────────────────────────────
 
     def _think_node(self, state: AgentState) -> dict:
         """
-        THINK node: Chain-of-Thought reasoning step.
+        ANALYZE node: evidence-rationale step.
 
-        Calls the LLM with the full conversation history and the CoT
-        activation prefix. Parses the response for either tool calls
+        Calls the LLM with the full conversation history and the evidence
+        rationale prefix. Parses the response for either tool calls
         or a verdict signal.
         """
         iteration = state.get("iteration", 0)
         messages = list(state.get("messages", []))
         thinking_trace = list(state.get("thinking_trace", []))
-        evidence = state.get("evidence_collected", {})
+        txn_id = state.get("alert", {}).get("txn_id", "unknown")
+        evidence = state.get("evidence_collected", {}) or self._tool_evidence_cache.get(txn_id, {})
 
         # Build the prompt for this iteration
         if iteration == 0:
             # First iteration: investigation prompt
-            context = {"gnn_score": state.get("gnn_score", -1.0)}
+            context = self._graph_context(state.get("gnn_score", -1.0))
             try:
                 from src.intel import get_pre_fraud_intel_service
 
@@ -262,8 +501,12 @@ class InvestigatorAgent:
                 context=context,
             )
         else:
-            # Continuation: CoT prompt with accumulated evidence
-            evidence_summary = json.dumps(evidence, indent=2, default=str)
+            # Continuation: evidence-rationale prompt with accumulated evidence
+            evidence_summary = json.dumps(
+                self._summarize_evidence_for_prompt(evidence),
+                indent=2,
+                default=str,
+            )
             thinking_summary = "\n".join(
                 f"Step {i + 1}: {t}" for i, t in enumerate(thinking_trace)
             )
@@ -278,10 +521,13 @@ class InvestigatorAgent:
         content = response.get("content", "")
         tool_calls = self._parse_tool_calls(response)
 
-        # Update thinking trace
+        # Update public evidence trace. The raw assistant response remains in
+        # messages for JSON/tool parsing, but dashboard/HITL surfaces only see
+        # this bounded evidence-rationale text.
         if content:
-            thinking_trace.append(content[:500])  # cap per-step trace length
-            # Broadcast CoT step to dashboard (best-effort)
+            public_content = self._public_trace_content(content)
+            thinking_trace.append(public_content)
+            # Broadcast investigation trace step to dashboard (best-effort)
             try:
                 from src.api.events import EventBroadcaster
                 EventBroadcaster.get().publish_sync("agent", {
@@ -289,7 +535,7 @@ class InvestigatorAgent:
                     "txn_id": state.get("alert", {}).get("txn_id", "?"),
                     "iteration": iteration,
                     "max_iterations": state.get("max_iterations", 5),
-                    "content": content[:500],
+                    "content": public_content,
                     "elapsed_ms": round((time.perf_counter() - state.get("_t0", time.perf_counter())) * 1000, 1) if "_t0" in state else 0,
                 })
             except Exception:
@@ -299,7 +545,11 @@ class InvestigatorAgent:
 
         # Determine next status
         if tool_calls:
-            status = "calling_tools"
+            if iteration + 1 >= state.get("max_iterations", self._cfg.max_iterations):
+                status = "verdict"
+                tool_calls = []
+            else:
+                status = "calling_tools"
         elif self._has_verdict_signal(content):
             # Extract intermediate confidence and typology for HITL check
             interim = self._extract_verdict(content)
@@ -313,6 +563,7 @@ class InvestigatorAgent:
                     return {
                         "messages": messages,
                         "thinking_trace": thinking_trace,
+                        "evidence_collected": evidence,
                         "iteration": iteration + 1,
                         "status": status,
                         "intermediate_confidence": conf,
@@ -331,6 +582,7 @@ class InvestigatorAgent:
         return {
             "messages": messages,
             "thinking_trace": thinking_trace,
+            "evidence_collected": evidence,
             "iteration": iteration + 1,
             "status": status,
             "tool_calls_made": list(state.get("tool_calls_made", [])) + [
@@ -353,7 +605,11 @@ class InvestigatorAgent:
         messages = list(state.get("messages", []))
 
         if not pending:
-            return {"status": "thinking", "_pending_tool_calls": []}
+            return {
+                "evidence_collected": evidence,
+                "status": "thinking",
+                "_pending_tool_calls": [],
+            }
 
         # Execute tools (sync wrapper for LangGraph node)
         results: list[ToolResult] = []
@@ -376,6 +632,8 @@ class InvestigatorAgent:
         # Merge results into evidence
         for result in results:
             evidence[result.tool_name] = result.to_dict()
+        txn_id = state.get("alert", {}).get("txn_id", "unknown")
+        self._tool_evidence_cache[txn_id] = evidence
 
         # Broadcast tool calls to dashboard (best-effort)
         try:
@@ -388,15 +646,22 @@ class InvestigatorAgent:
                     "iteration": state.get("iteration", 0),
                     "tool_name": result.tool_name,
                     "success": result.success,
-                    "duration_ms": getattr(result, "duration_ms", 0),
-                    "output_summary": str(result.output)[:300] if hasattr(result, "output") else "",
+                    "duration_ms": result.data.get("_execution_ms", 0)
+                    if isinstance(result.data, dict)
+                    else 0,
+                    "output_summary": json.dumps(
+                        self._summarize_tool_result(result),
+                        default=str,
+                    )[:300],
                 })
         except Exception:
             pass
 
         # Add tool results as a message for the LLM context
         tool_summary = json.dumps(
-            [r.to_dict() for r in results], indent=2, default=str,
+            [self._summarize_tool_result(r) for r in results],
+            indent=2,
+            default=str,
         )
         messages.append({
             "role": "user",
@@ -410,6 +675,120 @@ class InvestigatorAgent:
             "_pending_tool_calls": [],
         }
 
+    def _evidence_fallback_verdict(self, state: AgentState, reason: str) -> dict:
+        """
+        Deterministic fallback used only when Qwen does not return parseable JSON.
+
+        It is deliberately marked as fallback so dashboards and audit consumers
+        do not confuse it with a direct Qwen confidence value.
+        """
+        alert = state.get("alert", {})
+        txn_id = alert.get("txn_id", "unknown")
+        evidence = state.get("evidence_collected", {}) or self._tool_evidence_cache.get(txn_id, {})
+
+        def as_float(value, default=0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        ml_score = as_float(alert.get("risk_score"), as_float(state.get("ml_score"), 0.0))
+        threshold = as_float(alert.get("threshold"), 0.0)
+        top_features = alert.get("top_features", {})
+        if not isinstance(top_features, dict):
+            top_features = {}
+
+        graph_payload = evidence.get("query_graph_database", {})
+        graph_data = graph_payload.get("data", {}) if isinstance(graph_payload, dict) else {}
+        patterns = graph_data.get("patterns", {}) if isinstance(graph_data, dict) else {}
+        connections = graph_data.get("connections", {}) if isinstance(graph_data, dict) else {}
+        subgraph = graph_data.get("subgraph", {}) if isinstance(graph_data, dict) else {}
+
+        mule_detected = bool(patterns.get("mule_network_detected"))
+        cycles_found = int(as_float(patterns.get("cycles_found"), 0))
+        distinct_senders = int(as_float(connections.get("distinct_senders"), 0))
+        in_degree = int(as_float(connections.get("in_degree"), 0))
+        subgraph_edges = int(as_float(subgraph.get("edges"), 0))
+
+        feature_items = sorted(
+            top_features.items(),
+            key=lambda item: abs(as_float(item[1], 0.0)),
+            reverse=True,
+        )
+        feature_names = {str(name).lower() for name, _ in feature_items[:8]}
+        velocity_signal = any("vel_" in name or "velocity" in name for name in feature_names)
+        geo_signal = any("geo" in name for name in feature_names)
+        text_signal = any("txt_" in name or "edit" in name for name in feature_names)
+
+        graph_signal = mule_detected or cycles_found > 0 or distinct_senders >= 5 or in_degree >= 5
+        behavior_signal = velocity_signal or geo_signal or text_signal
+
+        if mule_detected or distinct_senders >= 5 or in_degree >= 5:
+            typology = "mule_network"
+        elif cycles_found > 0:
+            typology = "round_tripping"
+        elif velocity_signal and ml_score >= 0.85:
+            typology = "profile_behavior_mismatch"
+        else:
+            typology = None
+
+        evidence_strength = 0.0
+        if graph_signal:
+            evidence_strength += 0.12
+        if behavior_signal:
+            evidence_strength += 0.08
+        if subgraph_edges >= 10:
+            evidence_strength += 0.03
+
+        if ml_score >= max(threshold, 0.95) and (graph_signal or behavior_signal):
+            verdict = "FRAUDULENT"
+            action = "FREEZE"
+            confidence = min(0.91, max(0.82, ml_score * 0.78 + evidence_strength))
+        elif ml_score >= max(threshold, 0.70):
+            verdict = "SUSPICIOUS"
+            action = "ESCALATE"
+            confidence = min(0.79, max(0.62, ml_score * 0.70 + evidence_strength))
+        else:
+            verdict = "LEGITIMATE"
+            action = "MONITOR"
+            confidence = min(0.72, max(0.55, 1.0 - ml_score))
+
+        evidence_cited = [
+            f"ML risk score: {ml_score:.4f}",
+        ]
+        if threshold > 0:
+            evidence_cited.append(f"Dynamic threshold: {threshold:.4f}")
+        if mule_detected:
+            evidence_cited.append("Graph pattern: mule_network_detected=true")
+        if cycles_found:
+            evidence_cited.append(f"Graph pattern: cycles_found={cycles_found}")
+        if distinct_senders:
+            evidence_cited.append(f"Graph distinct_senders: {distinct_senders}")
+        for name, value in feature_items[:4]:
+            evidence_cited.append(f"{name}: {value}")
+
+        graph_summary = (
+            f"graph signals mule={mule_detected}, cycles={cycles_found}, "
+            f"distinct_senders={distinct_senders}, subgraph_edges={subgraph_edges}"
+        )
+        reasoning = (
+            f"Qwen did not return parseable verdict JSON ({reason}); the system "
+            f"used bounded ML and graph evidence for an auditable fallback. "
+            f"Risk score {ml_score:.4f} with {graph_summary} supports "
+            f"{verdict.lower()} handling."
+        )
+
+        return {
+            "verdict": verdict,
+            "confidence": round(confidence, 4),
+            "fraud_typology": typology,
+            "reasoning_summary": reasoning,
+            "evidence_cited": evidence_cited,
+            "recommended_action": action,
+            "confidence_source": "deterministic_evidence_fallback",
+            "llm_parse_status": reason,
+        }
+
     def _verdict_node(self, state: AgentState) -> dict:
         """
         VERDICT node: Extract final structured verdict.
@@ -420,6 +799,11 @@ class InvestigatorAgent:
         """
         messages = list(state.get("messages", []))
         thinking_trace = state.get("thinking_trace", [])
+        txn_id = state.get("alert", {}).get("txn_id", "unknown")
+        evidence = (
+            state.get("evidence_collected", {})
+            or self._tool_evidence_cache.get(txn_id, {})
+        )
 
         # Try to extract verdict from the last assistant message
         last_content = ""
@@ -429,33 +813,41 @@ class InvestigatorAgent:
                 break
 
         verdict = self._extract_verdict(last_content)
+        parse_status = "parsed_from_reasoning"
 
         if verdict is None:
             # Force verdict extraction
             full_reasoning = "\n".join(
                 f"Step {i + 1}: {t}" for i, t in enumerate(thinking_trace)
             )
-            verdict_prompt = build_verdict_prompt(full_reasoning)
+            verdict_prompt = build_verdict_prompt(
+                full_reasoning,
+                alert_payload=state.get("alert", {}),
+                evidence_summary=self._summarize_evidence_for_prompt(
+                    evidence,
+                ),
+            )
             messages.append({"role": "user", "content": verdict_prompt})
 
             response = self._call_llm(messages, tools=None)
             content = response.get("content", "")
             messages.append({"role": "assistant", "content": content})
             verdict = self._extract_verdict(content)
+            parse_status = "parsed_from_forced_json"
 
         # Fallback verdict if extraction still fails
         if verdict is None:
-            verdict = {
-                "verdict": "SUSPICIOUS",
-                "confidence": 0.5,
-                "fraud_typology": None,
-                "reasoning_summary": "Unable to reach definitive conclusion within iteration limit.",
-                "evidence_cited": [],
-                "recommended_action": "ESCALATE",
-            }
+            verdict = self._evidence_fallback_verdict(
+                state,
+                "fallback_unparseable_json",
+            )
+        else:
+            verdict.setdefault("confidence_source", "qwen_json")
+            verdict.setdefault("llm_parse_status", parse_status)
 
         return {
             "messages": messages,
+            "evidence_collected": evidence,
             "verdict": verdict,
             "status": "done",
         }
@@ -762,6 +1154,8 @@ class InvestigatorAgent:
             "hitl_dispatched": False,
             "intermediate_confidence": 0.0,
             "detected_typology": None,
+            "_pending_tool_calls": [],
+            "_t0": t0,
         }
 
         # Run the LangGraph state machine in a thread — keeps the asyncio
@@ -830,6 +1224,21 @@ class InvestigatorAgent:
                     f"[{finding.get('confidence', 'LOW')}]"
                 )
 
+        confidence_source = verdict_dict.get("confidence_source", "qwen_json")
+        llm_parse_status = verdict_dict.get("llm_parse_status", "parsed")
+        recommended_action = verdict_dict.get("recommended_action", "ESCALATE")
+        has_cited_evidence = any(str(item).strip() for item in evidence_cited)
+        if raw_verdict in {"FRAUDULENT", "SUSPICIOUS"} and not has_cited_evidence:
+            raw_verdict = "SUSPICIOUS"
+            adjusted_confidence = min(adjusted_confidence, 0.69)
+            recommended_action = "ESCALATE"
+            confidence_source = "qwen_json_evidence_capped"
+            llm_parse_status = f"{llm_parse_status}|missing_evidence_capped"
+            reasoning += (
+                " Qwen did not cite specific evidence, so the decision was capped "
+                "to suspicious analyst review instead of autonomous enforcement."
+            )
+
         verdict = VerdictPayload(
             txn_id=alert_dict.get("txn_id", "unknown"),
             node_id=alert_dict.get("sender_id", "unknown"),
@@ -838,10 +1247,16 @@ class InvestigatorAgent:
             fraud_typology=verdict_dict.get("fraud_typology"),
             reasoning_summary=reasoning,
             evidence_cited=evidence_cited,
-            recommended_action=verdict_dict.get("recommended_action", "ESCALATE"),
+            recommended_action=recommended_action,
             thinking_steps=final_state.get("iteration", 0),
             tools_used=tool_names,
             total_duration_ms=elapsed,
+            confidence_source=confidence_source,
+            llm_parse_status=llm_parse_status,
+            model_used=(
+                getattr(self._llm, "_resolved_model", None)
+                or getattr(self._llm, "_model", None)
+            ),
         )
 
         # Update metrics
@@ -885,6 +1300,9 @@ class InvestigatorAgent:
                 "thinking_steps": verdict.thinking_steps,
                 "tools_used": verdict.tools_used,
                 "total_duration_ms": verdict.total_duration_ms,
+                "confidence_source": verdict.confidence_source,
+                "llm_parse_status": verdict.llm_parse_status,
+                "model_used": verdict.model_used,
                 "nlu_findings_count": nlu_result.get("findings_count", 0) if nlu_result else 0,
                 "nlu_escalated": nlu_escalated,
             })
@@ -913,6 +1331,17 @@ class InvestigatorAgent:
             verdict.thinking_steps, len(tool_names), elapsed,
         )
 
+        cached_evidence = self._tool_evidence_cache.pop(verdict.txn_id, {})
+        evidence_for_record = (
+            final_state.get("evidence_collected", {})
+            or cached_evidence
+            or self._evidence_from_tool_result_messages(final_state.get("messages", []))
+        )
+        if not evidence_for_record and final_state.get("tool_calls_made"):
+            evidence_for_record = await self._replay_tool_evidence(
+                final_state.get("tool_calls_made", [])
+            )
+
         # Store investigation record for API retrieval
         self._investigation_records[verdict.txn_id] = {
             "txn_id": verdict.txn_id,
@@ -922,7 +1351,7 @@ class InvestigatorAgent:
             "thinking_trace": final_state.get("thinking_trace", []),
             "tool_calls": final_state.get("tool_calls_made", []),
             "evidence_collected": {
-                k: v for k, v in final_state.get("evidence_collected", {}).items()
+                k: v for k, v in evidence_for_record.items()
             },
             "nlu_findings": nlu_result if nlu_result else None,
             "nlu_escalated": nlu_escalated,
@@ -967,62 +1396,38 @@ class InvestigatorAgent:
 
         try:
             from config.settings import OLLAMA_CFG
-            from config.vram_manager import assistant_mode
-            import httpx
-
-            model = self._llm._ensure_model_available()
-
-            payload: dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "think": False,
-                "options": {
-                    "temperature": self._cfg.thinking_temperature,
-                    "num_predict": self._cfg.max_thinking_tokens,
-                    "num_ctx": OLLAMA_CFG.num_ctx,
-                },
+            last_user = next(
+                (
+                    str(message.get("content", ""))
+                    for message in reversed(messages)
+                    if message.get("role") == "user"
+                ),
+                "",
+            )
+            is_verdict_request = tools is None and "FINAL VERDICT REQUIRED" in last_user
+            temperature = (
+                OLLAMA_CFG.verdict_temperature
+                if is_verdict_request
+                else self._cfg.thinking_temperature
+            )
+            max_tokens = (
+                min(self._cfg.max_verdict_tokens, OLLAMA_CFG.agent_max_tokens)
+                if is_verdict_request
+                else min(self._cfg.max_thinking_tokens, OLLAMA_CFG.agent_max_tokens)
+            )
+            result = self._llm.chat(
+                messages,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                num_ctx=OLLAMA_CFG.agent_num_ctx,
+                timeout=OLLAMA_CFG.request_timeout_sec,
+                response_format=VERDICT_SCHEMA if is_verdict_request else None,
+            )
+            return {
+                "content": result.get("content", "") or "",
+                "tool_calls": result.get("tool_calls", []),
             }
-
-            if tools:
-                payload["tools"] = tools
-
-            with assistant_mode():
-                response = httpx.post(
-                    f"{OLLAMA_CFG.base_url}/api/chat",
-                    json=payload,
-                    timeout=120.0,
-                )
-                response.raise_for_status()
-                response_data = response.json()
-
-            message = response_data.get("message", {}) if isinstance(response_data, dict) else {}
-            content = message.get("content", "") if isinstance(message, dict) else ""
-            raw_tool_calls = message.get("tool_calls", []) if isinstance(message, dict) else []
-
-            result: dict[str, Any] = {
-                "content": content or "",
-                "tool_calls": [],
-            }
-
-            for tc in raw_tool_calls:
-                if not isinstance(tc, dict):
-                    continue
-                function_data = tc.get("function", {})
-                if not isinstance(function_data, dict):
-                    continue
-                arguments = function_data.get("arguments", {})
-                if isinstance(arguments, str):
-                    try:
-                        arguments = json.loads(arguments)
-                    except json.JSONDecodeError:
-                        arguments = {}
-                result["tool_calls"].append({
-                    "name": function_data.get("name", ""),
-                    "arguments": arguments,
-                })
-
-            return result
 
         except Exception as exc:
             logger.error("LLM call failed: %s", exc)
@@ -1048,8 +1453,97 @@ class InvestigatorAgent:
         """Check if the LLM response contains a verdict JSON object."""
         if not content:
             return False
-        verdict_markers = ['"verdict"', '"FRAUDULENT"', '"SUSPICIOUS"', '"LEGITIMATE"']
+        verdict_markers = [
+            '"verdict"',
+            "verdict:",
+            "FINAL_VERDICT",
+            '"FRAUDULENT"',
+            '"SUSPICIOUS"',
+            '"LEGITIMATE"',
+            "FRAUDULENT",
+            "SUSPICIOUS",
+            "LEGITIMATE",
+        ]
         return any(marker in content for marker in verdict_markers)
+
+    def _coerce_confidence(self, value: Any) -> float:
+        """Parse confidence from numeric, percent-string, or coarse labels."""
+        if isinstance(value, str):
+            raw = value.strip().lower()
+            label_map = {"high": 0.85, "medium": 0.65, "low": 0.4}
+            if raw in label_map:
+                return label_map[raw]
+            raw = raw.rstrip("%")
+            confidence = float(raw)
+        else:
+            confidence = float(value)
+        if confidence > 1.0 and confidence <= 100.0:
+            confidence /= 100.0
+        return max(0.0, min(1.0, confidence))
+
+    def _normalize_verdict_dict(self, parsed: dict) -> dict | None:
+        """Normalize common Qwen JSON variants into the audit schema."""
+        if not isinstance(parsed, dict):
+            return None
+
+        for key in ("final_verdict", "verdict_payload", "decision"):
+            nested = parsed.get(key)
+            if isinstance(nested, dict):
+                parsed = nested
+                break
+
+        raw_verdict = str(parsed.get("verdict", parsed.get("classification", ""))).upper()
+        if raw_verdict not in ("FRAUDULENT", "SUSPICIOUS", "LEGITIMATE"):
+            return None
+
+        raw_confidence = parsed.get(
+            "confidence",
+            parsed.get("confidence_score", parsed.get("certainty", None)),
+        )
+        if raw_confidence is None:
+            return None
+        confidence = self._coerce_confidence(raw_confidence)
+
+        action = str(
+            parsed.get(
+                "recommended_action",
+                parsed.get("action", parsed.get("recommendation", "ESCALATE")),
+            )
+        ).upper()
+        if "FREEZE" in action or "BLOCK" in action:
+            action = "FREEZE"
+        elif "CLEAR" in action or "APPROVE" in action:
+            action = "CLEAR"
+        elif "MONITOR" in action:
+            action = "MONITOR"
+        elif "ESCALATE" in action or "REVIEW" in action:
+            action = "ESCALATE"
+        else:
+            action = "ESCALATE"
+
+        evidence = parsed.get("evidence_cited", parsed.get("evidence", []))
+        if isinstance(evidence, str):
+            evidence = [evidence]
+        elif not isinstance(evidence, list):
+            evidence = []
+
+        typology = parsed.get("fraud_typology", parsed.get("typology"))
+        if raw_verdict == "LEGITIMATE":
+            typology = None
+
+        return {
+            "verdict": raw_verdict,
+            "confidence": confidence,
+            "fraud_typology": typology,
+            "reasoning_summary": str(
+                parsed.get(
+                    "reasoning_summary",
+                    parsed.get("reasoning", parsed.get("summary", "No summary provided.")),
+                )
+            ),
+            "evidence_cited": [str(item) for item in evidence[:10]],
+            "recommended_action": action,
+        }
 
     def _extract_verdict(self, content: str) -> dict | None:
         """
@@ -1083,37 +1577,37 @@ class InvestigatorAgent:
                     json_candidates.append(content[start:i + 1])
                     start = -1
 
-        # Try to parse each candidate
-        required_keys = {"verdict", "confidence", "recommended_action"}
-
         for candidate in json_candidates:
             try:
                 parsed = json.loads(candidate.strip())
-                if isinstance(parsed, dict) and required_keys.issubset(parsed.keys()):
-                    # Normalize and validate
-                    verdict = parsed.get("verdict", "SUSPICIOUS")
-                    if verdict not in ("FRAUDULENT", "SUSPICIOUS", "LEGITIMATE"):
-                        verdict = "SUSPICIOUS"
-
-                    confidence = float(parsed.get("confidence", 0.5))
-                    confidence = max(0.0, min(1.0, confidence))
-
-                    action = parsed.get("recommended_action", "ESCALATE")
-                    if action not in ("FREEZE", "ESCALATE", "MONITOR", "CLEAR"):
-                        action = "ESCALATE"
-
-                    return {
-                        "verdict": verdict,
-                        "confidence": confidence,
-                        "fraud_typology": parsed.get("fraud_typology"),
-                        "reasoning_summary": parsed.get(
-                            "reasoning_summary", "No summary provided."
-                        ),
-                        "evidence_cited": parsed.get("evidence_cited", []),
-                        "recommended_action": action,
-                    }
+                if isinstance(parsed, list):
+                    parsed = next((item for item in parsed if isinstance(item, dict)), None)
+                normalized = self._normalize_verdict_dict(parsed)
+                if normalized is not None:
+                    return normalized
             except (json.JSONDecodeError, ValueError, TypeError):
                 continue
+
+        # Last resort for Markdown/plain-text answers that include all fields.
+        verdict_match = re.search(r"\b(FRAUDULENT|SUSPICIOUS|LEGITIMATE)\b", content, re.I)
+        confidence_match = re.search(
+            r"confidence(?:\s*score)?\s*[:=-]\s*([0-9]+(?:\.[0-9]+)?%?)",
+            content,
+            re.I,
+        )
+        action_match = re.search(r"\b(FREEZE|ESCALATE|MONITOR|CLEAR)\b", content, re.I)
+        if verdict_match and confidence_match and action_match:
+            try:
+                return {
+                    "verdict": verdict_match.group(1).upper(),
+                    "confidence": self._coerce_confidence(confidence_match.group(1)),
+                    "fraud_typology": None,
+                    "reasoning_summary": content[:500],
+                    "evidence_cited": [],
+                    "recommended_action": action_match.group(1).upper(),
+                }
+            except (ValueError, TypeError):
+                return None
 
         return None
 
@@ -1206,7 +1700,7 @@ class InvestigatorAgent:
                 "max_iterations": self._cfg.max_iterations,
                 "thinking_temperature": self._cfg.thinking_temperature,
                 "verdict_temperature": self._cfg.verdict_temperature,
-                "enable_cot_trace": self._cfg.enable_cot_trace,
+                "enable_investigation_trace": self._cfg.enable_cot_trace,
             },
             "tools_available": [
                 s["function"]["name"] for s in TOOL_SCHEMAS

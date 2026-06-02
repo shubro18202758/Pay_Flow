@@ -264,6 +264,10 @@ class TransactionGraph:
                         "fraud_label_name": fraud_label_names.get(fl, "NONE"),
                         "timestamp": txn.timestamp,
                         "device_fingerprint": txn.device_fingerprint,
+                        "sender_geo_lat": txn.sender_geo_lat,
+                        "sender_geo_lon": txn.sender_geo_lon,
+                        "receiver_geo_lat": txn.receiver_geo_lat,
+                        "receiver_geo_lon": txn.receiver_geo_lon,
                     }})
                 await EventBroadcaster.get().publish("graph", {
                     "type": "batch_update",
@@ -333,6 +337,10 @@ class TransactionGraph:
                 channel=int(txn.channel),
                 fraud_label=int(txn.fraud_label),
                 device_fingerprint=txn.device_fingerprint,
+                sender_geo_lat=txn.sender_geo_lat,
+                sender_geo_lon=txn.sender_geo_lon,
+                receiver_geo_lat=txn.receiver_geo_lat,
+                receiver_geo_lon=txn.receiver_geo_lon,
             )
 
         self.metrics.transactions_added += len(transactions)

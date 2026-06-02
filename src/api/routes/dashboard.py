@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from src.api.events import EventBroadcaster
 
@@ -48,11 +48,10 @@ async def dashboard_page(request: Request):
     return templates.TemplateResponse("dashboard.html", {"request": request})
 
 
-@router.get("/prototype", response_class=HTMLResponse)
-async def prototype_page(request: Request):
-    """Serve the lightweight Cytoscape prototype dashboard."""
-    templates = request.app.state.templates
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+@router.get("/prototype")
+async def prototype_page():
+    """Redirect the retired lightweight dashboard route to the live PayFlow app."""
+    return RedirectResponse(url="/app?tab=overview", status_code=307)
 
 
 # ── REST: Initial Data Hydration ──────────────────────────────────────────────
@@ -66,9 +65,10 @@ async def full_snapshot(request: Request):
     return orch.full_snapshot()
 
 
-@router.get("/api/v1/readiness/ps3")
+@router.get("/api/v1/readiness/fund-flow")
+@router.get("/api/v1/readiness/ps3", include_in_schema=False)
 async def ps3_readiness(request: Request):
-    """Judge-facing readiness scorecard for iDEA 2.0 PS3."""
+    """Readiness scorecard for the Union Bank fund-flow case workflow."""
     from src.api.ps3_case import build_ps3_readiness
 
     orch = request.app.state.orchestrator
@@ -182,6 +182,10 @@ async def graph_topology(
                 "fraud_label_name": fraud_label_names.get(fl, "NONE"),
                 "timestamp": data.get("timestamp", 0),
                 "device_fingerprint": data.get("device_fingerprint", ""),
+                "sender_geo_lat": data.get("sender_geo_lat", 0.0),
+                "sender_geo_lon": data.get("sender_geo_lon", 0.0),
+                "receiver_geo_lat": data.get("receiver_geo_lat", 0.0),
+                "receiver_geo_lon": data.get("receiver_geo_lon", 0.0),
             }
         })
 
@@ -233,7 +237,9 @@ async def agent_verdicts(
 async def agent_investigation(request: Request, txn_id: str):
     """Full investigation record for a specific transaction."""
     orch = request.app.state.orchestrator
-    agent = getattr(orch, "_investigator", None) if orch else None
+    agent = None
+    if orch:
+        agent = getattr(orch, "_agent", None) or getattr(orch, "_investigator", None)
     if agent is None:
         return {"error": "Investigator agent not initialized", "txn_id": txn_id}
 
@@ -284,6 +290,7 @@ ALL_CHANNELS = [
     "intel",
     "event_lab",
     "countermeasure",
+    "analyst",
     "transaction_decision",
 ]
 

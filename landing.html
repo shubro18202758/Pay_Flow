@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Union Bank PayFlow | PS3 Fund-Flow Fraud Intelligence</title>
+  <title>Union Bank PayFlow | Fund-Flow Fraud Intelligence</title>
   <style>
     :root {
-      --ubi-red: #ed1c24;
-      --ubi-red-dark: #bd121a;
-      --ubi-blue: #005ca8;
-      --ubi-blue-dark: #004b8d;
+      --ubi-red: #DA251C;
+      --ubi-red-dark: #b51d16;
+      --ubi-blue: #00579C;
+      --ubi-blue-dark: #00477f;
       --ubi-sky: #dff2ff;
       --ubi-soft: #f4f8fc;
       --ubi-line: #d7e3f1;
@@ -27,13 +27,20 @@
       height: 34px;
       display: flex;
       align-items: center;
-      justify-content: flex-end;
+      justify-content: space-between;
       gap: 10px;
       padding: 0 32px;
       border-bottom: 1px solid #d9d9d9;
       font-size: 14px;
       color: #202020;
     }
+    .access a {
+      color: var(--ubi-blue);
+      font-weight: 700;
+      text-decoration: underline;
+      text-underline-offset: 4px;
+    }
+    .access-note { color: var(--ubi-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 
     .header {
       height: 86px;
@@ -121,7 +128,7 @@
     .hero {
       min-height: clamp(500px, calc(100vh - 170px), 575px);
       background:
-        linear-gradient(102deg, rgba(255, 247, 170, 0.95) 0 31%, rgba(224, 244, 255, 0.98) 31% 100%);
+        linear-gradient(102deg, rgba(218, 37, 28, 0.08) 0 31%, rgba(231, 240, 251, 0.98) 31% 100%);
       display: grid;
       grid-template-columns: minmax(360px, .95fr) minmax(420px, 1.05fr);
       gap: clamp(28px, 4vw, 54px);
@@ -136,64 +143,34 @@
       position: absolute;
       inset: 0;
       pointer-events: none;
-      background:
-        radial-gradient(circle at 15% 58%, rgba(255, 255, 255, .38) 0 9rem, transparent 9.1rem),
-        radial-gradient(circle at 84% 14%, rgba(255, 255, 255, .28) 0 13rem, transparent 13.1rem);
+      background: linear-gradient(90deg, rgba(255, 255, 255, .38), rgba(255, 255, 255, 0));
     }
 
     .hero-art {
       min-height: 335px;
       max-width: 640px;
-      border-radius: 18px;
+      border-radius: 8px;
       position: relative;
-      background:
-        linear-gradient(150deg, rgba(255,255,255,.75), rgba(255,255,255,.15)),
-        radial-gradient(circle at 76% 24%, rgba(237,28,36,.18), transparent 8rem),
-        radial-gradient(circle at 30% 74%, rgba(0,92,168,.18), transparent 10rem);
-      border: 1px solid rgba(0, 92, 168, .16);
+      background: linear-gradient(150deg, rgba(255,255,255,.96), rgba(247,251,255,.9));
+      border: 1px solid rgba(0, 87, 156, .18);
       box-shadow: 0 18px 46px rgba(0, 92, 168, .09);
       z-index: 1;
-    }
-    .screen {
-      position: absolute;
-      left: 10%;
-      top: 18%;
-      width: 54%;
-      height: 48%;
-      background: #fff;
-      border: 5px solid #102b4a;
-      border-radius: 12px;
-      box-shadow: 18px 24px 0 rgba(0, 92, 168, .11);
       padding: 24px;
     }
-    .screen div { height: 14px; margin-bottom: 14px; border-radius: 999px; background: #dbe7f4; }
-    .screen div:nth-child(2) { width: 78%; background: #c8dced; }
-    .screen div:nth-child(3) { width: 56%; background: #f6ccd0; }
-    .person {
-      position: absolute;
-      right: 15%;
-      bottom: 11%;
-      width: 118px;
-      height: 190px;
-      border-radius: 70px 70px 14px 14px;
-      background: linear-gradient(#1a3b63 0 47%, var(--ubi-blue) 47% 100%);
-      box-shadow: -40px 36px 0 #f5b28e;
-    }
-    .coin {
-      position: absolute;
-      width: 48px;
-      height: 48px;
-      border-radius: 50%;
-      background: #ffce4a;
-      display: grid;
-      place-items: center;
-      color: #9a6200;
-      font-weight: 800;
-      box-shadow: 0 8px 0 rgba(156, 96, 0, .12);
-    }
-    .coin.one { right: 28%; top: 19%; }
-    .coin.two { right: 8%; top: 39%; }
-    .coin.three { left: 14%; bottom: 14%; }
+    .ops-panel { height: 100%; display: flex; flex-direction: column; gap: 14px; }
+    .ops-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .ops-title { color: var(--ubi-blue); font-size: 14px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
+    .ops-state { display: inline-flex; align-items: center; gap: 8px; border: 1px solid rgba(0,87,156,.24); border-radius: 999px; padding: 7px 11px; color: var(--ubi-blue); background: #fff; font-size: 12px; font-weight: 800; }
+    .ops-state::before { content: ""; width: 8px; height: 8px; border-radius: 999px; background: #f5b400; }
+    .ops-state.ready::before { background: #1f9d55; }
+    .ops-state.warn::before { background: var(--ubi-red); }
+    .ops-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .ops-card { background: #fff; border: 1px solid var(--ubi-line); border-radius: 8px; padding: 14px; box-shadow: 0 6px 18px rgba(0,87,156,.07); min-height: 82px; }
+    .ops-label { color: var(--ubi-muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .ops-value { margin-top: 8px; color: var(--ubi-ink); font-size: 26px; line-height: 1; font-weight: 900; font-variant-numeric: tabular-nums; }
+    .ops-sub { margin-top: 6px; color: var(--ubi-muted); font-size: 12px; line-height: 1.35; }
+    .ops-pipeline { margin-top: auto; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+    .ops-step { border: 1px solid rgba(0,87,156,.2); background: #f7fbff; border-radius: 6px; padding: 10px 8px; color: var(--ubi-blue); font-size: 11px; font-weight: 800; text-align: center; }
 
     .hero-copy { position: relative; z-index: 1; }
 
@@ -220,7 +197,7 @@
       justify-content: center;
       min-height: 46px;
       padding: 0 24px;
-      border-radius: 10px;
+      border-radius: 8px;
       font-weight: 800;
       border: 2px solid var(--ubi-blue);
     }
@@ -243,7 +220,7 @@
       text-align: center;
       color: var(--ubi-blue);
       border: 2px solid var(--ubi-blue);
-      border-radius: 12px;
+      border-radius: 8px;
       background: rgba(255,255,255,.8);
       font-weight: 700;
       font-size: 15px;
@@ -259,7 +236,7 @@
     }
     .card {
       background: #fff;
-      border-radius: 26px 26px 8px 26px;
+      border-radius: 8px;
       min-height: 132px;
       padding: 24px 26px;
       box-shadow: var(--shadow);
@@ -273,7 +250,7 @@
     .info {
       background: #fff;
       border: 1px solid var(--ubi-line);
-      border-radius: 16px;
+      border-radius: 8px;
       padding: 24px;
       box-shadow: 0 8px 26px rgba(0,92,168,.09);
     }
@@ -298,7 +275,8 @@
 </head>
 <body>
   <div class="access">
-    <span>Skip to main content</span><span>|</span><span>Screen reader</span><span>|</span><span>A-</span><span>A</span><span>A+</span><span>|</span><span>Hindi</span>
+    <a href="#main-content">Skip to main content</a>
+    <span class="access-note">Backend-synced PayFlow fraud intelligence workspace</span>
   </div>
 
   <header class="header">
@@ -310,10 +288,9 @@
       </span>
     </a>
     <div class="header-actions">
-      <span>Contact Us</span>
       <a class="ib" href="/app?tab=pre-fraud-intel">PayFlow Portal</a>
       <a class="search" href="/docs">API Docs <b>⌕</b></a>
-      <b>PS3 PoC</b>
+      <b>Fraud Intelligence</b>
     </div>
   </header>
 
@@ -327,23 +304,53 @@
     </nav>
   </div>
 
-  <main>
+  <main id="main-content" tabindex="-1">
     <section class="hero">
       <div class="hero-art" aria-hidden="true">
-        <div class="screen"><div></div><div></div><div></div><div></div></div>
-        <div class="person"></div>
-        <div class="coin one">₹</div>
-        <div class="coin two">₹</div>
-        <div class="coin three">₹</div>
+        <div class="ops-panel">
+          <div class="ops-head">
+            <div class="ops-title">Live PayFlow Operations</div>
+            <div id="live-state" class="ops-state">Connecting</div>
+          </div>
+          <div class="ops-grid">
+            <div class="ops-card">
+              <div class="ops-label">Events Ingested</div>
+              <div id="metric-events" class="ops-value">--</div>
+              <div class="ops-sub">Streaming ingest plus feature pipeline</div>
+            </div>
+            <div class="ops-card">
+              <div class="ops-label">Alerts Routed</div>
+              <div id="metric-alerts" class="ops-value">--</div>
+              <div class="ops-sub">ML, graph, rules, and circuit breaker</div>
+            </div>
+            <div class="ops-card">
+              <div class="ops-label">Analyst Queue</div>
+              <div id="metric-hitl" class="ops-value">--</div>
+              <div class="ops-sub">Pending human review cases</div>
+            </div>
+            <div class="ops-card">
+              <div class="ops-label">Qwen 3.5 4B</div>
+              <div id="metric-qwen" class="ops-value">--</div>
+              <div class="ops-sub">Bounded case narrative copilot</div>
+            </div>
+          </div>
+          <div class="ops-pipeline" aria-label="Backend processing stages">
+            <div class="ops-step">Ingest</div>
+            <div class="ops-step">Features</div>
+            <div class="ops-step">ML</div>
+            <div class="ops-step">Rules</div>
+            <div class="ops-step">Action</div>
+          </div>
+        </div>
       </div>
       <div class="hero-copy">
         <h1>Tracking of Funds <span>within Bank for Fraud Detection</span></h1>
         <p>
-          PayFlow is a Union Bank-ready iDEA 2.0 PS3 prototype that traces the end-to-end movement of funds, detects layering, round-tripping, structuring, dormant activation, and profile mismatch, then generates FIU-ready evidence packages.
+          PayFlow traces end-to-end fund movement, detects layering, round-tripping, structuring, dormant activation, and profile mismatch, then carries the case through analyst-gated action and FIU-ready evidence packaging.
         </p>
         <div class="cta-row">
-          <a class="btn primary" href="/app?tab=pre-fraud-intel">Open PayFlow Prototype</a>
-          <a class="btn secondary" href="/app?tab=investigations&action=launch_ps3_case">Launch PS3 Case</a>
+          <a class="btn primary" href="/app?tab=pre-fraud-intel">Open PayFlow Platform</a>
+          <a class="btn secondary" href="/app?tab=investigations&action=launch_fund_flow_case">Launch Fund-Flow Case</a>
         </div>
       </div>
       <aside class="quick" aria-label="Quick links">
@@ -365,7 +372,7 @@
 
     <section class="section">
       <h2>DIGITAL BANKING FRAUD INTELLIGENCE SERVICES</h2>
-      <p>Preventive intelligence, graph analytics, ML detection, bounded Qwen copilot context, and cryptographic audit in one localhost PoC.</p>
+      <p>Preventive intelligence, graph analytics, ML detection, bounded Qwen copilot context, analyst workflow, and cryptographic audit in one backend-synced platform.</p>
       <div class="section-grid">
         <div class="info"><b>Preventive Signal Desk</b><p>OSINT/SOCMINT-style public signals are scored by source tier, India relevance, and banking channel impact before fraud cases peak internally.</p></div>
         <div class="info"><b>Investigator Journey</b><p>Judges can move from external warning to traced fund path, involved accounts, suspicious indicators, and analyst next steps.</p></div>
@@ -375,7 +382,68 @@
   </main>
 
   <footer>
-    PayFlow PS3 PoC for iDEA 2.0 | Synthetic data only | Local-first prototype | Union Bank visual style inspired by the official public portal.
+    PayFlow Fraud Intelligence | Backend-synced telemetry | Analyst-gated decisions | Union Bank of India visual identity.
   </footer>
+  <script>
+    const fmt = new Intl.NumberFormat("en-IN");
+    const numberOrNull = (value) => {
+      if (value === null || value === undefined || value === "") return null;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    };
+    const formatMetric = (value) => {
+      const n = numberOrNull(value);
+      return n == null ? "n/a" : fmt.format(n);
+    };
+    const qwenRuntimeLabel = (status) => {
+      if (!status || typeof status !== "object") return "n/a";
+      if (status.target_running) return "Ready";
+      if (status.target_installed) return "Installed";
+      if (status.reachable) return "Not loaded";
+      return "Unavailable";
+    };
+    const setText = (id, value) => {
+      const node = document.getElementById(id);
+      if (node) node.textContent = value;
+    };
+    const setState = (label, cls) => {
+      const node = document.getElementById("live-state");
+      if (!node) return;
+      node.textContent = label;
+      node.className = `ops-state ${cls || ""}`.trim();
+    };
+    async function hydrateLiveStatus() {
+      try {
+        const [snapshotRes, llmRes, escalationRes] = await Promise.all([
+          fetch("/api/v1/snapshot", { cache: "no-store" }),
+          fetch("/api/v1/llm/status", { cache: "no-store" }),
+          fetch("/api/v1/analyst/escalations?limit=100", { cache: "no-store" }),
+        ]);
+        if (!snapshotRes.ok || !llmRes.ok || !escalationRes.ok) throw new Error("status unavailable");
+        const snapshot = await snapshotRes.json();
+        const llm = await llmRes.json();
+        const escalations = await escalationRes.json();
+        const pendingCases = Array.isArray(escalations)
+          ? escalations.filter((item) => item.status === "pending_review").length
+          : null;
+        const eventsIngested = numberOrNull(snapshot?.orchestrator?.events_ingested);
+        const alertsRouted = numberOrNull(snapshot?.orchestrator?.alerts_routed);
+        setText("metric-events", formatMetric(eventsIngested));
+        setText("metric-alerts", formatMetric(alertsRouted));
+        setText("metric-hitl", formatMetric(pendingCases));
+        setText("metric-qwen", qwenRuntimeLabel(llm));
+        const complete = eventsIngested != null && alertsRouted != null && pendingCases != null && llm?.reachable;
+        setState(complete ? "Backend Synced" : "Telemetry Partial", complete ? "ready" : "");
+      } catch (error) {
+        setText("metric-events", "n/a");
+        setText("metric-alerts", "n/a");
+        setText("metric-hitl", "n/a");
+        setText("metric-qwen", "n/a");
+        setState("Backend Sync Pending", "warn");
+      }
+    }
+    hydrateLiveStatus();
+    window.setInterval(hydrateLiveStatus, 15000);
+  </script>
 </body>
 </html>

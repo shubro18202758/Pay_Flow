@@ -2,7 +2,7 @@
 // TanStack Query Hooks -- REST endpoint wrappers
 // ============================================================================
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import {
   fetchSnapshot,
   fetchTopology,
@@ -17,6 +17,7 @@ import {
   fetchActiveScenarios,
   fetchHistory,
   fetchEscalations,
+  decideEscalation,
   fetchRecentBlocks,
   fetchEnums,
   injectEvent,
@@ -37,6 +38,7 @@ import {
   fetchGlobalImportance,
   fetchDriftStatus,
   fetchNLQuery,
+  fetchLLMStatus,
   fetchConsortiumStatus,
   fetchConsortiumAlerts,
   publishConsortiumAlert,
@@ -54,7 +56,112 @@ import {
   refreshIntel,
   simulateIntelSignal,
 } from '@/lib/api-client'
-import type { LaunchRequest, InjectEventRequest, PS3LaunchRequest, EventLabRequest, EventLabRunRequest } from '@/lib/types'
+import type {
+  CountermeasureProposal,
+  CountermeasureProposalsResponse,
+  Escalation,
+  LaunchRequest,
+  InjectEventRequest,
+  PS3LaunchRequest,
+  EventLabRequest,
+  EventLabRunRequest,
+} from '@/lib/types'
+import { useActivityStore } from '@/stores/use-activity-store'
+import { useUIStore } from '@/stores/use-ui-store'
+import { hasPermission, type Permission } from '@/lib/rbac'
+
+const LIVE_FRAUD_QUERY_KEYS = [
+  ['snapshot'],
+  ['topology'],
+  ['circuit-breaker'],
+  ['verdicts'],
+  ['escalations'],
+  ['recent-blocks'],
+  ['case-trace'],
+  ['active-scenarios'],
+  ['scenario-history'],
+  ['ps3-readiness'],
+  ['risk-distribution'],
+  ['fraud-typology'],
+  ['velocity-trends'],
+  ['temporal-heatmap'],
+  ['threat-summary'],
+  ['global-importance'],
+  ['drift-status'],
+  ['fraud'],
+] as const
+
+function invalidateLiveFraudQueries(qc: QueryClient) {
+  LIVE_FRAUD_QUERY_KEYS.forEach((queryKey) => {
+    void qc.invalidateQueries({ queryKey })
+  })
+}
+
+function invalidateCountermeasureDecisionQueries(qc: QueryClient, runId?: string | null) {
+  void qc.invalidateQueries({ queryKey: ['countermeasure-proposals'] })
+  void qc.invalidateQueries({ queryKey: runId ? ['event-lab-run', runId] : ['event-lab-run'] })
+  void qc.invalidateQueries({ queryKey: runId ? ['event-lab-explainability', runId] : ['event-lab-explainability'] })
+  invalidateLiveFraudQueries(qc)
+}
+
+function useHasRolePermission(permission: Permission) {
+  const currentRole = useUIStore((s) => s.currentRole)
+  return {
+    currentRole,
+    enabled: hasPermission(currentRole, permission),
+  }
+}
+
+function useHasAnyRolePermission(permissions: Permission[]) {
+  const currentRole = useUIStore((s) => s.currentRole)
+  return {
+    currentRole,
+    enabled: permissions.some((permission) => hasPermission(currentRole, permission)),
+  }
+}
+
+function cacheAnalystDecision(qc: QueryClient, analystCase: Escalation) {
+  qc.setQueryData<Escalation[]>(['escalations'], (current) => {
+    if (!current?.length) return [analystCase]
+
+    const matchesCase = (item: Escalation) =>
+      item.ack_id === analystCase.ack_id ||
+      (item.case_id !== undefined && item.case_id === analystCase.case_id) ||
+      (item.escalation_id !== undefined && item.escalation_id === analystCase.escalation_id)
+
+    const found = current.some(matchesCase)
+    if (!found) return [analystCase, ...current]
+    return current.map((item) => (matchesCase(item) ? analystCase : item))
+  })
+}
+
+function replaceCountermeasureProposal(
+  current: CountermeasureProposalsResponse | undefined,
+  proposal: CountermeasureProposal,
+): CountermeasureProposalsResponse {
+  const existing = current?.proposals ?? []
+  const matchesProposal = (item: CountermeasureProposal) => item.proposal_id === proposal.proposal_id
+  const found = existing.some(matchesProposal)
+  const proposals = found
+    ? existing.map((item) => (matchesProposal(item) ? proposal : item))
+    : [proposal, ...existing]
+  return {
+    count: proposals.length,
+    proposals,
+    generated_at: proposal.updated_at ?? current?.generated_at ?? Date.now() / 1000,
+  }
+}
+
+function cacheCountermeasureDecision(qc: QueryClient, proposal: CountermeasureProposal) {
+  const update = (current: CountermeasureProposalsResponse | undefined) =>
+    replaceCountermeasureProposal(current, proposal)
+  qc.setQueryData<CountermeasureProposalsResponse>(['countermeasure-proposals', 'all'], update)
+  qc.setQueryData<CountermeasureProposalsResponse>(['countermeasure-proposals', proposal.run_id], update)
+  qc.setQueriesData<CountermeasureProposalsResponse>(
+    { queryKey: ['countermeasure-proposals'] },
+    update,
+  )
+}
 
 // -- Dashboard hydration --
 
@@ -118,10 +225,8 @@ export function useLaunchPS3Scenario() {
   return useMutation({
     mutationFn: (body: PS3LaunchRequest) => launchPS3Scenario(body),
     onSuccess: (data) => {
-      void qc.invalidateQueries({ queryKey: ['active-scenarios'] })
-      void qc.invalidateQueries({ queryKey: ['scenario-history'] })
+      invalidateLiveFraudQueries(qc)
       void qc.invalidateQueries({ queryKey: ['case-trace', data.primary_case_id] })
-      void qc.invalidateQueries({ queryKey: ['ps3-readiness'] })
     },
   })
 }
@@ -131,8 +236,7 @@ export function useLaunchAttack() {
   return useMutation({
     mutationFn: (body: LaunchRequest) => launchAttack(body),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['active-scenarios'] })
-      void qc.invalidateQueries({ queryKey: ['scenario-history'] })
+      invalidateLiveFraudQueries(qc)
     },
   })
 }
@@ -142,8 +246,7 @@ export function useStopAttack() {
   return useMutation({
     mutationFn: (scenarioId: string) => stopAttack(scenarioId),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['active-scenarios'] })
-      void qc.invalidateQueries({ queryKey: ['scenario-history'] })
+      invalidateLiveFraudQueries(qc)
     },
   })
 }
@@ -153,8 +256,7 @@ export function useStopAllAttacks() {
   return useMutation({
     mutationFn: stopAllAttacks,
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['active-scenarios'] })
-      void qc.invalidateQueries({ queryKey: ['scenario-history'] })
+      invalidateLiveFraudQueries(qc)
     },
   })
 }
@@ -163,7 +265,7 @@ export function useActiveScenarios(enabled = true) {
   return useQuery({
     queryKey: ['active-scenarios'],
     queryFn: fetchActiveScenarios,
-    refetchInterval: enabled ? 2_000 : false,
+    refetchInterval: enabled ? 8_000 : false,
     enabled,
   })
 }
@@ -183,6 +285,28 @@ export function useEscalations() {
     queryKey: ['escalations'],
     queryFn: fetchEscalations,
     staleTime: 10_000,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useDecideEscalation() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { ackId: string; decision: 'approve' | 'reject' | 'escalate'; reason: string }) =>
+      decideEscalation(body.ackId, {
+        decision: body.decision,
+        reason: body.reason,
+      }),
+    onSuccess: (analystCase) => {
+      cacheAnalystDecision(qc, analystCase)
+      useActivityStore.getState().onAnalystActivity({
+        type: 'escalation_decided',
+        case: analystCase,
+      })
+      void qc.invalidateQueries({ queryKey: ['escalations'] })
+      invalidateLiveFraudQueries(qc)
+    },
   })
 }
 
@@ -209,8 +333,12 @@ export function useEnums() {
 }
 
 export function useInjectEvent() {
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (body: InjectEventRequest) => injectEvent(body),
+    onSuccess: () => {
+      invalidateLiveFraudQueries(qc)
+    },
   })
 }
 
@@ -235,11 +363,7 @@ export function useCreateEventLabRun() {
   return useMutation({
     mutationFn: (body: EventLabRunRequest) => createEventLabRun(body),
     onSuccess: (run) => {
-      void qc.invalidateQueries({ queryKey: ['event-lab-run', run.run_id] })
-      void qc.invalidateQueries({ queryKey: ['event-lab-explainability', run.run_id] })
-      void qc.invalidateQueries({ queryKey: ['countermeasure-proposals'] })
-      void qc.invalidateQueries({ queryKey: ['active-scenarios'] })
-      void qc.invalidateQueries({ queryKey: ['scenario-history'] })
+      invalidateCountermeasureDecisionQueries(qc, run.run_id)
     },
   })
 }
@@ -271,7 +395,7 @@ export function useCountermeasureProposals(runId?: string | null) {
     queryKey: ['countermeasure-proposals', runId ?? 'all'],
     queryFn: () => fetchCountermeasureProposals(runId ?? undefined),
     staleTime: 1_000,
-    refetchInterval: 3_000,
+    refetchInterval: 8_000,
     refetchOnWindowFocus: false,
   })
 }
@@ -281,11 +405,12 @@ export function useApproveCountermeasure() {
   return useMutation({
     mutationFn: (proposalId: string) => approveCountermeasure(proposalId),
     onSuccess: (proposal) => {
-      void qc.invalidateQueries({ queryKey: ['countermeasure-proposals'] })
-      void qc.invalidateQueries({ queryKey: ['event-lab-run', proposal.run_id] })
-      void qc.invalidateQueries({ queryKey: ['event-lab-explainability', proposal.run_id] })
-      void qc.invalidateQueries({ queryKey: ['circuit-breaker'] })
-      void qc.invalidateQueries({ queryKey: ['snapshot'] })
+      cacheCountermeasureDecision(qc, proposal)
+      useActivityStore.getState().onCountermeasureActivity({
+        type: proposal.status === 'executed' ? 'action_executed' : 'proposal_approved',
+        proposal,
+      })
+      invalidateCountermeasureDecisionQueries(qc, proposal.run_id)
     },
   })
 }
@@ -295,9 +420,12 @@ export function useRejectCountermeasure() {
   return useMutation({
     mutationFn: (proposalId: string) => rejectCountermeasure(proposalId),
     onSuccess: (proposal) => {
-      void qc.invalidateQueries({ queryKey: ['countermeasure-proposals'] })
-      void qc.invalidateQueries({ queryKey: ['event-lab-run', proposal.run_id] })
-      void qc.invalidateQueries({ queryKey: ['event-lab-explainability', proposal.run_id] })
+      cacheCountermeasureDecision(qc, proposal)
+      useActivityStore.getState().onCountermeasureActivity({
+        type: 'proposal_rejected',
+        proposal,
+      })
+      invalidateCountermeasureDecisionQueries(qc, proposal.run_id)
     },
   })
 }
@@ -325,8 +453,14 @@ export function useCaseTrace(caseId: string | null) {
 }
 
 export function useCreateEvidencePackage() {
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (caseId: string) => createEvidencePackage(caseId),
+    onSuccess: (_package, caseId) => {
+      void qc.invalidateQueries({ queryKey: ['case-trace', caseId] })
+      void qc.invalidateQueries({ queryKey: ['case-trace'] })
+      invalidateLiveFraudQueries(qc)
+    },
   })
 }
 
@@ -448,9 +582,11 @@ export function useSimulateIntelSignal() {
 // -- Analytics --
 
 export function useRiskDistribution() {
+  const { currentRole, enabled } = useHasRolePermission('analytics:view')
   return useQuery({
-    queryKey: ['risk-distribution'],
+    queryKey: ['risk-distribution', currentRole],
     queryFn: fetchRiskDistribution,
+    enabled,
     staleTime: 5_000,
     refetchInterval: 8_000,
     refetchOnWindowFocus: false,
@@ -458,9 +594,11 @@ export function useRiskDistribution() {
 }
 
 export function useFraudTypology() {
+  const { currentRole, enabled } = useHasRolePermission('analytics:view')
   return useQuery({
-    queryKey: ['fraud-typology'],
+    queryKey: ['fraud-typology', currentRole],
     queryFn: fetchFraudTypology,
+    enabled,
     staleTime: 5_000,
     refetchInterval: 8_000,
     refetchOnWindowFocus: false,
@@ -468,9 +606,11 @@ export function useFraudTypology() {
 }
 
 export function useVelocityTrends(windowMinutes = 30, topN = 10) {
+  const { currentRole, enabled } = useHasRolePermission('analytics:view')
   return useQuery({
-    queryKey: ['velocity-trends', windowMinutes, topN],
+    queryKey: ['velocity-trends', currentRole, windowMinutes, topN],
     queryFn: () => fetchVelocityTrends(windowMinutes, topN),
+    enabled,
     staleTime: 10_000,
     refetchInterval: 15_000,
     refetchOnWindowFocus: false,
@@ -478,9 +618,11 @@ export function useVelocityTrends(windowMinutes = 30, topN = 10) {
 }
 
 export function useTemporalHeatmap(bucketSeconds = 60, lookbackMinutes = 30) {
+  const { currentRole, enabled } = useHasRolePermission('analytics:view')
   return useQuery({
-    queryKey: ['temporal-heatmap', bucketSeconds, lookbackMinutes],
+    queryKey: ['temporal-heatmap', currentRole, bucketSeconds, lookbackMinutes],
     queryFn: () => fetchTemporalHeatmap(bucketSeconds, lookbackMinutes),
+    enabled,
     staleTime: 10_000,
     refetchInterval: 15_000,
     refetchOnWindowFocus: false,
@@ -488,9 +630,11 @@ export function useTemporalHeatmap(bucketSeconds = 60, lookbackMinutes = 30) {
 }
 
 export function useThreatSummary() {
+  const { currentRole, enabled } = useHasRolePermission('analytics:view')
   return useQuery({
-    queryKey: ['threat-summary'],
+    queryKey: ['threat-summary', currentRole],
     queryFn: fetchThreatSummary,
+    enabled,
     staleTime: 3_000,
     refetchInterval: 5_000,
     refetchOnWindowFocus: false,
@@ -500,20 +644,24 @@ export function useThreatSummary() {
 // -- Intelligence --
 
 export function useGlobalImportance() {
+  const { currentRole, enabled } = useHasAnyRolePermission(['explain:view', 'model:feedback', 'audit:review'])
   return useQuery({
-    queryKey: ['global-importance'],
+    queryKey: ['global-importance', currentRole],
     queryFn: fetchGlobalImportance,
+    enabled,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   })
 }
 
 export function useDriftStatus() {
+  const { currentRole, enabled } = useHasAnyRolePermission(['model:feedback', 'risk:view', 'system:view', 'audit:review'])
   return useQuery({
-    queryKey: ['drift-status'],
+    queryKey: ['drift-status', currentRole],
     queryFn: fetchDriftStatus,
+    enabled,
     staleTime: 10_000,
-    refetchInterval: 15_000,
+    refetchInterval: enabled ? 15_000 : false,
     refetchOnWindowFocus: false,
   })
 }
@@ -524,22 +672,36 @@ export function useNLQuery() {
   })
 }
 
-export function useConsortiumStatus() {
+export function useLLMStatus() {
   return useQuery({
-    queryKey: ['consortium-status'],
+    queryKey: ['llm-status'],
+    queryFn: fetchLLMStatus,
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useConsortiumStatus() {
+  const { currentRole, enabled } = useHasAnyRolePermission(['cfr:check', 'consortium:publish', 'audit:review'])
+  return useQuery({
+    queryKey: ['consortium-status', currentRole],
     queryFn: fetchConsortiumStatus,
+    enabled,
     staleTime: 10_000,
-    refetchInterval: 20_000,
+    refetchInterval: enabled ? 20_000 : false,
     refetchOnWindowFocus: false,
   })
 }
 
 export function useConsortiumAlerts(fraudType?: number, severityMin = 1, limit = 50) {
+  const { currentRole, enabled } = useHasAnyRolePermission(['cfr:check', 'consortium:publish', 'audit:review'])
   return useQuery({
-    queryKey: ['consortium-alerts', fraudType, severityMin, limit],
+    queryKey: ['consortium-alerts', currentRole, fraudType, severityMin, limit],
     queryFn: () => fetchConsortiumAlerts(fraudType, severityMin, limit),
+    enabled,
     staleTime: 10_000,
-    refetchInterval: 20_000,
+    refetchInterval: enabled ? 20_000 : false,
     refetchOnWindowFocus: false,
   })
 }
