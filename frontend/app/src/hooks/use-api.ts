@@ -62,6 +62,7 @@ import type {
   Escalation,
   LaunchRequest,
   InjectEventRequest,
+  NLQueryRequest,
   PS3LaunchRequest,
   EventLabRequest,
   EventLabRunRequest,
@@ -668,7 +669,7 @@ export function useDriftStatus() {
 
 export function useNLQuery() {
   return useMutation({
-    mutationFn: (question: string) => fetchNLQuery(question),
+    mutationFn: (request: string | NLQueryRequest) => fetchNLQuery(request),
   })
 }
 

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useUIStore } from '@/stores/use-ui-store'
 import { ConnectionStatus } from '@/components/shared/connection-status'
 import { ROLE_POLICIES, canAccessTab, rolePolicy, type PayflowRole } from '@/lib/rbac'
-import { Building2, LockKeyhole, Radio, Search, ShieldCheck, UserRound } from 'lucide-react'
+import { Bot, Building2, LockKeyhole, Radio, Search, ShieldCheck, UserRound } from 'lucide-react'
 
 const PRIMARY_NAV = [
   { tab: 'pre-fraud-intel', label: 'Pre-Fraud Intel' },
@@ -32,6 +32,7 @@ export function TopBar() {
   const setActiveTab = useUIStore((s) => s.setActiveTab)
   const currentRole = useUIStore((s) => s.currentRole)
   const setCurrentRole = useUIStore((s) => s.setCurrentRole)
+  const openCopilot = useUIStore((s) => s.openCopilot)
   const activePolicy = rolePolicy(currentRole)
   const skipToMain = useCallback(() => {
     const main = document.getElementById('main-content')
@@ -97,10 +98,16 @@ export function TopBar() {
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
-          <a href="/docs" className="hidden items-center gap-2 rounded-full bg-bg-elevated px-3 py-1.5 text-[10px] font-semibold text-text-secondary lg:flex">
+          <button
+            type="button"
+            onClick={() => openCopilot('', false)}
+            className="hidden items-center gap-2 rounded-full bg-bg-elevated px-3 py-1.5 text-[10px] font-semibold text-text-secondary hover:bg-[#dff2ff] lg:flex"
+            title="Search PayFlow with qwen3.5:4b"
+          >
             <Search className="h-3.5 w-3.5" />
-            API Docs
-          </a>
+            Qwen Search
+            <Bot className="h-3.5 w-3.5 text-alert-critical" />
+          </button>
           <div className="hidden items-center gap-2 md:flex">
             <Building2 className="h-3.5 w-3.5 text-accent-primary" />
             <span className="text-[9px] font-bold uppercase tracking-[0.16em] text-text-secondary">

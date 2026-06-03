@@ -40,6 +40,7 @@ import type {
   ExplainResponse,
   GlobalImportanceResponse,
   DriftResponse,
+  NLQueryRequest,
   NLQueryResponse,
   LLMStatusResponse,
   ConsortiumStatusResponse,
@@ -320,11 +321,12 @@ export function fetchDriftStatus(): Promise<DriftResponse> {
   return fetchJson('/api/v1/intelligence/drift')
 }
 
-export function fetchNLQuery(question: string): Promise<NLQueryResponse> {
+export function fetchNLQuery(input: string | NLQueryRequest): Promise<NLQueryResponse> {
+  const body = typeof input === 'string' ? { question: input } : input
   return fetchJson('/api/v1/intelligence/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify(body),
   })
 }
 

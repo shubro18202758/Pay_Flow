@@ -20,6 +20,7 @@ import re
 import time
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 from config.settings import OLLAMA_CFG
@@ -99,6 +100,7 @@ User query: """
         self._orchestrator = orchestrator
         self._query_count: int = 0
         self._avg_response_ms: float = 0.0
+        self._doc_context_cache: list[dict[str, Any]] | None = None
 
     def attach_llm(self, llm_client) -> None:
         self._llm = llm_client
@@ -106,7 +108,15 @@ User query: """
     def attach_orchestrator(self, orchestrator) -> None:
         self._orchestrator = orchestrator
 
-    async def query(self, question: str) -> NLQueryResult:
+    async def query(
+        self,
+        question: str,
+        *,
+        role: str | None = None,
+        surface: str | None = None,
+        active_tab: str | None = None,
+        conversation: list[dict[str, str]] | None = None,
+    ) -> NLQueryResult:
         """Process a natural language query and return structured results."""
         t0 = time.monotonic()
 
@@ -126,6 +136,15 @@ User query: """
         # Gather context from data sources
         context = await self._gather_context(intent, entities, data_sources)
         context.setdefault("llm_runtime", self._llm_runtime_context())
+        context.setdefault(
+            "prototype_context",
+            self._prototype_context(
+                role=role,
+                surface=surface,
+                active_tab=active_tab,
+                conversation=conversation or [],
+            ),
+        )
 
         # Generate answer using LLM
         answer = await self._generate_answer(question, intent, context)
@@ -141,7 +160,7 @@ User query: """
             intent=intent,
             answer=answer,
             data=context,
-            sources=data_sources,
+            sources=list(dict.fromkeys(["prototype_context", *data_sources])),
             confidence=0.85 if self._llm else 0.5,
             processing_ms=round(elapsed, 2),
             model_used=(
@@ -183,6 +202,43 @@ User query: """
         """Fast deterministic routing for common dashboard questions."""
         q = question.lower()
         entities = self._extract_entities(question)
+        if any(w in q for w in [
+            "search",
+            "find",
+            "where",
+            "page",
+            "tab",
+            "feature",
+            "payflow",
+            "prototype",
+            "proof of concept",
+            "poc",
+            "demo",
+            "readme",
+            "architecture",
+            "run locally",
+            "local host",
+            "localhost",
+            "coolify",
+            "deployment",
+            "rbac",
+            "role",
+            "union bank",
+            "ps3",
+            "fund flow",
+            "event lab",
+            "adaptive event",
+            "custom event",
+            "fraud event",
+            "create event",
+            "autonomous report",
+        ]):
+            entities["_prototype_query"] = True
+            return {
+                "intent": "general",
+                "entities": entities,
+                "data_sources": ["metrics", "graph", "verdicts", "pre_fraud_intel"],
+            }
         if any(w in q for w in ["risk", "score", "dangerous", "suspicious"]):
             return {"intent": "risk_query", "entities": entities, "data_sources": ["ml_models", "graph"]}
         if any(w in q for w in ["account", "acc_", "frozen", "freeze"]):
@@ -250,9 +306,199 @@ User query: """
             "- Authoritative decisions remain with " + ", ".join(authority) + ".",
         ])
 
+    def _prototype_context(
+        self,
+        *,
+        role: str | None,
+        surface: str | None,
+        active_tab: str | None,
+        conversation: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """Curated PayFlow knowledge base for the global Qwen search/chat layer."""
+        try:
+            from src.domain.union_bank import (
+                ROLE_POLICIES,
+                REGULATORY_OBLIGATIONS,
+                UNION_BANK_DOMAIN_THRESHOLDS,
+                operating_model_for_role,
+                role_policy,
+            )
+
+            policy = role_policy(role)
+            role_profile = {
+                "role": policy.role,
+                "label": policy.label,
+                "domain": policy.domain,
+                "summary": policy.summary,
+                "tabs": list(policy.tabs),
+                "permissions_count": len(policy.permissions),
+                "feature_focus": list(policy.feature_focus),
+                "decision_authority": policy.decision_authority,
+                "escalation_scope": policy.escalation_scope,
+                "reporting_line": policy.reporting_line,
+                "tool_stack": list(policy.tool_stack),
+            }
+            role_catalog = [
+                {
+                    "role": item.role,
+                    "label": item.label,
+                    "domain": item.domain,
+                    "tabs": list(item.tabs),
+                    "decision_authority": item.decision_authority,
+                }
+                for item in ROLE_POLICIES.values()
+            ]
+            operating_model = operating_model_for_role(policy.role)
+            regulatory = list(REGULATORY_OBLIGATIONS)
+            thresholds = dict(UNION_BANK_DOMAIN_THRESHOLDS)
+        except Exception:
+            role_profile = {"role": role or "fraud_analyst", "label": role or "Fraud Analyst"}
+            role_catalog = []
+            operating_model = {}
+            regulatory = []
+            thresholds = {}
+
+        return {
+            "surface": surface or "global_search_chat",
+            "active_tab": active_tab,
+            "conversation_tail": conversation[-6:],
+            "project": {
+                "name": "PayFlow",
+                "team": "Team Aryabhata U6TZX1",
+                "domain": "Union Bank of India fraud operations and digital-payment fund-flow intelligence",
+                "problem_statement": (
+                    "PS3: Tracking of Funds within Bank for Fraud Detection. PayFlow maps and visualizes "
+                    "end-to-end movement of funds across accounts, branches, products and channels, then uses "
+                    "graph analytics, ML risk scoring, heuristics and Qwen explanations to support investigators."
+                ),
+                "primary_users": [
+                    "Fraud Analyst",
+                    "SOC Analyst",
+                    "SOC L2 Incident Responder",
+                    "Threat Hunter",
+                    "Transaction Officer",
+                    "EFRMS Specialist",
+                    "Branch Operations",
+                    "AML Analyst",
+                    "Compliance Officer",
+                    "Principal Officer / MLRO",
+                    "Fraud Investigator",
+                    "Fraud Committee",
+                    "Risk Analyst",
+                    "Data Scientist",
+                    "Internal Audit",
+                    "System Admin",
+                ],
+                "live_url": "https://u6tzx1.apps.ideahackathon.com/",
+                "local_runtime": "FastAPI serves the built React app on the configured PORT, normally http://localhost:8000/.",
+            },
+            "navigation": [
+                {
+                    "tab": "pre-fraud-intel",
+                    "purpose": "External OSINT/SOCMINT signal fusion, media preview, trend clusters and adaptive playbooks.",
+                },
+                {
+                    "tab": "overview",
+                    "purpose": "Fund-flow graph, mule networks, risk distribution, live activity and graph metrics.",
+                },
+                {
+                    "tab": "threat-sim",
+                    "purpose": "Adaptive Event Lab for custom fraud-event generation, pipeline visibility, countermeasures and autonomous report output.",
+                },
+                {
+                    "tab": "investigations",
+                    "purpose": "Case trace, timeline, graph path, evidence package and analyst decision workflow.",
+                },
+                {
+                    "tab": "intelligence",
+                    "purpose": "Model explanations, Qwen query panel, drift, consortium/CFR intelligence and integrity views.",
+                },
+                {
+                    "tab": "analytics",
+                    "purpose": "Live charts for risk distribution, typologies, velocity trends, heatmaps and threat summaries.",
+                },
+                {
+                    "tab": "compliance",
+                    "purpose": "RBI/FIU/CFR/AML reporting controls, STR/FMR evidence and regulatory handoff surfaces.",
+                },
+                {
+                    "tab": "system",
+                    "purpose": "Runtime, SSE, GPU/CPU, health, RBAC, pipeline and operations telemetry.",
+                },
+            ],
+            "core_capabilities": {
+                "fund_flow_tracking": "NetworkX transaction graph with account nodes, transaction edges, mule/layering/cycle evidence and live topology.",
+                "risk_scoring": "Feature engine plus XGBoost-style classifier, drift monitoring and explainability contributions.",
+                "heuristics": "Union Bank domain thresholds for UPI mule splits, CTR/FIU thresholds, RBI fraud reporting and digital-channel controls.",
+                "qwen_ai_core": (
+                    "Ollama-hosted qwen3.5:4b provides bounded analyst explanations, global search answers, event-lab narratives "
+                    "and NL query responses; it does not approve freezes, filings or fraud verdicts."
+                ),
+                "rbac": "Header-driven X-Payflow-Role guards tabs, API permissions, write actions and role-aware UI controls.",
+                "event_lab": "Custom scenario templates generate transactions/auth/interbank events, inject them into pipeline stages and fan out to reports, graphs and countermeasures.",
+                "audit": "Append-only ledger and evidence package hashes preserve investigation and decision provenance.",
+                "deployment": "Docker/Nixpacks-compatible FastAPI single-port app for Coolify with qwen3.5:4b kept as the target Ollama model.",
+            },
+            "task_shortcuts": {
+                "create_custom_fraud_event": (
+                    "Open the Adaptive Event Lab tab (internal tab id: threat-sim), pick or configure an Event Chain Creator template, "
+                    "preview the generated chain, launch it into the pipeline, then watch Live Processing Pipeline, Pipeline Transparency, "
+                    "countermeasure proposals and the autonomous report after verdict completion."
+                ),
+                "inspect_fund_flow_graph": "Open Fund-Flow Overview (internal tab id: overview) for the live 3D/network graph, mule chains, topology and graph statistics.",
+                "ask_qwen": "Use this global PayFlow Qwen Search/Copilot overlay or the Intelligence tab NL query panel.",
+                "package_evidence": "Open Investigator Workbench (internal tab id: investigations) after a case exists, then generate evidence packages from case trace.",
+                "review_reports": "Use Compliance/FIU Reporting when the selected role has regulatory permissions.",
+            },
+            "role_context": role_profile,
+            "role_catalog": role_catalog,
+            "operating_model": operating_model,
+            "regulatory_context": {
+                "obligations": regulatory,
+                "thresholds": thresholds,
+                "guardrail": "AI output is evidence narration only; Union Bank role gates and policy decide customer-impacting actions.",
+            },
+            "documentation_digest": self._documentation_digest(),
+        }
+
+    def _documentation_digest(self) -> list[dict[str, Any]]:
+        """Index key local deliverables without flooding every prompt."""
+        if self._doc_context_cache is not None:
+            return self._doc_context_cache
+
+        root = Path(__file__).resolve().parents[2]
+        candidates = [
+            ("README.md", "repository_readme"),
+            ("artifacts/payflow-idea-round2-problem-solution-brief.md", "round2_problem_solution_brief"),
+            ("artifacts/payflow-d3-labelled-architecture-diagram.md", "d3_architecture_diagram"),
+            ("artifacts/payflow-d3-technical-architecture-document.md", "d3_architecture_document"),
+        ]
+        digest: list[dict[str, Any]] = []
+        for relative, kind in candidates:
+            path = root / relative
+            if not path.exists():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            headings = re.findall(r"^#{1,4}\s+(.+)$", text, flags=re.MULTILINE)[:16]
+            excerpt = re.sub(r"\s+", " ", text).strip()[:900]
+            digest.append({
+                "path": relative,
+                "kind": kind,
+                "headings": headings,
+                "excerpt": excerpt,
+            })
+
+        self._doc_context_cache = digest
+        return digest
+
     async def _classify_intent(self, question: str) -> dict:
         """Use LLM to classify query intent, with fallback heuristics."""
         heuristic = self._heuristic_intent(question)
+        if heuristic.get("entities", {}).get("_prototype_query"):
+            return heuristic
         if heuristic["intent"] != "general" or not self._llm:
             return heuristic
 
@@ -426,11 +672,26 @@ User query: """
                     if intent in fast_intents
                     else ""
                 )
+                prototype = context.get("prototype_context", {})
+                valid_tabs = ", ".join(
+                    f"{item.get('tab')} ({item.get('purpose')})"
+                    for item in prototype.get("navigation", [])
+                )
+                navigation_guardrail = (
+                    "Valid PayFlow tabs are: "
+                    f"{valid_tabs}. "
+                    "Never invent page names, controls, models, databases, or workflow steps outside the provided context. "
+                    if valid_tabs
+                    else ""
+                )
                 prompt = (
                     f"{self.SYSTEM_PROMPT}\n\n"
                     f"System Context:\n{context_str}\n\n"
                     f"User Question: {question}\n\n"
                     "Use only the provided system context. If data is missing, say exactly what is unavailable. "
+                    "For prototype navigation questions, tell the user which PayFlow page, tab, role, or control to use. "
+                    "For proof-of-concept questions, ground the answer in PS3, Union Bank operating context, and the documented prototype features. "
+                    f"{navigation_guardrail}"
                     f"{length_instruction}"
                     "Do not use Markdown tables, bold markers, headings, or asterisks; use plain text bullets. "
                     "Keep the answer concise, operational, and evidence-grounded.\n\n"
@@ -442,7 +703,7 @@ User query: """
                     max_tokens=answer_max_tokens,
                     num_ctx=answer_num_ctx,
                 )
-                return response.strip()
+                return self._clean_llm_answer(response)
             except Exception as e:
                 logger.debug("LLM answer generation failed: %s", e)
 
@@ -496,13 +757,27 @@ User query: """
             parts.append(f"• Frozen Accounts: {cb.get('frozen_count', 0)}")
 
         else:
-            parts.append("Query processed. Key system data retrieved from available sources.")
+            prototype = context.get("prototype_context", {})
+            project = prototype.get("project", {})
+            nav = prototype.get("navigation", [])
+            parts.append(f"{project.get('name', 'PayFlow')} is the PS3 fund-flow fraud intelligence prototype for Union Bank operations.")
+            if nav:
+                parts.append("Use the main tabs this way:")
+                for item in nav[:5]:
+                    parts.append(f"• {item.get('tab')}: {item.get('purpose')}")
             snap = context.get("system_snapshot", {})
             if snap:
                 orch = snap.get("orchestrator", {})
                 parts.append(f"Current pipeline: {orch.get('events_ingested', 0):,} events processed.")
 
         return "\n".join(parts)
+
+    def _clean_llm_answer(self, response: str) -> str:
+        """Normalize common markdown artifacts before UI rendering."""
+        text = response.strip().replace("**", "")
+        text = re.sub(r"(?m)^\s*\*\s+", "- ", text)
+        text = re.sub(r"(?m)^(\s*)\*\s{2,}", r"\1- ", text)
+        return text
 
     def snapshot(self) -> dict:
         return {

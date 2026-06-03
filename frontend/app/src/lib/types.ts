@@ -1054,6 +1054,18 @@ export interface DriftResponse {
 
 // -- Natural Language Query --
 
+export interface NLQueryMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface NLQueryRequest {
+  question: string
+  surface?: string
+  active_tab?: string
+  conversation?: NLQueryMessage[]
+}
+
 export interface NLQueryResponse {
   query: string
   intent: string

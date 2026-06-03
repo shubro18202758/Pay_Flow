@@ -120,6 +120,9 @@ class ExplainRequest(BaseModel):
 
 class NLQueryRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=2000)
+    surface: str | None = Field(None, max_length=80)
+    active_tab: str | None = Field(None, max_length=80)
+    conversation: list[dict[str, str]] = Field(default_factory=list)
 
 
 class ConsortiumPublishRequest(BaseModel):
@@ -364,12 +367,18 @@ async def drift_status(request: Request):
 @router.post("/query")
 async def nl_query(body: NLQueryRequest, request: Request):
     """Ask the system a question in natural language (powered by Qwen 3.5)."""
-    require_permission(request, "explain:view")
+    role = require_permission(request, "explain:view")
     orch = request.app.state.orchestrator
     if not orch or not orch._nl_query_engine:
         return {"error": "NL Query engine not available"}
 
-    result = await orch._nl_query_engine.query(body.question)
+    result = await orch._nl_query_engine.query(
+        body.question,
+        role=role,
+        surface=body.surface,
+        active_tab=body.active_tab,
+        conversation=body.conversation[-8:],
+    )
     return {
         "query": result.query,
         "intent": result.intent,

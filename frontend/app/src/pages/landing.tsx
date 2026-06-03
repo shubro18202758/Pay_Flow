@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import {
   ArrowRight,
   BadgeCheck,
@@ -28,6 +28,7 @@ import {
   type Permission,
 } from '@/lib/rbac'
 import { cn } from '@/lib/utils'
+import { useUIStore } from '@/stores/use-ui-store'
 
 const SERVICE_NAV = [
   'EFRMS Monitoring',
@@ -83,9 +84,16 @@ function roleCan(role: PayflowRole, permission: Permission) {
 
 export function LandingPage() {
   const [selectedRole, setSelectedRole] = useState<PayflowRole>('fraud_analyst')
+  const [searchDraft, setSearchDraft] = useState('')
+  const openCopilot = useUIStore((s) => s.openCopilot)
   const selectedPolicy = ROLE_POLICIES[selectedRole]
   const roleRows = useMemo(() => ROLE_ORDER.map((role) => ROLE_POLICIES[role]), [])
   const allowedActions = ACTION_MATRIX.filter((item) => roleCan(selectedRole, item.permission)).length
+  const onSearchSubmit = (event: FormEvent) => {
+    event.preventDefault()
+    const query = searchDraft.trim()
+    openCopilot(query || 'What can I find in the PayFlow prototype?', Boolean(query))
+  }
 
   return (
     <main className="h-screen overflow-y-auto bg-[#003f73] text-[#111827]">
@@ -127,10 +135,24 @@ export function LandingPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <button className="inline-flex h-10 items-center gap-2 rounded-full border border-[#d7e3f1] bg-[#f4f8fc] px-4 text-[12px] font-bold text-[#24364f]">
+            <form
+              onSubmit={onSearchSubmit}
+              className="inline-flex h-11 min-w-[310px] items-center gap-2 rounded-full border border-[#d7e3f1] bg-[#f4f8fc] px-4 shadow-sm focus-within:border-[#00579C] focus-within:ring-4 focus-within:ring-[#00579C]/10"
+            >
               <Search className="h-4 w-4 text-[#00579C]" />
-              Looking for something specific?
-            </button>
+              <input
+                value={searchDraft}
+                onChange={(event) => setSearchDraft(event.target.value)}
+                placeholder="Looking for something specific?"
+                className="min-w-0 flex-1 bg-transparent text-[12px] font-bold text-[#24364f] outline-none placeholder:text-[#24364f]"
+              />
+              <button
+                type="submit"
+                className="rounded-full bg-white px-2.5 py-1 text-[9px] font-extrabold uppercase tracking-[0.1em] text-[#00579C]"
+              >
+                Ask
+              </button>
+            </form>
             <button
               type="button"
               onClick={() => openApp(selectedRole)}

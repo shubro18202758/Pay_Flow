@@ -52,6 +52,10 @@ interface UIState {
   selectedEventId: string | null
   activeCaseId: string | null
   latestEvidencePackage: EvidencePackageResponse | null
+  copilotOpen: boolean
+  copilotSeed: string
+  copilotAutoRun: boolean
+  copilotOpenSeq: number
 
   // Actions
   setActiveTab: (tab: TabId) => void
@@ -63,6 +67,9 @@ interface UIState {
   setSelectedEvent: (eventId: string | null) => void
   setActiveCaseId: (caseId: string | null) => void
   setLatestEvidencePackage: (pkg: EvidencePackageResponse | null) => void
+  openCopilot: (seed?: string, autoRun?: boolean) => void
+  closeCopilot: () => void
+  setCopilotSeed: (seed: string) => void
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -75,6 +82,10 @@ export const useUIStore = create<UIState>((set) => ({
   selectedEventId: null,
   activeCaseId: null,
   latestEvidencePackage: null,
+  copilotOpen: false,
+  copilotSeed: '',
+  copilotAutoRun: false,
+  copilotOpenSeq: 0,
 
   setActiveTab: (tab) =>
     set((state) => ({
@@ -138,4 +149,16 @@ export const useUIStore = create<UIState>((set) => ({
       latestEvidencePackage: pkg,
       activeCaseId: pkg?.case_id ?? state.activeCaseId,
     })),
+
+  openCopilot: (seed = '', autoRun = false) =>
+    set((state) => ({
+      copilotOpen: true,
+      copilotSeed: seed,
+      copilotAutoRun: autoRun,
+      copilotOpenSeq: state.copilotOpenSeq + 1,
+    })),
+
+  closeCopilot: () => set({ copilotOpen: false, copilotAutoRun: false }),
+
+  setCopilotSeed: (seed) => set({ copilotSeed: seed, copilotAutoRun: false }),
 }))

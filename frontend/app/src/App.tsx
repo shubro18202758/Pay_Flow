@@ -5,6 +5,7 @@
 import { lazy, Suspense, useEffect, useRef } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RootLayout } from '@/components/layout/root-layout'
+import { PayFlowCopilotOverlay } from '@/components/layout/payflow-copilot-overlay'
 import { useSSE } from '@/hooks/use-sse'
 import { useDashboardHydration } from '@/hooks/use-dashboard-hydration'
 import { useUIStore, type TabId } from '@/stores/use-ui-store'
@@ -167,13 +168,10 @@ function TabLoadingFallback() {
 export default function App() {
   const appPath = window.location.pathname === '/app' || window.location.pathname.startsWith('/app/')
 
-  if (!appPath) {
-    return <LandingPage />
-  }
-
   return (
     <QueryClientProvider client={queryClient}>
-      <AppContent />
+      {appPath ? <AppContent /> : <LandingPage />}
+      <PayFlowCopilotOverlay />
     </QueryClientProvider>
   )
 }
