@@ -130,7 +130,6 @@ function StatCard({ icon: Icon, label, value, unit, trend, trendLabel, color, pu
     </div>
   )
 }
-
 function formatReportInr(paisa: number): string {
   const rupees = Number(paisa || 0) / 100
   if (rupees >= 10_000_000) return `INR ${(rupees / 10_000_000).toFixed(1)}Cr`
@@ -1108,7 +1107,7 @@ function TreemapContent(props: any) {
 
 export function AnalyticsPage() {
   const store = useAnalyticsStore()
-  const [analyticsDeck, setAnalyticsDeck] = useState<'operations' | 'geo' | 'model' | 'forensics'>('operations')
+  const [analyticsDeck, setAnalyticsDeck] = useState<'all' | 'operations' | 'geo' | 'model' | 'forensics'>('all')
   const activityEvents = useActivityStore((state) => state.events)
   const activityOrderedIds = useActivityStore((state) => state.orderedIds)
   const latestEvaluation = useActivityStore((state) => state.eventLabReports[0])
@@ -1269,10 +1268,15 @@ export function AnalyticsPage() {
     ...displayLatencyMetrics.map((row) => row.timestamp),
     ...displayThreatEvents.map((row) => row.timestamp),
   )
+  const showAllDecks = analyticsDeck === 'all'
+  const showOperationsDeck = showAllDecks || analyticsDeck === 'operations'
+  const showGeoDeck = showAllDecks || analyticsDeck === 'geo'
+  const showModelDeck = showAllDecks || analyticsDeck === 'model'
+  const showForensicsDeck = showAllDecks || analyticsDeck === 'forensics'
 
   return (
     <div className="ubi-analytics-page min-h-full bg-transparent">
-      <div className="p-4 space-y-4">
+      <div className="space-y-4 overflow-x-hidden p-4 pb-14">
 
         {/* ====== HEADER ====== */}
         <div className="flex items-center justify-between">
@@ -1309,11 +1313,12 @@ export function AnalyticsPage() {
           <div>
             <div className="text-[10px] font-black uppercase tracking-[0.14em] text-[#00579C]">Analytics deck</div>
             <div className="mt-0.5 text-[9px] text-text-muted">
-              Heavy maps, model plots, and forensic charts are mounted only when selected for smoother prototype surfing.
+              All Live Views keeps every metric, threat map, model plot, and forensic panel mounted for evaluator review; filters narrow the surface when needed.
             </div>
           </div>
-          <div className="grid grid-cols-4 gap-1 rounded-md border border-border-subtle bg-[#f4f8fc] p-1">
+          <div className="grid grid-cols-2 gap-1 rounded-md border border-border-subtle bg-[#f4f8fc] p-1 sm:grid-cols-5">
             {([
+              ['all', 'All Live Views'],
               ['operations', 'Operations'],
               ['geo', 'Geo Maps'],
               ['model', 'Model Stack'],
@@ -1337,7 +1342,7 @@ export function AnalyticsPage() {
         </div>
 
         {/* ====== KPI STAT CARDS (Row 1) ====== */}
-        <div className="grid grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <StatCard icon={Activity} label="Transactions Processed" value={<AnimatedCounter value={store.totalProcessed} />} color={CHART_COLORS.primary} />
           <StatCard icon={ShieldAlert} label="Flagged Suspicious" value={<AnimatedCounter value={store.totalFlagged} />} color={CHART_COLORS.warning} />
           <StatCard icon={Shield} label="Blocked / Frozen" value={<AnimatedCounter value={store.totalBlocked} />} color={CHART_COLORS.danger} pulse />
@@ -1346,7 +1351,7 @@ export function AnalyticsPage() {
         </div>
 
         {/* ====== KPI STAT CARDS (Row 2) ====== */}
-        <div className="grid grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <StatCard icon={Brain} label="Best Model Signal" value={<AnimatedCounter value={displayModelAccuracy} decimals={1} />} unit="%" color={CHART_COLORS.success} />
           <StatCard icon={Target} label="Decision Hit Rate" value={<AnimatedCounter value={displayTruePositiveRate} decimals={1} />} unit="%" color={CHART_COLORS.blue} />
           <StatCard icon={AlertTriangle} label="Review Load" value={<AnimatedCounter value={displayFalsePositiveRate} decimals={1} />} unit="%" color={CHART_COLORS.gold} />
@@ -1354,10 +1359,10 @@ export function AnalyticsPage() {
           <StatCard icon={Gauge} label="System Risk Score" value={<AnimatedCounter value={store.riskScore} decimals={1} />} unit="/100" color={store.riskScore > 60 ? CHART_COLORS.danger : store.riskScore > 40 ? CHART_COLORS.warning : CHART_COLORS.success} />
         </div>
 
-        {analyticsDeck === 'operations' && (
+        {showOperationsDeck && (
         <>
         {/* ====== ROW 1: Transaction Volume + Fraud Rate ====== */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           <ChartCard title="Transaction Volume Stream" subtitle="Real-time ingestion" icon={Activity} badge="AREA" live={hasTransactionVolume}>
             {!hasTransactionVolume ? (
               <AnalyticsEmptyState
@@ -1424,7 +1429,7 @@ export function AnalyticsPage() {
         </div>
 
         {/* ====== ROW 2: Channel Breakdown + Pipeline Latency ====== */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           <ChartCard title="Channel-wise Volume" subtitle="Stacked distribution" icon={Layers} badge="STACKED" live={hasChannelVolume}>
             {!hasChannelVolume ? (
               <AnalyticsEmptyState
@@ -1488,10 +1493,10 @@ export function AnalyticsPage() {
         </>
         )}
 
-        {analyticsDeck === 'forensics' && (
+        {showForensicsDeck && (
         <>
         {/* ====== ROW 3: Risk Heatmap + Fraud Typology Treemap ====== */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           <ChartCard title="Temporal Risk Heatmap" subtitle="24h × 7d fraud risk intensity" icon={Target} badge="HEATMAP" className="min-h-[260px]" live={hasTemporalHeatmap}>
             <RiskHeatmap data={displayRiskHeatmap} />
           </ChartCard>
@@ -1520,7 +1525,7 @@ export function AnalyticsPage() {
         </>
         )}
 
-        {analyticsDeck === 'geo' && (
+        {showGeoDeck && (
         <>
         {/* ====== THREAT INTELLIGENCE MAPS ====== */}
         <div className="space-y-3">
@@ -1545,8 +1550,8 @@ export function AnalyticsPage() {
           </ChartCard>
 
           {/* India Map + National Intelligence + Attack Vectors */}
-          <div className="grid grid-cols-3 gap-3">
-            <ChartCard title="India Regional Threat Map" subtitle="State-wise risk heatmap on real geography" icon={MapPin} badge="INDIA MAP" className="col-span-1 overflow-hidden" live={store.geoRegions.length > 0}>
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+            <ChartCard title="India Regional Threat Map" subtitle="State-wise risk heatmap on real geography" icon={MapPin} badge="INDIA MAP" className="overflow-hidden" live={store.geoRegions.length > 0}>
               <IndiaRegionalMap regions={store.geoRegions} />
             </ChartCard>
 
@@ -1560,7 +1565,7 @@ export function AnalyticsPage() {
           </div>
 
           {/* Live Feed + Inter-Region Corridors */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
             <ChartCard title="Live Threat Feed" subtitle="Backend threat-summary indicators" icon={Radio} badge="FEED" className="overflow-hidden" live={hasThreatEvents}>
               <LiveThreatFeed events={displayThreatEvents} />
             </ChartCard>
@@ -1574,10 +1579,10 @@ export function AnalyticsPage() {
         </>
         )}
 
-        {analyticsDeck === 'model' && (
+        {showModelDeck && (
         <>
         {/* ====== ROW 4: Alert Pipeline Funnel + Model Comparison Radar ====== */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
           <ChartCard title="Alert Processing Pipeline" subtitle="Event funnel analysis" icon={Layers} badge="FUNNEL" live={hasAlertFunnel}>
             <ResponsiveContainer width="100%" height={260}>
               <FunnelChart>
@@ -1655,10 +1660,10 @@ export function AnalyticsPage() {
         </>
         )}
 
-        {analyticsDeck === 'operations' && (
+        {showOperationsDeck && (
         <>
         {/* ====== ROW 5: Velocity Distribution + Amount Distribution + Account Risk Bands ====== */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
           <ChartCard title="Transaction Velocity Profile" subtitle="Frequency-based risk bands" icon={Zap} badge="GROUPED BAR" live={hasVelocityDistribution}>
             {!hasVelocityDistribution ? (
               <AnalyticsEmptyState
@@ -1745,10 +1750,10 @@ export function AnalyticsPage() {
         </>
         )}
 
-        {analyticsDeck === 'model' && (
+        {showModelDeck && (
         <>
         {/* ====== ROW 6: Geo Risk Scatter + Network Radar + Device Fingerprints ====== */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
           <ChartCard title="Regional Risk vs Volume" subtitle="Scatter: bubble = fraud rate" icon={Target} badge="SCATTER" live={hasScatterData}>
             {!hasScatterData ? (
               <AnalyticsEmptyState
@@ -1820,12 +1825,12 @@ export function AnalyticsPage() {
         </>
         )}
 
-        {analyticsDeck === 'geo' && (
+        {showGeoDeck && (
         <>
         {/* ====== ROW 7: Geo Heat Table + Gauges ====== */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
           {/* Geo Table */}
-          <ChartCard title="Regional Fraud Intelligence" subtitle="State-wise breakdown" icon={Target} badge="TABLE" className="col-span-2" live={store.geoRegions.length > 0}>
+          <ChartCard title="Regional Fraud Intelligence" subtitle="State-wise breakdown" icon={Target} badge="TABLE" className="xl:col-span-2" live={store.geoRegions.length > 0}>
             {store.geoRegions.length === 0 ? (
               <AnalyticsEmptyState
                 title="No regional graph evidence"
@@ -1904,10 +1909,10 @@ export function AnalyticsPage() {
         </>
         )}
 
-        {analyticsDeck === 'forensics' && (
+        {showForensicsDeck && (
         <>
         {/* ====== ROW 8: Fraud Typology Bar + Live Trend Comparison ====== */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           <ChartCard title="Fraud Pattern Trend Analysis" subtitle="Attack vector comparison" icon={TrendingUp} badge="HORIZONTAL BAR" live={hasFraudTypologies}>
             {!hasFraudTypologies ? (
               <AnalyticsEmptyState
