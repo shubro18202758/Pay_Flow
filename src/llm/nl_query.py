@@ -710,14 +710,14 @@ User query: """
                 is_global_copilot = "copilot" in surface or "global_search" in surface
                 compact_prompt = is_global_copilot or intent in fast_intents
                 context_limit = (
-                    min(OLLAMA_CFG.context_chars, 3200)
+                    min(OLLAMA_CFG.context_chars, 1800)
                     if is_global_copilot
                     else min(OLLAMA_CFG.context_chars, 4000)
                     if intent in fast_intents
                     else OLLAMA_CFG.context_chars
                 )
                 answer_max_tokens = (
-                    min(OLLAMA_CFG.answer_max_tokens, 320)
+                    min(OLLAMA_CFG.answer_max_tokens, 180)
                     if is_global_copilot
                     else
                     min(OLLAMA_CFG.answer_max_tokens, 256)
@@ -725,7 +725,7 @@ User query: """
                     else OLLAMA_CFG.answer_max_tokens
                 )
                 answer_num_ctx = (
-                    OLLAMA_CFG.nlu_num_ctx
+                    OLLAMA_CFG.num_ctx_status
                     if is_global_copilot
                     else
                     OLLAMA_CFG.num_ctx_status
