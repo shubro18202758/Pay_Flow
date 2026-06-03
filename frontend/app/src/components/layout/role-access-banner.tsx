@@ -52,7 +52,6 @@ export function RoleAccessBanner() {
   const policy = ROLE_POLICIES[currentRole]
   const deniedTabs = TAB_IDS.filter((tab) => !canAccessTab(currentRole, tab))
   const allowedTabs = TAB_IDS.filter((tab) => canAccessTab(currentRole, tab))
-  const deniedTabLabels = deniedTabs.map((tab) => TAB_LABELS[tab])
   const allowedChecks = ACCESS_CHECKS.filter((item) => policy.permissions.includes(item.permission)).length
   const blockedChecks = ACCESS_CHECKS.length - allowedChecks
   const activeTabAllowed = canAccessTab(currentRole, activeTab)
@@ -67,7 +66,7 @@ export function RoleAccessBanner() {
             </div>
             <div className="min-w-0">
               <div className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-white/75">
-                Prototype-Wide RBAC Active
+                Prototype Navigation Open
               </div>
               <div className="mt-0.5 truncate text-base font-black">{policy.label}</div>
               <div className="truncate text-[11px] font-semibold text-white/78">{policy.domain}</div>
@@ -76,7 +75,7 @@ export function RoleAccessBanner() {
           <div className="mt-2 grid grid-cols-3 gap-2">
             <BannerMetric label="open tabs" value={`${allowedTabs.length}/${TAB_IDS.length}`} />
             <BannerMetric label="write gates" value={`${allowedChecks}/${ACCESS_CHECKS.length}`} />
-            <BannerMetric label="locked" value={String(deniedTabs.length)} tone={deniedTabs.length ? 'red' : 'green'} />
+            <BannerMetric label="nav locks" value={String(deniedTabs.length)} tone={deniedTabs.length ? 'red' : 'green'} />
           </div>
           <div className="mt-2 rounded-md border border-white/15 bg-white/10 px-2.5 py-2">
             <div className="text-[7px] font-extrabold uppercase tracking-[0.14em] text-white/62">decision authority</div>
@@ -90,7 +89,7 @@ export function RoleAccessBanner() {
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="truncate text-[10px] font-bold uppercase tracking-[0.12em] text-[#24364f]">
-                {activeTabAllowed ? 'Current page allowed' : 'Current page redirected by policy'}
+                {activeTabAllowed ? 'Current page visible' : 'Current page redirected by policy'}
               </div>
               <div className="truncate text-[10px] text-[#617189]" title={policy.escalationScope}>
                 {policy.escalationScope}
@@ -159,27 +158,27 @@ export function RoleAccessBanner() {
             live enforcement map
           </div>
           <div className="mt-2 grid gap-2">
-            <EnforcementRow label="navigation" value={`${deniedTabs.length} locked tabs`} />
+            <EnforcementRow label="navigation" value="all prototype tabs open" />
             <EnforcementRow label="backend" value={`X-Payflow-Role = ${currentRole}`} />
             <EnforcementRow label="actions" value={`${blockedChecks} write controls blocked`} />
           </div>
           <div className="mt-2 rounded-md border border-[#d7e3f1] bg-white px-2.5 py-2">
             <div className="text-[7px] font-extrabold uppercase tracking-[0.14em] text-[#617189]">
-              restricted for current role
+              write-gated for current role
             </div>
             <div className="mt-1.5 flex max-h-[46px] flex-wrap gap-1 overflow-y-auto">
-              {deniedTabLabels.length > 0 ? (
-                deniedTabLabels.map((label) => (
+              {ACCESS_CHECKS.filter((item) => !policy.permissions.includes(item.permission)).length > 0 ? (
+                ACCESS_CHECKS.filter((item) => !policy.permissions.includes(item.permission)).slice(0, 5).map((item) => (
                   <span
-                    key={label}
+                    key={item.permission}
                     className="inline-flex items-center gap-1 rounded-sm border border-[#DA251C]/20 bg-[#DA251C]/10 px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.08em] text-[#DA251C]"
                   >
                     <LockKeyhole className="h-2.5 w-2.5" />
-                    {label}
+                    {item.label}
                   </span>
                 ))
               ) : (
-                <span className="text-[9px] font-bold text-[#00579C]">All console areas open for this authority.</span>
+                <span className="text-[9px] font-bold text-[#00579C]">All listed write controls are available for this authority.</span>
               )}
             </div>
           </div>

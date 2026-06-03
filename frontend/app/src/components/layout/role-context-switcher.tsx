@@ -63,7 +63,7 @@ export function RoleContextSwitcher({ panel, onPanelChange }: Props) {
 
         <div className="flex flex-wrap items-center gap-2">
           <RolePill icon={ShieldCheck} label="open tabs" value={`${TAB_IDS.length - deniedTabs.length}/${TAB_IDS.length}`} />
-          <RolePill icon={LockKeyhole} label="locked" value={String(deniedTabs.length)} tone={deniedTabs.length ? 'red' : 'blue'} />
+          <RolePill icon={LockKeyhole} label="nav locks" value={String(deniedTabs.length)} tone={deniedTabs.length ? 'red' : 'blue'} />
           <button
             type="button"
             onClick={() => togglePanel('access')}

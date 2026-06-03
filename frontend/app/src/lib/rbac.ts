@@ -82,6 +82,17 @@ export interface OperationalWorkflow {
 export const DEFAULT_PAYFLOW_ROLE: PayflowRole = 'fraud_analyst'
 const ROLE_STORAGE_KEY = 'payflow.unionBankRole'
 
+export const PROTOTYPE_NAVIGATION_TABS = [
+  'pre-fraud-intel',
+  'overview',
+  'threat-sim',
+  'investigations',
+  'intelligence',
+  'analytics',
+  'compliance',
+  'system',
+] as const
+
 export const ROLE_ORDER: PayflowRole[] = [
   'soc_analyst',
   'soc_l2_incident_responder',
@@ -604,7 +615,8 @@ export function hasPermission(role: PayflowRole, permission: Permission): boolea
 }
 
 export function canAccessTab(role: PayflowRole, tab: string): boolean {
-  return rolePolicy(role).tabs.includes(tab)
+  void role
+  return PROTOTYPE_NAVIGATION_TABS.includes(tab as (typeof PROTOTYPE_NAVIGATION_TABS)[number])
 }
 
 export function defaultTabForRole(role: PayflowRole): string {

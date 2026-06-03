@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import {
   OPERATIONAL_WORKFLOWS,
+  PROTOTYPE_NAVIGATION_TABS,
   ROLE_ORDER,
   ROLE_POLICIES,
   canAccessTab,
@@ -241,7 +242,7 @@ export function LandingPage() {
 
             <div className="mt-6 grid gap-2 border border-white/18 bg-white/10 p-3 lg:grid-cols-3">
               <HeroControl label="role header" value={`X-Payflow-Role: ${selectedRole}`} />
-              <HeroControl label="tabs available" value={`${selectedPolicy.tabs.length}/8`} />
+              <HeroControl label="tabs available" value={`${PROTOTYPE_NAVIGATION_TABS.length}/8`} />
               <HeroControl label="actions enabled" value={`${allowedActions}/${ACTION_MATRIX.length}`} />
             </div>
 
@@ -275,7 +276,7 @@ export function LandingPage() {
             </div>
             <div className="space-y-3">
               <InfoMetric label="Domain" value={selectedPolicy.domain} />
-              <InfoMetric label="Tabs Open" value={`${selectedPolicy.tabs.length}/8`} />
+              <InfoMetric label="Tabs Open" value={`${PROTOTYPE_NAVIGATION_TABS.length}/8`} />
               <InfoMetric label="Write Actions" value={`${allowedActions}/${ACTION_MATRIX.length}`} />
               <InfoMetric label="Shift / Queue" value={selectedPolicy.shift} />
               <InfoMetric label="Reports To" value={selectedPolicy.reportingLine} />
@@ -425,7 +426,7 @@ export function LandingPage() {
                     </div>
                   </div>
                   <div className="mt-3 grid grid-cols-3 gap-2">
-                    <RoleStat label="tabs" value={`${policy.tabs.length}/8`} />
+                    <RoleStat label="tabs" value={`${PROTOTYPE_NAVIGATION_TABS.length}/8`} />
                     <RoleStat label="actions" value={`${allowed}/${ACTION_MATRIX.length}`} />
                     <RoleStat label="perms" value={String(policy.permissions.length)} />
                   </div>

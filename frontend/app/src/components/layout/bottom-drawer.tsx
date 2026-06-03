@@ -2,7 +2,6 @@
 // Bottom Drawer -- Expandable panels: Agent Evidence | Circuit Breaker | Metrics
 // ============================================================================
 
-import { useEffect } from 'react'
 import { useUIStore } from '@/stores/use-ui-store'
 import { AgentInvestigationTrace } from '@/components/panels/agent-cot'
 import { CircuitBreakerPanel } from '@/components/panels/circuit-breaker'
@@ -11,8 +10,7 @@ import { EventDetailDrawer } from '@/components/panels/event-detail-drawer'
 import { PreFraudIntelBrief } from '@/components/panels/pre-fraud-intel-brief'
 import { cn } from '@/lib/utils'
 import { useRoleAccess } from '@/hooks/use-rbac'
-import type { Permission } from '@/lib/rbac'
-import { BrainCircuit, Zap, Activity, Fingerprint, ChevronDown, ChevronRight, Radar, LockKeyhole } from 'lucide-react'
+import { BrainCircuit, Zap, Activity, Fingerprint, ChevronDown, ChevronRight, Radar } from 'lucide-react'
 
 const DRAWERS = [
   { id: 'agent', label: 'Agent Evidence', icon: BrainCircuit, component: AgentInvestigationTrace, permission: 'explain:view' },
@@ -33,24 +31,9 @@ function PreFraudDrawerPanel() {
 export function BottomDrawer() {
   const expanded = useUIStore((s) => s.expandedDrawers)
   const toggle = useUIStore((s) => s.toggleDrawer)
-  const selectedEventId = useUIStore((s) => s.selectedEventId)
   const access = useRoleAccess()
 
   const hasExpanded = DRAWERS.some((d) => expanded.has(d.id))
-
-  useEffect(() => {
-    const restrictedOpen = DRAWERS.some((drawer) => (
-      expanded.has(drawer.id) && !access.can(drawer.permission as Permission)
-    ))
-    if (!restrictedOpen) return
-    useUIStore.setState((state) => {
-      const next = new Set(state.expandedDrawers)
-      DRAWERS.forEach((drawer) => {
-        if (!access.can(drawer.permission as Permission)) next.delete(drawer.id)
-      })
-      return { expandedDrawers: next }
-    })
-  }, [access, expanded])
 
   return (
     <div
@@ -69,29 +52,21 @@ export function BottomDrawer() {
         {DRAWERS.map((drawer) => {
           const Icon = drawer.icon
           const isOpen = expanded.has(drawer.id)
-          const needsSelectedEvent = drawer.id === 'event-inspector'
-          const permission = drawer.permission as Permission
-          const restricted = !access.can(permission)
-          const disabled = restricted || (needsSelectedEvent && !selectedEventId)
-          const title = restricted
-            ? `${access.policy.label} cannot open ${drawer.label}`
-            : needsSelectedEvent && !selectedEventId
-            ? 'Select an event from Live Activity first'
+          const actionScoped = !access.can(drawer.permission)
+          const title = actionScoped
+            ? `${drawer.label} is visible; ${access.policy.label} still has action-level RBAC gates inside this panel.`
             : drawer.label
           return (
             <button
               key={drawer.id}
               onClick={() => {
-                if (!disabled) toggle(drawer.id)
+                toggle(drawer.id)
               }}
-              disabled={disabled}
               title={title}
               className={cn(
                 'flex items-center gap-1.5 px-3.5 h-full text-[10px] font-semibold uppercase tracking-[0.12em] transition-all duration-300',
                 'border-r border-border-subtle',
-                disabled
-                  ? 'cursor-not-allowed text-text-muted/35 bg-bg-surface'
-                  : isOpen
+                isOpen
                   ? 'text-text-primary bg-bg-elevated shadow-[inset_0_-2px_0_0_theme(colors.accent.primary)]'
                   : 'text-text-muted hover:text-text-secondary hover:bg-bg-elevated/40',
               )}
@@ -100,14 +75,10 @@ export function BottomDrawer() {
                 ? <ChevronDown className="w-3 h-3 text-accent-primary shrink-0" />
                 : <ChevronRight className="w-3 h-3 shrink-0" />
               }
-              {restricted ? (
-                <LockKeyhole className="w-3.5 h-3.5 shrink-0 text-alert-critical/70" />
-              ) : (
-                <Icon className={cn(
-                  'w-3.5 h-3.5 shrink-0 transition-colors duration-300',
-                  isOpen ? 'text-accent-primary' : 'text-text-muted',
-                )} />
-              )}
+              <Icon className={cn(
+                'w-3.5 h-3.5 shrink-0 transition-colors duration-300',
+                isOpen ? 'text-accent-primary' : actionScoped ? 'text-text-muted' : 'text-text-muted',
+              )} />
               {drawer.label}
             </button>
           )
