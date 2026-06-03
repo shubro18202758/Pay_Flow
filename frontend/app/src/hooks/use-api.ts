@@ -364,6 +364,7 @@ export function useCreateEventLabRun() {
   return useMutation({
     mutationFn: (body: EventLabRunRequest) => createEventLabRun(body),
     onSuccess: (run) => {
+      qc.setQueryData(['event-lab-run', run.run_id], run)
       invalidateCountermeasureDecisionQueries(qc, run.run_id)
     },
   })

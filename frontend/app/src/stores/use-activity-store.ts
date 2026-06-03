@@ -381,6 +381,13 @@ function countRecordValue(record: Record<string, unknown> | undefined, key: stri
   return Number.isFinite(value) && value > 0 ? value : 0
 }
 
+function hasUsableAnalysisReport(report: Record<string, unknown> | undefined): report is Record<string, unknown> {
+  if (!report) return false
+  const riskScore = Number(report.risk_score)
+  const riskTier = String(report.risk_tier ?? '')
+  return Number.isFinite(riskScore) && riskTier.length > 0
+}
+
 function eventLabReportActivityFromRun(
   runId: string,
   run: Record<string, unknown>,
@@ -1021,7 +1028,7 @@ export const useActivityStore = create<ActivityState>((set) => ({
             stage: 'qwen_explanation',
           })
         }
-        if (run.analysis_report && typeof run.analysis_report === 'object') {
+        if (run.analysis_report && typeof run.analysis_report === 'object' && hasUsableAnalysisReport(run.analysis_report as Record<string, unknown>)) {
           const report = run.analysis_report as Record<string, unknown>
           terminalRows.push({
             id: `event-lab:${runId}:analysis-report`,
@@ -1135,7 +1142,7 @@ export const useActivityStore = create<ActivityState>((set) => ({
           stage: 'evaluation_complete',
         })
 
-        if (Object.keys(report).length > 0) {
+        if (hasUsableAnalysisReport(report)) {
           terminalRows.push({
             id: `event-lab:${runId}:analysis-report`,
             timestamp: runTimestamp + 0.004,

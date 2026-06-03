@@ -159,6 +159,25 @@ function isUsableAnalysisReport(report?: EventLabAnalysisReport | null): report 
   return Boolean(maybe && typeof maybe.risk_score === 'number' && typeof maybe.risk_tier === 'string' && maybe.risk_tier.length > 0)
 }
 
+function runFreshnessScore(run?: EventLabRunResponse | null) {
+  if (!run) return -1
+  const statusWeight = run.status === 'evaluated' ? 1_000_000 : run.status === 'injected' ? 100_000 : 0
+  const stageWeight = (run.stages?.length ?? 0) * 1_000
+  const reportTimestamp = Number(run.analysis_report?.generated_at ?? 0)
+  const reportWeight = isUsableAnalysisReport(run.analysis_report) ? 10_000 : 0
+  return statusWeight + stageWeight + reportWeight + (Number.isFinite(reportTimestamp) ? reportTimestamp : 0)
+}
+
+function selectCanonicalRun(
+  directRun?: EventLabRunResponse,
+  explainabilityRun?: EventLabRunResponse,
+  localRun?: EventLabRunResponse,
+) {
+  return [directRun, explainabilityRun, localRun]
+    .filter((candidate): candidate is EventLabRunResponse => Boolean(candidate?.run_id))
+    .sort((a, b) => runFreshnessScore(b) - runFreshnessScore(a))[0]
+}
+
 function fmtPct(value?: number) {
   if (value == null || Number.isNaN(value)) return 'n/a'
   return `${Math.round(value * 100)}%`
@@ -1358,7 +1377,7 @@ function AutonomousReportGate({
 }) {
   const stageNames = new Set(run?.stages?.map((stage) => stage.stage) ?? [])
   const completedCount = REQUIRED_EVALUATION_STAGES.filter(([stage]) => stageNames.has(stage)).length
-  const completed = backendReady && visualEvidence.ready
+  const completed = backendReady
   const progress = run ? Math.round((completedCount / REQUIRED_EVALUATION_STAGES.length) * 100) : 0
   const backendStatus = backendReady ? 'backend complete' : `${completedCount}/${REQUIRED_EVALUATION_STAGES.length} backend stages`
   const visualStatus = visualEvidence.ready
@@ -1384,10 +1403,10 @@ function AutonomousReportGate({
           </div>
           <p className="mt-1 max-w-3xl text-[10px] leading-relaxed text-text-secondary">
             {completed && report
-              ? `${llmRuntime.model} explanation, heuristics, ML score, graph evidence, dispatch, and final evidence readiness are complete. The analyst-ready report is unlocked for this run.`
+              ? `${llmRuntime.model} explanation, heuristics, ML score, graph evidence, dispatch, and final evidence readiness are complete. The analyst-ready report is unlocked from the backend run payload.`
               : run
-                ? `Report stays locked until backend completion and evidence readiness are both confirmed for ${short(run.run_id, 10)}. ${backendStatus}; ${visualStatus}.`
-                : 'Launch a fraud event chain to stream the backend evaluation. The report will not appear until backend completion and evidence readiness are both confirmed.'}
+                ? `Report stays locked until backend completion and evidence readiness are confirmed for ${short(run.run_id, 10)}. ${backendStatus}; ${visualStatus}.`
+                : 'Launch a fraud event chain to stream the backend evaluation. The report will not appear until backend completion and evidence readiness are confirmed.'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -2076,6 +2095,7 @@ export function AdaptiveEventLab() {
   const [localRunResponse, setLocalRunResponse] = useState<EventLabRunResponse | undefined>(undefined)
   const [reportModalRunId, setReportModalRunId] = useState<string | null>(null)
   const autoOpenedReportRunRef = useRef<Set<string>>(new Set())
+  const mirroredRunKeyRef = useRef('')
   const [controls, setControls] = useState<EventLabControls>({
     event_count: 21,
     min_amount_inr: 24_000,
@@ -2101,7 +2121,7 @@ export function AdaptiveEventLab() {
   const activeRunId = localRunId ?? activeRunFromSse
   const { data: run } = useEventLabRun(activeRunId)
   const { data: explainability } = useEventLabExplainability(activeRunId)
-  const currentRun = explainability?.run ?? run ?? localRunResponse
+  const currentRun = selectCanonicalRun(run, explainability?.run, localRunResponse)
   const previewEvents = preview.data?.run_preview.events ?? currentRun?.events ?? []
   const policy = preview.data?.run_preview.countermeasure_policy ?? currentRun?.countermeasure_policy
   const trust = policy?.source_trust
@@ -2114,7 +2134,7 @@ export function AdaptiveEventLab() {
     () => getReportVisualEvidence(currentRun, lifecycleEvents),
     [currentRun, lifecycleEvents],
   )
-  const reportReady = backendReportReady && visualReportEvidence.ready
+  const reportReady = backendReportReady
   const completedReport = reportReady && isUsableAnalysisReport(currentRun?.analysis_report)
     ? currentRun.analysis_report
     : undefined
@@ -2126,6 +2146,28 @@ export function AdaptiveEventLab() {
     const timer = window.setTimeout(() => setReportModalRunId(completedRunId), 650)
     return () => window.clearTimeout(timer)
   }, [completedRunId])
+
+  useEffect(() => {
+    if (!currentRun?.run_id) return
+    const reportGeneratedAt = isUsableAnalysisReport(currentRun.analysis_report)
+      ? Number(currentRun.analysis_report.generated_at ?? 0)
+      : 0
+    const mirrorKey = [
+      currentRun.run_id,
+      currentRun.status,
+      currentRun.stages?.length ?? 0,
+      currentRun.event_ids?.length ?? 0,
+      reportGeneratedAt,
+    ].join(':')
+    if (mirroredRunKeyRef.current === mirrorKey) return
+    mirroredRunKeyRef.current = mirrorKey
+    setLocalRunResponse(currentRun)
+    setActiveRun(currentRun.run_id)
+    onEventLabActivity({
+      type: currentRun.status === 'evaluated' ? 'run_completed' : 'run_launched',
+      run: currentRun,
+    })
+  }, [currentRun, onEventLabActivity, setActiveRun])
 
   const launchControls = useMemo<EventLabControls>(() => ({
     ...controls,
@@ -2374,7 +2416,7 @@ export function AdaptiveEventLab() {
       </div>
 
       <RunTimeline
-        run={explainability?.run ?? run}
+        run={currentRun}
         explainability={explainability}
         llmRuntime={llmRuntime}
         previewQwenExplanation={preview.data?.run_preview.qwen_explanation}
