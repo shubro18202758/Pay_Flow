@@ -652,6 +652,51 @@ User query: """
 
         return context
 
+    def _prompt_context(self, context: dict, *, compact: bool) -> dict:
+        """Keep Qwen prompts bounded and ordered by answer value."""
+        if not compact:
+            return context
+
+        snap = context.get("system_snapshot", {})
+        orch = snap.get("orchestrator", {}) if isinstance(snap, dict) else {}
+        hw = snap.get("hardware", {}) if isinstance(snap, dict) else {}
+        pipeline = snap.get("pipeline", {}) if isinstance(snap, dict) else {}
+        graph = context.get("graph_summary", {})
+        verdicts = context.get("agent_verdicts", {})
+        intel = context.get("pre_fraud_intelligence", {})
+
+        compact_context: dict[str, Any] = {
+            "prototype_context": context.get("prototype_context", {}),
+            "llm_runtime": context.get("llm_runtime", {}),
+            "system_metrics": {
+                "events_ingested": orch.get("events_ingested"),
+                "ml_inferences": orch.get("ml_inferences"),
+                "alerts_routed": orch.get("alerts_routed"),
+                "throughput_eps": orch.get("events_per_sec"),
+                "gpu_vram_used_mb": hw.get("gpu_vram_used_mb"),
+                "gpu_vram_total_mb": hw.get("gpu_vram_total_mb"),
+                "gpu_utilization_pct": hw.get("gpu_utilization_pct"),
+                "cpu_utilization_pct": hw.get("cpu_utilization_pct"),
+                "llm_tps": hw.get("llm_tps"),
+                "pipeline": pipeline,
+            },
+            "graph_summary": graph,
+            "top_risky_nodes": context.get("top_risky_nodes", [])[:8],
+            "ml_models": context.get("ml_models", {}),
+            "model_drift": context.get("model_drift", {}),
+            "circuit_breaker": context.get("circuit_breaker", {}),
+            "agent_verdicts": {
+                "total": verdicts.get("total") if isinstance(verdicts, dict) else None,
+                "recent": (verdicts.get("recent", []) if isinstance(verdicts, dict) else [])[:3],
+            },
+            "pre_fraud_intelligence": {
+                "active_playbooks": (intel.get("active_playbooks", []) if isinstance(intel, dict) else [])[:4],
+                "top_trends": (intel.get("top_trends", []) if isinstance(intel, dict) else [])[:4],
+                "guardrail": intel.get("guardrail") if isinstance(intel, dict) else None,
+            },
+        }
+        return compact_context
+
     async def _generate_answer(self, question: str, intent: str, context: dict) -> str:
         """Generate a natural language answer using LLM or structured fallback."""
         if self._is_model_identity_query(question):
@@ -660,25 +705,44 @@ User query: """
         if self._llm:
             try:
                 fast_intents = {"system_status", "statistics", "risk_query", "account_lookup"}
-                context_limit = min(OLLAMA_CFG.context_chars, 4000) if intent in fast_intents else OLLAMA_CFG.context_chars
+                prototype = context.get("prototype_context", {})
+                surface = str(prototype.get("surface") or "").lower()
+                is_global_copilot = "copilot" in surface or "global_search" in surface
+                compact_prompt = is_global_copilot or intent in fast_intents
+                context_limit = (
+                    min(OLLAMA_CFG.context_chars, 3200)
+                    if is_global_copilot
+                    else min(OLLAMA_CFG.context_chars, 4000)
+                    if intent in fast_intents
+                    else OLLAMA_CFG.context_chars
+                )
                 answer_max_tokens = (
+                    min(OLLAMA_CFG.answer_max_tokens, 320)
+                    if is_global_copilot
+                    else
                     min(OLLAMA_CFG.answer_max_tokens, 256)
                     if intent in fast_intents
                     else OLLAMA_CFG.answer_max_tokens
                 )
                 answer_num_ctx = (
+                    OLLAMA_CFG.nlu_num_ctx
+                    if is_global_copilot
+                    else
                     OLLAMA_CFG.num_ctx_status
                     if intent in fast_intents
                     else OLLAMA_CFG.num_ctx_interactive
                 )
                 # Build context summary for LLM
-                context_str = json.dumps(context, indent=2, default=str)[:context_limit]
+                prompt_context = self._prompt_context(context, compact=compact_prompt)
+                context_str = json.dumps(prompt_context, indent=2, default=str)[:context_limit]
                 length_instruction = (
+                    "For this global copilot query, answer in at most six compact bullets or two short paragraphs. "
+                    if is_global_copilot
+                    else
                     "For this routine dashboard query, answer in at most five compact bullets. "
                     if intent in fast_intents
                     else ""
                 )
-                prototype = context.get("prototype_context", {})
                 valid_tabs = ", ".join(
                     f"{item.get('tab')} ({item.get('purpose')})"
                     for item in prototype.get("navigation", [])
