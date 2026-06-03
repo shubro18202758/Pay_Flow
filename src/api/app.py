@@ -46,11 +46,43 @@ TEMPLATES_DIR = PROJECT_ROOT / "frontend" / "templates"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "app" / "dist"
 
 
+async def _warm_llm_on_startup(app: FastAPI) -> None:
+    """Best-effort resident Qwen warmup after the dashboard starts serving."""
+    await asyncio.sleep(1.0)
+    try:
+        orch = getattr(app.state, "orchestrator", None)
+        llm = getattr(orch, "_llm", None) if orch is not None else None
+        if llm is None or not hasattr(llm, "ensure_resident"):
+            return
+        status = await asyncio.to_thread(llm.ensure_resident, min_interval_sec=0.0)
+        logger.info(
+            "LLM resident warmup status: model=%s running=%s reachable=%s policy=%s",
+            status.get("resolved_model") or status.get("target_model"),
+            status.get("target_running"),
+            status.get("reachable"),
+            status.get("resident_policy"),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("LLM resident warmup failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle for the dashboard server."""
     logger.info("Dashboard server starting — templates: %s", TEMPLATES_DIR)
+    warm_task = asyncio.create_task(
+        _warm_llm_on_startup(app),
+        name="llm-resident-warmup",
+    )
     yield
+    if not warm_task.done():
+        warm_task.cancel()
+        try:
+            await warm_task
+        except asyncio.CancelledError:
+            pass
     # Cleanup: clear broadcaster subscriber queues
     try:
         from src.api.events import EventBroadcaster
@@ -170,6 +202,8 @@ def create_app(orchestrator=None) -> FastAPI:
     async def llm_status(request: Request):
         orch = getattr(request.app.state, "orchestrator", None)
         llm = getattr(orch, "_llm", None) if orch is not None else None
+        if llm is not None and hasattr(llm, "ensure_resident"):
+            return await asyncio.to_thread(llm.ensure_resident)
         if llm is not None and hasattr(llm, "status"):
             return await asyncio.to_thread(llm.status)
 

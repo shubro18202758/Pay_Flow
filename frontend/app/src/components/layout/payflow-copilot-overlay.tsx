@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react'
 import { useLLMStatus, useNLQuery } from '@/hooks/use-api'
+import { resolveLLMRuntime } from '@/lib/llm-runtime'
 import { rolePolicy } from '@/lib/rbac'
 import type { NLQueryMessage, NLQueryResponse } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -65,28 +66,43 @@ export function PayFlowCopilotOverlay() {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const lastAutoRunSeq = useRef(0)
+  const messagesRef = useRef<ChatMessage[]>(messages)
+  const queryPendingRef = useRef(false)
+  const runNLQuery = nlQuery.mutateAsync
 
-  const modelLabel = useMemo(() => {
-    const data = llmStatus.data ?? {}
-    return String(data.resolved_model ?? data.model ?? data.target_model ?? 'qwen3.5:4b')
-  }, [llmStatus.data])
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
 
-  const qwenReady = useMemo(() => {
-    const data = llmStatus.data ?? {}
-    return data.reachable !== false && (data.target_running === true || data.running === true || !data.error)
-  }, [llmStatus.data])
+  useEffect(() => {
+    queryPendingRef.current = nlQuery.isPending
+  }, [nlQuery.isPending])
+
+  const qwenRuntime = useMemo(
+    () =>
+      resolveLLMRuntime(llmStatus.data, {
+        loading: llmStatus.isLoading,
+        error: llmStatus.isError,
+        fallbackModel: 'qwen3.5:4b',
+      }),
+    [llmStatus.data, llmStatus.isError, llmStatus.isLoading],
+  )
+
+  const modelLabel = qwenRuntime.model
+  const runtimeLabel = `${modelLabel} ${qwenRuntime.statusLabel}`
+  const qwenReady = qwenRuntime.running || qwenRuntime.installed
 
   const sendQuestion = useCallback(
     async (rawQuestion: string) => {
       const question = rawQuestion.trim()
-      if (!question || nlQuery.isPending) return
+      if (!question || queryPendingRef.current) return
 
       const userMessage: ChatMessage = {
         id: `user-${Date.now()}`,
         role: 'user',
         content: question,
       }
-      const conversation = messages
+      const conversation = messagesRef.current
         .filter((message) => message.id !== 'intro')
         .slice(-8)
         .map(({ role, content }) => ({ role, content }))
@@ -95,7 +111,7 @@ export function PayFlowCopilotOverlay() {
       setDraft('')
 
       try {
-        const result = await nlQuery.mutateAsync({
+        const result = await runNLQuery({
           question,
           surface: 'global_payflow_copilot',
           active_tab: activeTab,
@@ -129,7 +145,7 @@ export function PayFlowCopilotOverlay() {
         ])
       }
     },
-    [activeTab, messages, nlQuery],
+    [activeTab, runNLQuery],
   )
 
   useEffect(() => {
@@ -149,10 +165,16 @@ export function PayFlowCopilotOverlay() {
   useEffect(() => {
     if (!open) return
     setDraft(seed)
-    window.setTimeout(() => inputRef.current?.focus(), 40)
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 40)
+    return () => window.clearTimeout(focusTimer)
+  }, [open, openSeq, seed])
+
+  useEffect(() => {
+    if (!open) return
     if (autoRun && seed.trim() && lastAutoRunSeq.current !== openSeq) {
       lastAutoRunSeq.current = openSeq
-      window.setTimeout(() => void sendQuestion(seed), 60)
+      const runTimer = window.setTimeout(() => void sendQuestion(seed), 60)
+      return () => window.clearTimeout(runTimer)
     }
   }, [autoRun, open, openSeq, seed, sendQuestion])
 
@@ -184,7 +206,7 @@ export function PayFlowCopilotOverlay() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <RuntimeChip active={qwenReady} label={modelLabel} />
+              <RuntimeChip active={qwenReady} label={runtimeLabel} />
               <RuntimeChip active label="Ctrl+K" />
               <button
                 type="button"
@@ -276,7 +298,10 @@ export function PayFlowCopilotOverlay() {
                   />
                   <button
                     type="button"
-                    onClick={() => setMessages([createIntroMessage()])}
+                    onClick={() => {
+                      setMessages([createIntroMessage()])
+                      setDraft('')
+                    }}
                     className="hidden h-10 items-center gap-2 rounded-full border border-[#d5e3f0] px-3 text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#00579C] hover:bg-[#eaf4ff] sm:inline-flex"
                   >
                     <RotateCcw className="h-3.5 w-3.5" />

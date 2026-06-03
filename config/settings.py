@@ -136,7 +136,7 @@ class OllamaConfig:
     )
     required_model_prefix: str = field(default_factory=lambda: os.getenv("PAYFLOW_REQUIRED_OLLAMA_PREFIX", "qwen3.5"))
     strict_model_family: bool = field(default_factory=lambda: _env_bool("PAYFLOW_STRICT_OLLAMA_MODEL", True))
-    keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "30m"))
+    keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "24h"))
     temperature: float = field(default_factory=lambda: _env_float("OLLAMA_TEMPERATURE", 0.2))
     intent_temperature: float = field(default_factory=lambda: _env_float("PAYFLOW_INTENT_TEMPERATURE", 0.05))
     answer_temperature: float = field(default_factory=lambda: _env_float("PAYFLOW_ANSWER_TEMPERATURE", 0.2))

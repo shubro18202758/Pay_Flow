@@ -72,6 +72,7 @@ When answering:
 - If the question asks which AI/LLM/model is answering, use LLM Runtime; do not confuse it with ML Models such as XGBoost.
 - Never state or imply that Qwen, the LLM Runtime, or the AI assistant has decision authority.
 - Decision authority belongs only to PayFlow rules, XGBoost/ML risk scoring, transaction graph evidence, circuit breaker enforcement, audit ledger evidence, and analyst approval gates.
+- Distinguish the user-editable copilot query box from internal model prompts. The global copilot query box is editable; internal prompt templates are not exposed to analysts.
 
 Respond in a structured format with clear sections."""
 
@@ -438,6 +439,10 @@ User query: """
                 "event_lab": "Custom scenario templates generate transactions/auth/interbank events, inject them into pipeline stages and fan out to reports, graphs and countermeasures.",
                 "audit": "Append-only ledger and evidence package hashes preserve investigation and decision provenance.",
                 "deployment": "Docker/Nixpacks-compatible FastAPI single-port app for Coolify with qwen3.5:4b kept as the target Ollama model.",
+                "global_search_copilot": (
+                    "The landing-page search field seeds the PayFlow Qwen Search/Copilot overlay. "
+                    "The overlay input remains editable after opening, can be cleared with Reset, and only the query submitted with Ask is sent to the backend."
+                ),
             },
             "task_shortcuts": {
                 "create_custom_fraud_event": (
@@ -449,6 +454,7 @@ User query: """
                 "ask_qwen": "Use this global PayFlow Qwen Search/Copilot overlay or the Intelligence tab NL query panel.",
                 "package_evidence": "Open Investigator Workbench (internal tab id: investigations) after a case exists, then generate evidence packages from case trace.",
                 "review_reports": "Use Compliance/FIU Reporting when the selected role has regulatory permissions.",
+                "edit_copilot_query": "After the overlay opens from landing search or Ctrl+K, type directly in the bottom prompt box; the seed text is not a locked audit record until Ask is submitted.",
             },
             "role_context": role_profile,
             "role_catalog": role_catalog,
@@ -684,12 +690,20 @@ User query: """
                     if valid_tabs
                     else ""
                 )
+                copilot_ui_guardrail = (
+                    "Critical UI fact: the landing-page search text only seeds the PayFlow Qwen Search/Copilot overlay; "
+                    "the bottom copilot query box remains editable after opening, Reset clears it, and only pressing Ask sends the current text to the backend. "
+                    "Do not describe the analyst-facing query box as immutable or read-only. "
+                    "Internal model prompt templates are separate from this user-editable query input. "
+                )
                 prompt = (
                     f"{self.SYSTEM_PROMPT}\n\n"
+                    f"{copilot_ui_guardrail}\n"
                     f"System Context:\n{context_str}\n\n"
                     f"User Question: {question}\n\n"
                     "Use only the provided system context. If data is missing, say exactly what is unavailable. "
                     "For prototype navigation questions, tell the user which PayFlow page, tab, role, or control to use. "
+                    "For search or copilot UI behavior questions, follow prototype_context.core_capabilities.global_search_copilot exactly. "
                     "For proof-of-concept questions, ground the answer in PS3, Union Bank operating context, and the documented prototype features. "
                     f"{navigation_guardrail}"
                     f"{length_instruction}"

@@ -71,6 +71,8 @@ class PayFlowLLM:
         self._gpu_queue = None  # set via set_priority_queue()
         self._resolved_model: str | None = None
         self._model_checked_at: float = 0.0
+        self._last_keepalive_at: float = 0.0
+        self._keepalive_lock = threading.Lock()
         self._request_gate = threading.BoundedSemaphore(
             max(1, OLLAMA_CFG.max_parallel_requests)
         )
@@ -271,6 +273,48 @@ class PayFlowLLM:
             pass
 
         return status
+
+    def ensure_resident(self, *, min_interval_sec: float = 60.0) -> dict[str, Any]:
+        """
+        Return status and load the pinned Qwen model if Ollama has evicted it.
+        UI status polling calls this path, so the copilot stays warm without
+        repeatedly issuing generation requests while the model is already live.
+        """
+        status = self.status()
+        status["keep_alive"] = OLLAMA_CFG.keep_alive
+        status["resident_policy"] = "status_poll_warmup"
+        if status.get("target_running"):
+            status["keepalive_checked"] = True
+            return status
+        if not status.get("reachable"):
+            return status
+        if not (status.get("target_installed") or status.get("acceptable_installed")):
+            status["keepalive_skipped"] = "target_model_not_installed"
+            return status
+
+        now = time.monotonic()
+        with self._keepalive_lock:
+            if now - self._last_keepalive_at < min_interval_sec:
+                status["keepalive_throttled"] = True
+                return status
+            self._last_keepalive_at = now
+
+        try:
+            warmup = self.warmup()
+            warmed_status = self.status()
+            warmed_status.update(
+                {
+                    "keep_alive": OLLAMA_CFG.keep_alive,
+                    "resident_policy": "status_poll_warmup",
+                    "keepalive_warmup": "ok",
+                    "keepalive_model": warmup.model,
+                    "keepalive_duration_ms": warmup.total_duration_ms,
+                }
+            )
+            return warmed_status
+        except Exception as exc:
+            status["keepalive_error"] = str(exc)
+            return status
 
     def warmup(self) -> LLMResponse:
         """Load Qwen with a tiny deterministic request so the first UI query is not cold."""
