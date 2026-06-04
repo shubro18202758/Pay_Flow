@@ -180,7 +180,8 @@ export function useTopology(limit = 300) {
   return useQuery({
     queryKey: ['topology', limit],
     queryFn: () => fetchTopology(limit),
-    staleTime: 30_000,
+    staleTime: 3_000,
+    refetchInterval: 5_000,
     refetchOnWindowFocus: false,
   })
 }

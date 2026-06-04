@@ -1107,6 +1107,7 @@ function TreemapContent(props: any) {
 
 export function AnalyticsPage() {
   const store = useAnalyticsStore()
+  const tickAnalytics = useAnalyticsStore((state) => state.tick)
   const [analyticsDeck, setAnalyticsDeck] = useState<'all' | 'operations' | 'geo' | 'model' | 'forensics'>('all')
   const activityEvents = useActivityStore((state) => state.events)
   const activityOrderedIds = useActivityStore((state) => state.orderedIds)
@@ -1116,6 +1117,12 @@ export function AnalyticsPage() {
     () => deriveLiveAnalyticsFromActivity(activityEvents, activityOrderedIds),
     [activityEvents, activityOrderedIds],
   )
+
+  useEffect(() => {
+    tickAnalytics()
+    const interval = window.setInterval(tickAnalytics, 2_000)
+    return () => window.clearInterval(interval)
+  }, [tickAnalytics])
 
   const storeHasTransactionVolume = hasPositiveMetric(
     store.transactionVolume,

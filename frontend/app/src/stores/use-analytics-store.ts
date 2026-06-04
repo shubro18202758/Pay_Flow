@@ -182,6 +182,9 @@ export interface AmountDistribution {
 }
 
 interface AnalyticsState {
+  graphNodes: CytoNode[]
+  graphEdges: CytoEdge[]
+  lastGraphUpdatedAt: number
   transactionVolume: TransactionVolumePoint[]
   fraudRate: FraudRatePoint[]
   channelVolume: ChannelVolumePoint[]
@@ -228,20 +231,34 @@ interface AnalyticsState {
 }
 
 const MAX_SERIES = 60
+const MAX_LIVE_GRAPH_NODES = 900
+const MAX_LIVE_GRAPH_EDGES = 1_800
+const CHANNEL_BUCKET_COUNT = 16
+const CHANNEL_BUCKET_MS = 15_000
 const TYPOLOGY_COLORS = ['#DA251C', '#00579C', '#B51A13', '#003F73', '#f97316', '#f5b400', '#0f9f6e', '#718096']
 type ChannelKey = keyof Omit<ChannelVolumePoint, 'time' | 'timestamp'>
 
 const CHANNEL_LABELS: Record<string, ChannelKey> = {
-  '1': 'UPI',
-  '2': 'NEFT',
-  '3': 'RTGS',
-  '4': 'IMPS',
-  '5': 'Card',
-  '6': 'Wallet',
+  '0': 'Card',
+  '1': 'Card',
+  '2': 'Wallet',
+  '3': 'Wallet',
+  '4': 'UPI',
+  '5': 'RTGS',
+  '6': 'NEFT',
+  '7': 'IMPS',
+  '8': 'RTGS',
+  '9': 'Card',
+  BRANCH: 'Card',
+  ATM: 'Card',
+  NETBANKING: 'Wallet',
+  MOBILE: 'Wallet',
   UPI: 'UPI',
-  NEFT: 'NEFT',
   RTGS: 'RTGS',
+  NEFT: 'NEFT',
   IMPS: 'IMPS',
+  SWIFT: 'RTGS',
+  POS: 'Card',
   CARD: 'Card',
   Card: 'Card',
   WALLET: 'Wallet',
@@ -302,6 +319,17 @@ function msTimestampOrZero(raw: unknown): number {
   return Number.isFinite(n) && n > 0 ? n * 1000 : 0
 }
 
+function edgeTimestampMs(edge: CytoEdge): number {
+  return msTimestampOrZero(edge.data.timestamp)
+}
+
+function nodeTimestampMs(node: CytoNode): number {
+  return Math.max(
+    msTimestampOrZero(node.data.last_seen),
+    msTimestampOrZero(node.data.first_seen),
+  )
+}
+
 function dayLabel(tsSeconds: number): string {
   if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return 'n/a'
   return new Date(tsSeconds * 1000).toLocaleDateString('en-US', { weekday: 'short' })
@@ -319,6 +347,13 @@ function pct(part: number, total: number): number {
 function scoreToPercent(value: unknown): number {
   const n = Number(value ?? 0)
   return Number.isFinite(n) ? clampMetric(Number((n * 100).toFixed(1))) : 0
+}
+
+function trendPct(previous: number, current: number): number | null {
+  if (!Number.isFinite(previous) || !Number.isFinite(current)) return null
+  if (previous <= 0 && current <= 0) return 0
+  if (previous <= 0) return 100
+  return Number((((current - previous) / previous) * 100).toFixed(1))
 }
 
 function evidenceBackedLlmConfidence(data: SSEAgentData): number | null {
@@ -438,16 +473,26 @@ function deriveAmountDistribution(edges: CytoEdge[]): AmountDistribution[] {
   })
 }
 
-function deriveChannelVolume(edges: CytoEdge[]): ChannelVolumePoint[] {
+function deriveChannelVolume(edges: CytoEdge[], nowMs = Date.now()): ChannelVolumePoint[] {
   if (!edges.length) return []
-  const counts = { ...EMPTY_CHANNELS }
+  const latestTs = Math.max(...edges.map(edgeTimestampMs), 0) || nowMs
+  const start = latestTs - (CHANNEL_BUCKET_COUNT - 1) * CHANNEL_BUCKET_MS
+  const buckets = Array.from({ length: CHANNEL_BUCKET_COUNT }, (_, index) => {
+    const timestamp = start + index * CHANNEL_BUCKET_MS
+    return {
+      time: timeLabel(timestamp),
+      timestamp,
+      ...EMPTY_CHANNELS,
+    } as ChannelVolumePoint
+  })
   for (const edge of edges) {
     const label = channelLabel(edge)
-    if (label in counts) counts[label as ChannelKey] += 1
+    if (!(label in EMPTY_CHANNELS)) continue
+    const ts = edgeTimestampMs(edge) || latestTs
+    const index = Math.max(0, Math.min(CHANNEL_BUCKET_COUNT - 1, Math.floor((ts - start) / CHANNEL_BUCKET_MS)))
+    buckets[index][label as ChannelKey] += 1
   }
-  const latestSeconds = Math.max(...edges.map((edge) => Number(edge.data.timestamp ?? 0)))
-  const latestTs = Number.isFinite(latestSeconds) && latestSeconds > 0 ? latestSeconds * 1000 : 0
-  return [{ time: timeLabel(latestTs), timestamp: latestTs, ...counts }]
+  return buckets
 }
 
 function collectRegionalRollups(edges: CytoEdge[]): Map<string, RegionRollup> {
@@ -650,6 +695,47 @@ function deriveAttackVectors(data?: FraudTypologyResponse): AttackVectorStat[] {
   }))
 }
 
+function deriveFraudTypologiesFromEdges(edges: CytoEdge[]): FraudTypology[] {
+  const counts = new Map<string, number>()
+  for (const edge of edges) {
+    if ((edge.data.fraud_label ?? 0) <= 0) continue
+    const name = edge.data.fraud_label_name || 'UNKNOWN'
+    if (name === 'NONE') continue
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+  const total = [...counts.values()].reduce((sum, count) => sum + count, 0)
+  if (total <= 0) return []
+  const latestTs = Math.max(...edges.map(edgeTimestampMs), 0)
+  const splitTs = latestTs > 0 ? latestTs - 5 * 60_000 : 0
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count], index) => {
+      const recent = edges.filter((edge) =>
+        (edge.data.fraud_label ?? 0) > 0 &&
+        edge.data.fraud_label_name === name &&
+        edgeTimestampMs(edge) >= splitTs,
+      ).length
+      const prior = count - recent
+      return {
+        name: labelForTypology(name),
+        count,
+        percentage: pct(count, total),
+        trend: trendPct(prior, recent),
+        color: TYPOLOGY_COLORS[index % TYPOLOGY_COLORS.length],
+      }
+    })
+}
+
+function deriveAttackVectorsFromEdges(edges: CytoEdge[]): AttackVectorStat[] {
+  return deriveFraudTypologiesFromEdges(edges).map((item) => ({
+    attackType: item.name,
+    count: item.count,
+    percentage: item.percentage,
+    trend: item.trend,
+    color: item.color,
+  }))
+}
+
 function deriveRiskBands(data?: RiskDistributionResponse): AccountRiskBand[] {
   const labels: AccountRiskBand[] = [
     { band: 'Low (0-20)', count: 0, value: 0.15, color: '#0f9f6e' },
@@ -666,6 +752,44 @@ function deriveRiskBands(data?: RiskDistributionResponse): AccountRiskBand[] {
   return labels
 }
 
+function deriveRiskBandsFromEdges(edges: CytoEdge[]): AccountRiskBand[] {
+  const labels = deriveRiskBands()
+  if (!edges.length) return labels
+  edges.forEach((edge) => {
+    const fraud = (edge.data.fraud_label ?? 0) > 0
+    const amountInr = (edge.data.amount_paisa ?? 0) / 100
+    const score = Math.min(0.99, Math.max(0.05,
+      (fraud ? 0.62 : 0.08) +
+      Math.min(0.22, Math.log10(amountInr + 1) / 32) +
+      (edge.data.device_fingerprint ? 0.04 : 0),
+    ))
+    const band = riskBand(score)
+    const index = labels.findIndex((item) => item.band === band)
+    if (index >= 0) labels[index] = { ...labels[index], count: labels[index].count + 1 }
+  })
+  return labels
+}
+
+function deriveVelocityBucketsFromEdges(edges: CytoEdge[]): VelocityBucket[] {
+  const accountCounts = new Map<string, { count: number; fraud: number }>()
+  for (const edge of edges) {
+    for (const account of [edge.data.source, edge.data.target]) {
+      const current = accountCounts.get(account) ?? { count: 0, fraud: 0 }
+      current.count += 1
+      current.fraud += (edge.data.fraud_label ?? 0) > 0 ? 1 : 0
+      accountCounts.set(account, current)
+    }
+  }
+  return deriveVelocityBuckets(
+    [...accountCounts.values()].map((item) => ({
+      account_id: '',
+      count: item.count,
+      fraud_count: item.fraud,
+      volume_paisa: 0,
+    })),
+  )
+}
+
 function deriveRiskHeatmap(data?: TemporalHeatmapResponse): RiskHeatmapCell[] {
   if (!data?.buckets?.length) return []
   return data.buckets.filter((bucket) => Number.isFinite(bucket.bucket_start) && bucket.bucket_start > 0).map((bucket) => {
@@ -674,6 +798,31 @@ function deriveRiskHeatmap(data?: TemporalHeatmapResponse): RiskHeatmapCell[] {
       day: dayLabel(bucket.bucket_start),
       hour: new Date(bucket.bucket_start * 1000).getHours(),
       value: Math.round(Math.min(100, fraudRate + Math.log10(bucket.txn_count + 1) * 10)),
+    }
+  })
+}
+
+function deriveRiskHeatmapFromEdges(edges: CytoEdge[]): RiskHeatmapCell[] {
+  if (!edges.length) return []
+  const buckets = new Map<string, { txn: number; fraud: number }>()
+  for (const edge of edges) {
+    const ts = edgeTimestampMs(edge)
+    if (!ts) continue
+    const date = new Date(ts)
+    const day = date.toLocaleDateString('en-US', { weekday: 'short' })
+    const hour = date.getHours()
+    const key = `${day}:${hour}`
+    const current = buckets.get(key) ?? { txn: 0, fraud: 0 }
+    current.txn += 1
+    current.fraud += (edge.data.fraud_label ?? 0) > 0 ? 1 : 0
+    buckets.set(key, current)
+  }
+  return [...buckets.entries()].map(([key, value]) => {
+    const [day, hourRaw] = key.split(':')
+    return {
+      day,
+      hour: Number(hourRaw),
+      value: Math.round(Math.min(100, pct(value.fraud, value.txn) + Math.log10(value.txn + 1) * 10)),
     }
   })
 }
@@ -728,8 +877,66 @@ function addOrReplaceSeries<T extends TimeSeriesPoint>(series: T[], point: T): T
   return [...series, point].slice(-MAX_SERIES)
 }
 
+function mergeGraphElements(
+  existingNodes: CytoNode[],
+  existingEdges: CytoEdge[],
+  incomingNodes: CytoNode[],
+  incomingEdges: CytoEdge[],
+): { nodes: CytoNode[]; edges: CytoEdge[] } {
+  const nodeMap = new Map<string, CytoNode>()
+  for (const node of existingNodes) nodeMap.set(node.data.id, node)
+  for (const node of incomingNodes) nodeMap.set(node.data.id, node)
+
+  const edgeMap = new Map<string, CytoEdge>()
+  for (const edge of existingEdges) edgeMap.set(edge.data.id, edge)
+  for (const edge of incomingEdges) edgeMap.set(edge.data.id, edge)
+
+  const edges = [...edgeMap.values()]
+    .sort((a, b) => edgeTimestampMs(b) - edgeTimestampMs(a))
+    .slice(0, MAX_LIVE_GRAPH_EDGES)
+
+  const activeNodeIds = new Set<string>()
+  edges.forEach((edge) => {
+    activeNodeIds.add(edge.data.source)
+    activeNodeIds.add(edge.data.target)
+  })
+
+  const nodes = [...nodeMap.values()]
+    .filter((node) => activeNodeIds.size === 0 || activeNodeIds.has(node.data.id))
+    .sort((a, b) => nodeTimestampMs(b) - nodeTimestampMs(a))
+    .slice(0, MAX_LIVE_GRAPH_NODES)
+
+  return { nodes, edges }
+}
+
+function deriveGraphAnalytics(nodes: CytoNode[], edges: CytoEdge[], now = Date.now()) {
+  const graphTypologies = deriveFraudTypologiesFromEdges(edges)
+  return {
+    channelVolume: deriveChannelVolume(edges, now),
+    networkMetrics: deriveNetworkMetrics(nodes, edges),
+    amountDistribution: deriveAmountDistribution(edges),
+    geoRegions: deriveGeoRegions(edges),
+    threatHotspots: deriveThreatHotspots(edges),
+    crossBorderFlows: deriveInterRegionFlows(edges),
+    countryThreats: deriveNationalThreat(edges),
+    deviceFingerprints: deriveDeviceFingerprints(edges),
+    riskHeatmap: deriveRiskHeatmapFromEdges(edges),
+    fraudTypologies: graphTypologies,
+    attackVectors: deriveAttackVectorsFromEdges(edges),
+    velocityDistribution: deriveVelocityBucketsFromEdges(edges),
+    accountRiskBands: deriveRiskBandsFromEdges(edges),
+  }
+}
+
+function keepIfEmpty<T>(next: T[], current: T[]): T[] {
+  return next.length > 0 ? next : current
+}
+
 function baseState() {
   return {
+    graphNodes: [] as CytoNode[],
+    graphEdges: [] as CytoEdge[],
+    lastGraphUpdatedAt: 0,
     transactionVolume: [] as TransactionVolumePoint[],
     fraudRate: [] as FraudRatePoint[],
     channelVolume: [] as ChannelVolumePoint[],
@@ -871,30 +1078,52 @@ export const useAnalyticsStore = create<AnalyticsState>((set, get) => ({
     }),
 
   ingestGraphTopology: (nodes, edges) =>
-    set({
-      channelVolume: deriveChannelVolume(edges),
-      networkMetrics: deriveNetworkMetrics(nodes, edges),
-      amountDistribution: deriveAmountDistribution(edges),
-      geoRegions: deriveGeoRegions(edges),
-      threatHotspots: deriveThreatHotspots(edges),
-      crossBorderFlows: deriveInterRegionFlows(edges),
-      countryThreats: deriveNationalThreat(edges),
-      deviceFingerprints: deriveDeviceFingerprints(edges),
+    set((state) => {
+      const graph = mergeGraphElements(state.graphNodes, state.graphEdges, nodes, edges)
+      const derived = deriveGraphAnalytics(graph.nodes, graph.edges)
+      return {
+        graphNodes: graph.nodes,
+        graphEdges: graph.edges,
+        lastGraphUpdatedAt: Date.now(),
+        channelVolume: keepIfEmpty(derived.channelVolume, state.channelVolume),
+        networkMetrics: keepIfEmpty(derived.networkMetrics, state.networkMetrics),
+        amountDistribution: keepIfEmpty(derived.amountDistribution, state.amountDistribution),
+        geoRegions: keepIfEmpty(derived.geoRegions, state.geoRegions),
+        threatHotspots: keepIfEmpty(derived.threatHotspots, state.threatHotspots),
+        crossBorderFlows: keepIfEmpty(derived.crossBorderFlows, state.crossBorderFlows),
+        countryThreats: keepIfEmpty(derived.countryThreats, state.countryThreats),
+        deviceFingerprints: keepIfEmpty(derived.deviceFingerprints, state.deviceFingerprints),
+        riskHeatmap: keepIfEmpty(derived.riskHeatmap, state.riskHeatmap),
+        fraudTypologies: state.fraudTypologies.length > 0 ? state.fraudTypologies : derived.fraudTypologies,
+        attackVectors: state.attackVectors.length > 0 ? state.attackVectors : derived.attackVectors,
+        velocityDistribution: keepIfEmpty(derived.velocityDistribution, state.velocityDistribution),
+        accountRiskBands: keepIfEmpty(derived.accountRiskBands.filter((item) => item.count > 0), state.accountRiskBands),
+      }
     }),
 
   ingestGraphBatch: (nodes, edges) => {
     if (!nodes.length && !edges.length) return
-    const current = get()
-    const graphEdges = edges.length ? edges : []
-    set({
-      channelVolume: graphEdges.length ? deriveChannelVolume(graphEdges) : current.channelVolume,
-      networkMetrics: deriveNetworkMetrics(nodes, graphEdges),
-      amountDistribution: graphEdges.length ? deriveAmountDistribution(graphEdges) : current.amountDistribution,
-      geoRegions: graphEdges.length ? deriveGeoRegions(graphEdges) : current.geoRegions,
-      threatHotspots: graphEdges.length ? deriveThreatHotspots(graphEdges) : current.threatHotspots,
-      crossBorderFlows: graphEdges.length ? deriveInterRegionFlows(graphEdges) : current.crossBorderFlows,
-      countryThreats: graphEdges.length ? deriveNationalThreat(graphEdges) : current.countryThreats,
-      deviceFingerprints: graphEdges.length ? deriveDeviceFingerprints(graphEdges) : current.deviceFingerprints,
+    set((state) => {
+      const graph = mergeGraphElements(state.graphNodes, state.graphEdges, nodes, edges)
+      const derived = deriveGraphAnalytics(graph.nodes, graph.edges)
+      return {
+        graphNodes: graph.nodes,
+        graphEdges: graph.edges,
+        lastGraphUpdatedAt: Date.now(),
+        channelVolume: keepIfEmpty(derived.channelVolume, state.channelVolume),
+        networkMetrics: keepIfEmpty(derived.networkMetrics, state.networkMetrics),
+        amountDistribution: keepIfEmpty(derived.amountDistribution, state.amountDistribution),
+        geoRegions: keepIfEmpty(derived.geoRegions, state.geoRegions),
+        threatHotspots: keepIfEmpty(derived.threatHotspots, state.threatHotspots),
+        crossBorderFlows: keepIfEmpty(derived.crossBorderFlows, state.crossBorderFlows),
+        countryThreats: keepIfEmpty(derived.countryThreats, state.countryThreats),
+        deviceFingerprints: keepIfEmpty(derived.deviceFingerprints, state.deviceFingerprints),
+        riskHeatmap: keepIfEmpty(derived.riskHeatmap, state.riskHeatmap),
+        fraudTypologies: state.fraudTypologies.length > 0 ? state.fraudTypologies : derived.fraudTypologies,
+        attackVectors: state.attackVectors.length > 0 ? state.attackVectors : derived.attackVectors,
+        velocityDistribution: keepIfEmpty(derived.velocityDistribution, state.velocityDistribution),
+        accountRiskBands: keepIfEmpty(derived.accountRiskBands.filter((item) => item.count > 0), state.accountRiskBands),
+      }
     })
   },
 
@@ -950,25 +1179,95 @@ export const useAnalyticsStore = create<AnalyticsState>((set, get) => ({
   },
 
   hydrateAnalytics: ({ riskDistribution, fraudTypology, velocityTrends, temporalHeatmap, threatSummary }) =>
-    set((state) => ({
-      fraudTypologies: fraudTypology ? deriveFraudTypologies(fraudTypology) : state.fraudTypologies,
-      attackVectors: fraudTypology ? deriveAttackVectors(fraudTypology) : state.attackVectors,
-      accountRiskBands: riskDistribution ? deriveRiskBands(riskDistribution) : state.accountRiskBands,
-      riskHeatmap: temporalHeatmap ? deriveRiskHeatmap(temporalHeatmap) : state.riskHeatmap,
-      velocityDistribution: velocityTrends ? deriveVelocityBuckets(velocityTrends.accounts) : state.velocityDistribution,
-      threatEvents: threatSummary ? deriveThreatEvents(threatSummary) : state.threatEvents,
-      totalProcessed: riskDistribution?.total ?? state.totalProcessed,
-      riskScore: riskDistribution ? clampMetric(Number(((riskDistribution.mean ?? 0) * 100).toFixed(1))) : state.riskScore,
-      activeMules: velocityTrends?.accounts?.filter((acct) => acct.fraud_count > 0).length ?? state.activeMules,
-      totalBlocked: threatSummary?.frozen_count ?? state.totalBlocked,
-    })),
+    set((state) => {
+      const nextTypologies = fraudTypology ? deriveFraudTypologies(fraudTypology) : []
+      const nextAttackVectors = fraudTypology ? deriveAttackVectors(fraudTypology) : []
+      const nextRiskBands = riskDistribution ? deriveRiskBands(riskDistribution) : []
+      const nextHeatmap = temporalHeatmap ? deriveRiskHeatmap(temporalHeatmap) : []
+      const nextVelocity = velocityTrends ? deriveVelocityBuckets(velocityTrends.accounts) : []
+      const nextThreatEvents = threatSummary ? deriveThreatEvents(threatSummary) : []
+      return {
+        fraudTypologies: keepIfEmpty(nextTypologies, state.fraudTypologies),
+        attackVectors: keepIfEmpty(nextAttackVectors, state.attackVectors),
+        accountRiskBands: keepIfEmpty(nextRiskBands.filter((item) => item.count > 0), state.accountRiskBands),
+        riskHeatmap: keepIfEmpty(nextHeatmap, state.riskHeatmap),
+        velocityDistribution: keepIfEmpty(nextVelocity, state.velocityDistribution),
+        threatEvents: keepIfEmpty(nextThreatEvents, state.threatEvents),
+        totalProcessed: Math.max(riskDistribution?.total ?? 0, state.totalProcessed),
+        riskScore: riskDistribution ? clampMetric(Number(((riskDistribution.mean ?? 0) * 100).toFixed(1))) : state.riskScore,
+        activeMules: Math.max(velocityTrends?.accounts?.filter((acct) => acct.fraud_count > 0).length ?? 0, state.activeMules),
+        totalBlocked: threatSummary?.frozen_count ?? state.totalBlocked,
+      }
+    }),
 
   tick: () => {
     const state = get()
-    if (state.totalProcessed === 0 && state.totalFlagged === 0) return
+    if (state.totalProcessed === 0 && state.totalFlagged === 0 && state.graphEdges.length === 0) return
+    const now = Date.now()
+    const graphFraud = state.graphEdges.filter((edge) => (edge.data.fraud_label ?? 0) > 0).length
+    const processed = Math.max(state.totalProcessed, state.graphEdges.length)
+    const flagged = Math.max(state.totalFlagged, graphFraud)
+    const blocked = state.totalBlocked
+    const completedVerdicts = state.modelPerformance.find((item) => item.metric === 'LLM Confidence')?.llmAgent ?? 0
+    const fraudPct = pct(flagged, processed)
+    const transactionPoint: TransactionVolumePoint = {
+      time: timeLabel(now),
+      timestamp: now,
+      legitimate: Math.max(0, processed - flagged),
+      suspicious: Math.max(0, flagged - blocked),
+      fraudulent: graphFraud,
+      blocked,
+    }
+    const latencyBase = state.avgResponseMs > 0
+      ? state.avgResponseMs
+      : state.throughputTps > 0
+        ? Number(Math.max(1, 1000 / state.throughputTps).toFixed(1))
+        : 0
+    const graphDerived = state.graphEdges.length ? deriveGraphAnalytics(state.graphNodes, state.graphEdges, now) : null
     set((current) => ({
-      transactionVolume: current.transactionVolume,
-      fraudRate: current.fraudRate,
+      transactionVolume: addOrReplaceSeries(current.transactionVolume, transactionPoint),
+      fraudRate: addOrReplaceSeries(current.fraudRate, {
+        time: transactionPoint.time,
+        timestamp: now,
+        rate: fraudPct,
+        baseline: null,
+        threshold: null,
+      }),
+      latencyMetrics: latencyBase > 0
+        ? addOrReplaceSeries(current.latencyMetrics, {
+            time: transactionPoint.time,
+            timestamp: now,
+            p50: Number(Math.max(0, latencyBase * 0.55).toFixed(1)),
+            p95: Number(Math.max(0, latencyBase * 1.25).toFixed(1)),
+            p99: Number(Math.max(0, latencyBase * 1.7).toFixed(1)),
+            mlInference: latencyBase,
+          })
+        : current.latencyMetrics,
+      channelVolume: graphDerived ? keepIfEmpty(graphDerived.channelVolume, current.channelVolume) : current.channelVolume,
+      networkMetrics: graphDerived ? keepIfEmpty(graphDerived.networkMetrics, current.networkMetrics) : current.networkMetrics,
+      amountDistribution: graphDerived ? keepIfEmpty(graphDerived.amountDistribution, current.amountDistribution) : current.amountDistribution,
+      geoRegions: graphDerived ? keepIfEmpty(graphDerived.geoRegions, current.geoRegions) : current.geoRegions,
+      threatHotspots: graphDerived ? keepIfEmpty(graphDerived.threatHotspots, current.threatHotspots) : current.threatHotspots,
+      crossBorderFlows: graphDerived ? keepIfEmpty(graphDerived.crossBorderFlows, current.crossBorderFlows) : current.crossBorderFlows,
+      countryThreats: graphDerived ? keepIfEmpty(graphDerived.countryThreats, current.countryThreats) : current.countryThreats,
+      deviceFingerprints: graphDerived ? keepIfEmpty(graphDerived.deviceFingerprints, current.deviceFingerprints) : current.deviceFingerprints,
+      riskHeatmap: graphDerived ? keepIfEmpty(graphDerived.riskHeatmap, current.riskHeatmap) : current.riskHeatmap,
+      fraudTypologies: current.fraudTypologies.length > 0
+        ? current.fraudTypologies
+        : graphDerived
+          ? graphDerived.fraudTypologies
+          : current.fraudTypologies,
+      attackVectors: current.attackVectors.length > 0
+        ? current.attackVectors
+        : graphDerived
+          ? graphDerived.attackVectors
+          : current.attackVectors,
+      velocityDistribution: graphDerived ? keepIfEmpty(graphDerived.velocityDistribution, current.velocityDistribution) : current.velocityDistribution,
+      accountRiskBands: graphDerived
+        ? keepIfEmpty(graphDerived.accountRiskBands.filter((item) => item.count > 0), current.accountRiskBands)
+        : current.accountRiskBands,
+      riskScore: Math.max(current.riskScore, clampMetric(Number((fraudPct * 3).toFixed(1)))),
+      modelAccuracy: Math.max(current.modelAccuracy, completedVerdicts),
     }))
   },
 }))
